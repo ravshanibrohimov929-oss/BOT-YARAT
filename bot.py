@@ -5,7 +5,7 @@ import logging
 import uuid
 import hmac
 import hashlib
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, quote
 import httpx
 from datetime import datetime, timedelta
 
@@ -175,12 +175,28 @@ for _tid, _t in DEFAULT_TARIFFS.items():
 # Kino'dan boshqa barcha bot turlari uchun yagona oylik narx (tarifsiz, cheksiz foydalanuvchi)
 data.setdefault("other_bot_price", DEFAULT_OTHER_BOT_PRICE)
 
+# Har bir bot turi uchun: bepul sinov muddati bormi yoki darhol pullikmi (admin sozlaydi)
+# {bot_type: {"enabled": bool, "days": int}}
+data.setdefault("bot_type_trial", {})
+for _bt in BOT_TYPES:
+    data["bot_type_trial"].setdefault(_bt, {"enabled": True, "days": TRIAL_DAYS})
+
+
+def get_trial_config(bot_type: str) -> dict:
+    return data["bot_type_trial"].get(bot_type, {"enabled": True, "days": TRIAL_DAYS})
+
 # RAVSHAN BUILDER BOTning to'liq nusxalari (klonlari) shu yerda ro'yxatga olinadi.
 # Har biri: {"token": "...", "username": "...", "created_at": "..."}
 data.setdefault("platform_clones", [])
 
 # Bot Creator platformasining o'ziga /start bosgan barcha foydalanuvchilar
 data.setdefault("platform_users", [])
+
+# Bot Creator platformasining referal tizimi
+data.setdefault("platform_referrals", {})    # {str(referrer_uid): [referred_uid, ...]}
+data.setdefault("platform_referred_by", {})  # {str(referred_uid): referrer_uid}
+data.setdefault("platform_user_info", {})    # {str(uid): {"username": str, "phone": str|None}}
+data.setdefault("platform_phone_asked", [])  # kimlardan telefon so'ralgani (qayta so'ramaslik uchun)
 
 running_platform_clones = {}  # token -> asyncio task
 
@@ -294,8 +310,11 @@ def is_active(info: dict) -> bool:
     paid_until = info.get("paid_until")
     if paid_until and datetime.now() < datetime.fromisoformat(paid_until):
         return True
+    trial_cfg = get_trial_config(info.get("type"))
+    if not trial_cfg.get("enabled", True):
+        return False  # Bu bot turi uchun sinov o'chirilgan — darhol to'lov talab qilinadi
     created = datetime.fromisoformat(info["created_at"])
-    return datetime.now() < created + timedelta(days=TRIAL_DAYS)
+    return datetime.now() < created + timedelta(days=trial_cfg.get("days", TRIAL_DAYS))
 
 
 def next_payment_amount(info: dict) -> int:
@@ -961,7 +980,12 @@ def setup_subscription_handlers(dp: Dispatcher, token: str, admin_id: int):
 
 # ---------- Bosh (creator) bot — XALQ UCHUN OMMAVIY ----------
 def types_kb():
-    buttons = [[InlineKeyboardButton(text=name, callback_data=f"type_{key}")] for key, name in BOT_TYPES.items()]
+    # kino_pro endi to'g'ridan-to'g'ri tanlanmaydi — u faqat oddiy Kino Botni
+    # "🎬💎 Pro Kino Botga o'tkazish" tugmasi orqali yangilash natijasida olinadi.
+    buttons = [
+        [InlineKeyboardButton(text=name, callback_data=f"type_{key}")]
+        for key, name in BOT_TYPES.items() if key != "kino_pro"
+    ]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -1020,7 +1044,8 @@ def setup_platform_bot(dp: Dispatcher):
             keyboard.append([KeyboardButton(text="📊 Statistika"), KeyboardButton(text="➕ Hisob qo'shish")])
             keyboard.append([KeyboardButton(text="💵 Tariflar"), KeyboardButton(text="💳 To'lov tizimlar")])
             keyboard.append([KeyboardButton(text="⭐ Stars kursi"), KeyboardButton(text="👥 Hamkor-adminlar")])
-            keyboard.append([KeyboardButton(text="🤖 Botlar narxi")])
+            keyboard.append([KeyboardButton(text="🤖 Botlar narxi"), KeyboardButton(text="🎁 Sinov/Pullik")])
+            keyboard.append([KeyboardButton(text="🚀 Ultra statistika"), KeyboardButton(text="🏆 Top referal")])
         elif str(uid) in data["sub_admins"]:
             keyboard.append([KeyboardButton(text="➕ Hisob qo'shish"), KeyboardButton(text="💼 Mening daromadim")])
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
@@ -1028,8 +1053,34 @@ def setup_platform_bot(dp: Dispatcher):
     @dp.message(Command("start"))
     async def main_start(message: Message):
         uid = message.from_user.id
-        if uid not in data["platform_users"]:
+        args = message.text.split(maxsplit=1)
+        uname = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
+        data["platform_user_info"].setdefault(str(uid), {"username": uname, "phone": None})
+        data["platform_user_info"][str(uid)]["username"] = uname
+        is_new = uid not in data["platform_users"]
+        if is_new:
             data["platform_users"].append(uid)
+            if len(args) > 1 and args[1].startswith("ref_"):
+                try:
+                    ref_uid = int(args[1].split("_", 1)[1])
+                except ValueError:
+                    ref_uid = None
+                if ref_uid and ref_uid != uid and str(uid) not in data["platform_referred_by"]:
+                    data["platform_referred_by"][str(uid)] = ref_uid
+                    refs = data["platform_referrals"].setdefault(str(ref_uid), [])
+                    if uid not in refs:
+                        refs.append(uid)
+                    try:
+                        await message.bot.send_message(
+                            ref_uid,
+                            f"🎉 <b>Taklif qilingan yangi foydalanuvchi!</b>\n\n"
+                            f"👤 {uname} sizning havolangiz orqali botga qo'shildi.\n"
+                            f"🎁 Jami takliflaringiz: {len(refs)} kishi",
+                        )
+                    except Exception:
+                        pass
+            save_data()
+        else:
             save_data()
         tariff_lines = "\n".join(
             f"💠 {t['name']} — {t['price']:,} so'm/oy ({tariff_limit_text(t)})"
@@ -1083,11 +1134,85 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.message(F.text == "🎁 Referal")
     async def referral_handler(message: Message):
+        uid = message.from_user.id
+        me = await message.bot.get_me()
+        link = f"https://t.me/{me.username}?start=ref_{uid}"
+        count = len(data["platform_referrals"].get(str(uid), []))
+        share_text = f"🤖 Bot Creator — hech qanday kod yozmasdan o'z Telegram botingizni yarating!\n{link}"
+        share_url = f"https://t.me/share/url?url={quote(link)}&text={quote(share_text)}"
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="📤 Do'stlarga yuborish", url=share_url)]
+        ])
         await message.answer(
-            "🎁 <b>Referal tizimi</b>\n\n"
-            "Bu funksiya hozircha ishlab chiqilmoqda. Tez orada do'stlaringizni taklif qilib, "
-            "bonuslar olish imkoniyati qo'shiladi!"
+            "🎁 <b>Referal dasturi</b>\n\n"
+            "Do'stingizni shu havola orqali taklif qiling — u botga kirishi bilanoq siz xabardor bo'lasiz.\n\n"
+            f"👥 Jami taklif qilganlaringiz: <b>{count}</b> kishi\n\n"
+            f"🔗 Sizning shaxsiy havolangiz:\n<code>{link}</code>",
+            reply_markup=kb,
         )
+        info = data["platform_user_info"].get(str(uid), {})
+        if not info.get("phone") and uid not in data["platform_phone_asked"]:
+            data["platform_phone_asked"].append(uid)
+            save_data()
+            phone_kb = ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton(text="📱 Raqamni ulashish", request_contact=True)], [KeyboardButton(text="⏭ O'tkazib yuborish")]],
+                resize_keyboard=True, one_time_keyboard=True,
+            )
+            await message.answer("📱 Statistikada aniqroq ko'rinish uchun telefon raqamingizni ulashing (ixtiyoriy):", reply_markup=phone_kb)
+
+    @dp.message(F.contact)
+    async def platform_contact_received(message: Message):
+        uid = message.from_user.id
+        if message.contact.user_id == uid:
+            data["platform_user_info"].setdefault(str(uid), {"username": None, "phone": None})
+            data["platform_user_info"][str(uid)]["phone"] = message.contact.phone_number
+            save_data()
+        await message.answer("✅ Rahmat!", reply_markup=main_menu_kb(uid))
+
+    @dp.message(F.text == "⏭ O'tkazib yuborish")
+    async def platform_phone_skip(message: Message):
+        await message.answer("Xo'p bo'ladi 👍", reply_markup=main_menu_kb(message.from_user.id))
+
+    async def send_platform_paginated(message: Message, header: str, lines: list, chunk_size: int = 30):
+        if not lines:
+            await message.answer(header + "\n\nHali foydalanuvchilar yo'q.")
+            return
+        for i in range(0, len(lines), chunk_size):
+            chunk = lines[i:i + chunk_size]
+            prefix = f"{header} ({i + 1}-{min(i + chunk_size, len(lines))} / {len(lines)})\n\n" if len(lines) > chunk_size else header + "\n\n"
+            await message.answer(prefix + "\n".join(chunk))
+
+    @dp.message(F.text == "🚀 Ultra statistika")
+    async def platform_ultra_statistika(message: Message):
+        if message.from_user.id != ADMIN_ID:
+            return
+        rows = []
+        for uid in data["platform_users"]:
+            uinfo = data["platform_user_info"].get(str(uid), {})
+            uname = uinfo.get("username") or "—"
+            refcount = len(data["platform_referrals"].get(str(uid), []))
+            rows.append((uid, uname, refcount))
+        rows.sort(key=lambda r: r[2], reverse=True)
+        lines = [f"👤 {uname} | ID: <code>{uid}</code> | 🎁 {refcount} ta taklif" for uid, uname, refcount in rows]
+        await send_platform_paginated(message, f"🚀 <b>Ultra statistika</b> — jami {len(rows)} foydalanuvchi", lines)
+
+    @dp.message(F.text == "🏆 Top referal")
+    async def platform_top_referal(message: Message):
+        if message.from_user.id != ADMIN_ID:
+            return
+        rows = []
+        for uid in data["platform_users"]:
+            uinfo = data["platform_user_info"].get(str(uid), {})
+            uname = uinfo.get("username") or "—"
+            phone = uinfo.get("phone") or "—"
+            refcount = len(data["platform_referrals"].get(str(uid), []))
+            rows.append((uid, uname, phone, refcount))
+        rows.sort(key=lambda r: r[3], reverse=True)
+        lines = [
+            f"{i + 1}. 👤 {uname} | 📞 {phone} | ID: <code>{uid}</code> | 🎁 {refcount} ta taklif"
+            for i, (uid, uname, phone, refcount) in enumerate(rows)
+        ]
+        await send_platform_paginated(message, f"🏆 <b>Top referal</b> — jami {len(rows)} foydalanuvchi", lines)
 
     @dp.message(F.text == "👤 Shaxsiy kabinet")
     async def cabinet_handler(message: Message):
@@ -1497,12 +1622,17 @@ def setup_platform_bot(dp: Dispatcher):
             price_line = "💰 Oylik to'lov: tarifga qarab belgilanadi"
         else:
             price_line = f"💰 Oylik to'lov: {data.get('other_bot_price', DEFAULT_OTHER_BOT_PRICE):,} so'm/oy"
+        trial_cfg = get_trial_config(bot_type)
+        if trial_cfg.get("enabled", True):
+            trial_line = f"🎁 Bepul sinov muddati: {trial_cfg.get('days', TRIAL_DAYS)} kun"
+        else:
+            trial_line = "💰 Bepul sinov yo'q — bot yaratilgach darhol to'lov talab qilinadi"
         return (
             f"{BOT_TYPES[bot_type]}\n\n"
             f"{desc}\n\n"
             f"💵 Yaratish narxi: 0 so'm\n"
             f"{price_line}\n"
-            f"🎁 Bepul sinov muddati: {TRIAL_DAYS} kun"
+            f"{trial_line}"
         )
 
     def type_detail_kb(bot_type: str):
@@ -1611,11 +1741,16 @@ def setup_platform_bot(dp: Dispatcher):
             info = await finalize_bot_creation(token, me.first_name, bot_type, message.from_user.id, None)
             tariff = get_bot_tariff(info)
             price_note = f"💰 Oylik narx: {tariff['price']:,} so'm/oy\n"
+            trial_cfg = get_trial_config(bot_type)
+            if trial_cfg.get("enabled", True):
+                trial_note = f"🎁 {trial_cfg.get('days', TRIAL_DAYS)} kunlik bepul sinov boshlandi!\n"
+            else:
+                trial_note = "💰 Bu bot turi uchun sinov yo'q — foydalanish uchun darhol to'lov qiling.\n"
             go_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🤖 Botga o'tish", url=f"https://t.me/{me.username}")]]) if me.username else None
             await message.answer(
                 f"✅ {BOT_TYPES[bot_type]} ishga tushdi: <b>{me.first_name}</b>\n\n"
                 f"{price_note}"
-                f"🎁 {TRIAL_DAYS} kunlik bepul sinov boshlandi!\n"
+                f"{trial_note}"
                 "Majburiy obuna qo'shish uchun o'sha botga /channels yozing.",
                 reply_markup=go_kb,
             )
@@ -1645,11 +1780,16 @@ def setup_platform_bot(dp: Dispatcher):
         info = await finalize_bot_creation(token, bot_name, bot_type, callback.from_user.id, tariff_id)
 
         tariff = get_tariff(tariff_id)
+        trial_cfg = get_trial_config(bot_type)
+        if trial_cfg.get("enabled", True):
+            trial_note = f"🎁 {trial_cfg.get('days', TRIAL_DAYS)} kunlik bepul sinov boshlandi!\n"
+        else:
+            trial_note = "💰 Bu bot turi uchun sinov yo'q — foydalanish uchun darhol to'lov qiling.\n"
         go_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🤖 Botga o'tish", url=f"https://t.me/{bot_username}")]]) if bot_username else None
         await callback.message.edit_text(
             f"✅ {BOT_TYPES[bot_type]} ishga tushdi: <b>{bot_name}</b>\n\n"
             f"💠 Tarif: {tariff['name']} — {tariff['price']:,} so'm/oy ({tariff_limit_text(tariff)})\n"
-            f"🎁 {TRIAL_DAYS} kunlik bepul sinov boshlandi!\n"
+            f"{trial_note}"
             "Majburiy obuna qo'shish uchun o'sha botga /channels yozing.",
             reply_markup=go_kb,
         )
@@ -1942,9 +2082,51 @@ def setup_platform_bot(dp: Dispatcher):
             if info.get("admin_id") != ADMIN_ID:
                 if info["type"] in ("kino", "kino_pro"):
                     buttons.append([InlineKeyboardButton(text="🔄 Tarifni o'zgartirish", callback_data=f"changetariff_{info['id']}")])
+                if info["type"] == "kino":
+                    buttons.append([InlineKeyboardButton(text="🎬💎 Pro Kino Botga o'tkazish", callback_data=f"upgradepro_{info['id']}")])
                 buttons.append([InlineKeyboardButton(text="💰 Hozir to'lov qilish", callback_data=f"paynow_{info['id']}")])
             kb = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
             await message.answer(text, reply_markup=kb)
+
+    # ---------- Sinov / Pullik sozlamalari (har bir bot turi uchun) ----------
+    def trial_settings_kb():
+        buttons = []
+        for bt, name in BOT_TYPES.items():
+            if bt == "kino_pro":
+                continue  # kino_pro sozlamasi "kino" bilan bir xil hisoblanadi
+            cfg = get_trial_config(bt)
+            status = (
+                f"🎁 Bepul ({cfg.get('days', TRIAL_DAYS)} kun)"
+                if cfg.get("enabled", True)
+                else "💰 Pullik (sinovsiz)"
+            )
+            buttons.append([InlineKeyboardButton(text=f"{name}: {status}", callback_data=f"trialtoggle_{bt}")])
+        return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    @dp.message(F.text == "🎁 Sinov/Pullik")
+    async def trial_settings_panel(message: Message):
+        if message.from_user.id != ADMIN_ID:
+            return
+        await message.answer(
+            "🎁💰 <b>Sinov / Pullik sozlamalari</b>\n\n"
+            "Har bir bot turi uchun holatni tanlang:\n"
+            "🎁 Bepul — yangi bot shu turdan yaratilganda avval bepul sinov muddati beriladi.\n"
+            "💰 Pullik — sinov yo'q, bot yaratilgach darhol to'lov talab qilinadi (narxi shu turning joriy narxi).\n\n"
+            "Almashtirish uchun tugmani bosing:",
+            reply_markup=trial_settings_kb(),
+        )
+
+    @dp.callback_query(F.data.startswith("trialtoggle_"))
+    async def trial_toggle_cb(callback: CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            return
+        bt = callback.data.split("_", 1)[1]
+        cfg = data["bot_type_trial"].setdefault(bt, {"enabled": True, "days": TRIAL_DAYS})
+        cfg["enabled"] = not cfg.get("enabled", True)
+        save_data()
+        await callback.message.edit_reply_markup(reply_markup=trial_settings_kb())
+        new_status = "🎁 Bepul sinov" if cfg["enabled"] else "💰 Pullik (sinovsiz)"
+        await callback.answer(f"✅ {BOT_TYPES.get(bt, bt)}: {new_status}")
 
     def find_bot_by_id(bot_id: int):
         for token, info in data["bots"].items():
@@ -2033,6 +2215,28 @@ def setup_platform_bot(dp: Dispatcher):
             tariff = get_bot_tariff(target)
             await callback.message.answer(f"↩️ <b>{target['name']}</b> standart narxga qaytarildi: {tariff['price']:,} so'm/oy.")
         await callback.answer()
+
+    @dp.callback_query(F.data.startswith("upgradepro_"))
+    async def upgrade_pro_cb(callback: CallbackQuery):
+        bot_id = int(callback.data.split("_", 1)[1])
+        token, target = find_bot_by_id(bot_id)
+        if not target or callback.from_user.id not in target.get("admin_ids", [target["admin_id"]]):
+            await callback.answer("Ruxsat yo'q.", show_alert=True)
+            return
+        if target["type"] != "kino":
+            await callback.answer("Bu bot allaqachon Pro yoki bu tur uchun mavjud emas.", show_alert=True)
+            return
+        target["type"] = "kino_pro"
+        save_data()
+        await callback.message.answer(
+            f"🎉 <b>{target['name']}</b> endi 🎬💎 <b>Pro Kino Bot</b>!\n\n"
+            "Endi quyidagi imkoniyatlar faollashdi:\n"
+            "🔒 VIP kino qo'shish\n"
+            "🔒 Filmlarni VIP qilib belgilash\n"
+            "💎 VIP kinolar katalogi (faqat Premium foydalanuvchilar uchun)\n\n"
+            "O'zgarishlarni ko'rish uchun botga /start yozing."
+        )
+        await callback.answer("✅ Pro Kino Botga muvaffaqiyatli o'tkazildi!")
 
     @dp.callback_query(F.data.startswith("changetariff_"))
     async def changetariff_cb(callback: CallbackQuery):
@@ -2247,6 +2451,9 @@ def setup_premium_system(dp: Dispatcher, token: str, admin_id: int):
     async def payment_systems_panel(message: Message):
         if not is_admin(info, message.from_user.id):
             return
+        if info.get("type") == "kino":
+            await message.answer("⚠️ Bu funksiya faqat 🎬💎 Pro Kino Bot uchun mavjud.")
+            return
         if not info["payment_systems"]:
             await message.answer("⚠️ To'lov tizimlari mavjud emas.", reply_markup=payment_systems_kb())
         else:
@@ -2342,6 +2549,9 @@ def setup_premium_system(dp: Dispatcher, token: str, admin_id: int):
     @dp.message(F.text == "💎 Premium")
     async def premium_admin_panel(message: Message):
         if not is_admin(info, message.from_user.id):
+            return
+        if info.get("type") == "kino":
+            await message.answer("⚠️ Bu funksiya faqat 🎬💎 Pro Kino Bot uchun mavjud.")
             return
         status = "✅ Yoqilgan" if info["premium_enabled"] else "❌ O'chirilgan"
         await message.answer(f"💎 Premium tariflar boshqaruvi\n\nHolati: {status}", reply_markup=premium_admin_kb())
@@ -5114,6 +5324,9 @@ def setup_kino_bot(dp: Dispatcher, token: str):
     info.setdefault("ratings", {})                 # {code: {"total": int, "count": int, "by_user": {uid: stars}}}
     info.setdefault("vip_codes", [])               # [code, ...] — faqat Premium foydalanuvchilar uchun
     info.setdefault("series_subscribers", {})      # {code: [uid, ...]}
+    info.setdefault("user_usernames", {})          # {str(uid): "username yoki F.I.Sh"}
+    info.setdefault("user_phones", {})              # {str(uid): "+998901234567"}
+    info.setdefault("phone_asked", [])              # kimlardan telefon so'ralgani (qayta so'ramaslik uchun)
     info.setdefault("moderators", [])              # faqat kontent qo'sha oladigan cheklangan adminlar
     info.setdefault("user_activity", {})           # {str(uid): count}
     info.setdefault("auto_report_enabled", False)
@@ -5138,16 +5351,20 @@ def setup_kino_bot(dp: Dispatcher, token: str):
 
     # ---------- Klaviaturalar ----------
     def ultra_admin_kb():
-        return ReplyKeyboardMarkup(keyboard=[
+        keyboard = [
             [KeyboardButton(text="🎬 Kontent"), KeyboardButton(text="🏷 Kategoriyalar")],
             [KeyboardButton(text="⭐ Tavsiyalar"), KeyboardButton(text="📈 TOP reyting")],
             [KeyboardButton(text="👥 Foydalanuvchilar"), KeyboardButton(text="📢 Xabar va reklama")],
             [KeyboardButton(text="🎁 Referal"), KeyboardButton(text="📊 Statistika")],
+            [KeyboardButton(text="🚀 Ultra statistika"), KeyboardButton(text="🏆 Top referal")],
             [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
-            [KeyboardButton(text="💳 To'lov tizimlar"), KeyboardButton(text="💎 Premium")],
-            [KeyboardButton(text="👮 Moderatorlar"), KeyboardButton(text="⚙️ Sozlamalar")],
-            [KeyboardButton(text="📤 Eksport")],
-        ] + get_global_button_rows(), resize_keyboard=True)
+        ]
+        if is_pro():
+            # To'lov tizimlari va Premium faqat 🎬💎 Pro Kino Bot uchun kerak
+            keyboard.append([KeyboardButton(text="💳 To'lov tizimlar"), KeyboardButton(text="💎 Premium")])
+        keyboard.append([KeyboardButton(text="👮 Moderatorlar"), KeyboardButton(text="⚙️ Sozlamalar")])
+        keyboard.append([KeyboardButton(text="📤 Eksport")])
+        return ReplyKeyboardMarkup(keyboard=keyboard + get_global_button_rows(), resize_keyboard=True)
 
     def content_menu_kb():
         keyboard = [
@@ -5236,7 +5453,10 @@ def setup_kino_bot(dp: Dispatcher, token: str):
     async def kstart(message: Message):
         uid = message.from_user.id
         args = message.text.split(maxsplit=1)
-        if uid not in info["users"]:
+        uname = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
+        info["user_usernames"][str(uid)] = uname
+        is_new_user = uid not in info["users"]
+        if is_new_user:
             info["users"].append(uid)
             if len(args) > 1 and args[1].startswith("ref_"):
                 try:
@@ -5263,6 +5483,8 @@ def setup_kino_bot(dp: Dispatcher, token: str):
                 except Exception:
                     pass
             save_data()
+        else:
+            save_data()
         if not await check_active(message, info, admin_id):
             return
         if is_admin(info, uid):
@@ -5279,6 +5501,18 @@ def setup_kino_bot(dp: Dispatcher, token: str):
             return
         if not await require_subscription(message, info, admin_id):
             return
+        if str(uid) not in info["user_phones"] and uid not in info["phone_asked"]:
+            info["phone_asked"].append(uid)
+            save_data()
+            phone_kb = ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton(text="📱 Raqamni ulashish", request_contact=True)], [KeyboardButton(text="⏭ O'tkazib yuborish")]],
+                resize_keyboard=True, one_time_keyboard=True,
+            )
+            await message.answer("📱 Botdan qulay foydalanish uchun telefon raqamingizni ulashing (ixtiyoriy):", reply_markup=phone_kb)
+            return
+        await send_kino_home(message, uid)
+
+    async def send_kino_home(message: Message, uid: int):
         customer_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="💎 VIP kinolar")]], resize_keyboard=True) if is_pro() else None
         await message.answer(info.get("welcome_text", "🎬 Film kodini yuboring, men uni topib beraman."), reply_markup=customer_kb)
         if info.get("featured"):
@@ -5290,6 +5524,19 @@ def setup_kino_bot(dp: Dispatcher, token: str):
                     lines.append(f"• Kod {code} — {title}")
             if lines:
                 await message.answer("⭐ <b>Tavsiya etilgan kontent:</b>\n\n" + "\n".join(lines))
+
+    @dp.message(F.contact)
+    async def kino_contact_received(message: Message):
+        uid = message.from_user.id
+        if message.contact.user_id == uid:
+            info["user_phones"][str(uid)] = message.contact.phone_number
+            save_data()
+        await message.answer("✅ Rahmat!")
+        await send_kino_home(message, uid)
+
+    @dp.message(F.text == "⏭ O'tkazib yuborish")
+    async def kino_phone_skip(message: Message):
+        await send_kino_home(message, message.from_user.id)
 
     @dp.message(F.text == "💎 VIP kinolar")
     async def vip_catalog(message: Message):
@@ -6263,6 +6510,47 @@ def setup_kino_bot(dp: Dispatcher, token: str):
         text = f"📊 Jami takliflar: {total_refs}\n\n" + ("\n".join(lines) if lines else "Hali takliflar yo'q.")
         await message.answer(text)
 
+    async def send_paginated(message: Message, header: str, lines: list, chunk_size: int = 30):
+        if not lines:
+            await message.answer(header + "\n\nHali foydalanuvchilar yo'q.")
+            return
+        for i in range(0, len(lines), chunk_size):
+            chunk = lines[i:i + chunk_size]
+            prefix = f"{header} ({i + 1}-{min(i + chunk_size, len(lines))} / {len(lines)})\n\n" if i > 0 or len(lines) > chunk_size else header + "\n\n"
+            await message.answer(prefix + "\n".join(chunk))
+
+    # ---------- Ultra statistika ----------
+    @dp.message(F.text == "🚀 Ultra statistika")
+    async def ultra_statistika(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        rows = []
+        for uid in info["users"]:
+            uname = info["user_usernames"].get(str(uid), "—")
+            refcount = len(info["referrals"].get(str(uid), []))
+            rows.append((uid, uname, refcount))
+        rows.sort(key=lambda r: r[2], reverse=True)
+        lines = [f"👤 {uname} | ID: <code>{uid}</code> | 🎁 {refcount} ta taklif" for uid, uname, refcount in rows]
+        await send_paginated(message, f"🚀 <b>Ultra statistika</b> — jami {len(rows)} foydalanuvchi", lines)
+
+    # ---------- Top referal ----------
+    @dp.message(F.text == "🏆 Top referal")
+    async def top_referal(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        rows = []
+        for uid in info["users"]:
+            uname = info["user_usernames"].get(str(uid), "—")
+            phone = info["user_phones"].get(str(uid), "—")
+            refcount = len(info["referrals"].get(str(uid), []))
+            rows.append((uid, uname, phone, refcount))
+        rows.sort(key=lambda r: r[3], reverse=True)
+        lines = [
+            f"{i + 1}. 👤 {uname} | 📞 {phone} | ID: <code>{uid}</code> | 🎁 {refcount} ta taklif"
+            for i, (uid, uname, phone, refcount) in enumerate(rows)
+        ]
+        await send_paginated(message, f"🏆 <b>Top referal</b> — jami {len(rows)} foydalanuvchi", lines)
+
     # ---------- Sozlamalar ----------
     @dp.message(F.text == "⚙️ Sozlamalar")
     async def settings_panel(message: Message):
@@ -6434,7 +6722,10 @@ async def trial_warning_loop():
                     expiry = datetime.fromisoformat(info["paid_until"])
                     kind = "to'lov"
                 else:
-                    expiry = datetime.fromisoformat(info["created_at"]) + timedelta(days=TRIAL_DAYS)
+                    trial_cfg = get_trial_config(info.get("type"))
+                    if not trial_cfg.get("enabled", True):
+                        continue  # Bu turdagi bot uchun sinov yo'q — ogohlantirish shart emas
+                    expiry = datetime.fromisoformat(info["created_at"]) + timedelta(days=trial_cfg.get("days", TRIAL_DAYS))
                     kind = "sinov"
 
                 days_left = (expiry - datetime.now()).total_seconds() / 86400
