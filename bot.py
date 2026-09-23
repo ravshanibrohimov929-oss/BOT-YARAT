@@ -13,7 +13,7 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
 from io import BytesIO
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, MenuButtonWebApp, WebAppInfo, LabeledPrice, PreCheckoutQuery
+from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove, MenuButtonWebApp, WebAppInfo, LabeledPrice, PreCheckoutQuery, FSInputFile
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode, ChatMemberStatus
 from aiogram.fsm.context import FSMContext
@@ -24,6 +24,12 @@ MAIN_BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))  # bosh administrator (siz)
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "")  # masalan: ravshan_uzz (@ belgisiz)
+
+# Click.uz Merchant (Shop API) — avtomatik to'lov uchun. merchant.click.uz'da ro'yxatdan
+# o'tgach shu 3 ta qiymatni Railway Variables'ga qo'shing: CLICK_SERVICE_ID, CLICK_MERCHANT_ID, CLICK_SECRET_KEY
+CLICK_SERVICE_ID = os.getenv("CLICK_SERVICE_ID", "")
+CLICK_MERCHANT_ID = os.getenv("CLICK_MERCHANT_ID", "")
+CLICK_SECRET_KEY = os.getenv("CLICK_SECRET_KEY", "")
 
 
 def admin_contact_url() -> str:
@@ -198,6 +204,17 @@ data.setdefault("platform_referred_by", {})  # {str(referred_uid): referrer_uid}
 data.setdefault("platform_user_info", {})    # {str(uid): {"username": str, "phone": str|None}}
 data.setdefault("platform_phone_asked", [])  # kimlardan telefon so'ralgani (qayta so'ramaslik uchun)
 
+# Bot Creator'ning o'ziga majburiy obuna kanallari — {chat_id yoki social_xxxx: {...}}
+data.setdefault("platform_channels", {})
+
+# Admin tomonidan bloklangan foydalanuvchilar (bot yaratish/Bot Creator'dan foydalanish ta'qiqlanadi)
+data.setdefault("blocked_users", [])
+
+# Endi barcha botlar narxi hamma uchun bir xil (tarifga/other_bot_price'ga qarab) —
+# ilgari qo'yilgan har qanday "maxsus narx"larni tozalaymiz.
+for _b in data["bots"].values():
+    _b.pop("custom_price", None)
+
 running_platform_clones = {}  # token -> asyncio task
 
 
@@ -217,8 +234,6 @@ OTHER_BOT_TARIFF_NAME = "Standart"
 
 
 def get_bot_tariff(info: dict) -> dict:
-    if info.get("custom_price"):
-        return {"name": "Maxsus", "price": info["custom_price"], "daily_limit": None}
     if info.get("type") in ("kino", "kino_pro"):
         return get_tariff(info.get("tariff", "2"))
     return {"name": OTHER_BOT_TARIFF_NAME, "price": data.get("other_bot_price", DEFAULT_OTHER_BOT_PRICE), "daily_limit": None}
@@ -383,10 +398,6 @@ class EditPrice(StatesGroup):
     waiting_amount = State()
 
 
-class BotCustomPrice(StatesGroup):
-    waiting_price = State()
-
-
 class NewTariffAdd(StatesGroup):
     waiting_name = State()
     waiting_price = State()
@@ -429,6 +440,30 @@ class AddChannel(StatesGroup):
     waiting_username = State()
     waiting_title = State()
     waiting_link = State()
+
+
+class PlatformChannel(StatesGroup):
+    choosing_type = State()
+    waiting_username = State()
+    waiting_title = State()
+    waiting_link = State()
+
+
+class AdminUserSearch(StatesGroup):
+    waiting_query = State()
+
+
+class AdminBlockUser(StatesGroup):
+    waiting_id = State()
+
+
+class AdminDeleteBot(StatesGroup):
+    waiting_id = State()
+
+
+class AdminBroadcast(StatesGroup):
+    waiting_text = State()
+    waiting_confirm = State()
 
 
 class PaymentSystemAdd(StatesGroup):
@@ -980,12 +1015,9 @@ def setup_subscription_handlers(dp: Dispatcher, token: str, admin_id: int):
 
 # ---------- Bosh (creator) bot — XALQ UCHUN OMMAVIY ----------
 def types_kb():
-    # kino_pro endi to'g'ridan-to'g'ri tanlanmaydi — u faqat oddiy Kino Botni
-    # "🎬💎 Pro Kino Botga o'tkazish" tugmasi orqali yangilash natijasida olinadi.
-    buttons = [
-        [InlineKeyboardButton(text=name, callback_data=f"type_{key}")]
-        for key, name in BOT_TYPES.items() if key != "kino_pro"
-    ]
+    # kino_pro endi ham to'g'ridan-to'g'ri tanlanadi, ham mavjud oddiy Kino Botni
+    # "🎬💎 Pro Kino Botga o'tkazish" tugmasi orqali keyinchalik yangilash mumkin.
+    buttons = [[InlineKeyboardButton(text=name, callback_data=f"type_{key}")] for key, name in BOT_TYPES.items()]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -1020,6 +1052,154 @@ def setup_platform_bot(dp: Dispatcher):
     bir xil ADMIN_ID nazorati — chunki hammasi umumiy `data` obyektidan foydalanadi).
     """
 
+    def platform_info() -> dict:
+        # require_subscription/get_missing_channels/subscribe_kb funksiyalari kutgan
+        # shaklga moslashtirilgan "soxta" bot-info — chunki Bot Creator data["bots"]da emas.
+        return {"admin_id": ADMIN_ID, "admin_ids": [ADMIN_ID], "channels": data["platform_channels"], "premium_enabled": False}
+
+    def platform_channel_type_kb():
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📢 Telegram kanal", callback_data="pchtype_telegram"),
+                InlineKeyboardButton(text="📸 Instagram", callback_data="pchtype_instagram"),
+            ],
+            [
+                InlineKeyboardButton(text="🎵 TikTok", callback_data="pchtype_tiktok"),
+                InlineKeyboardButton(text="▶️ YouTube", callback_data="pchtype_youtube"),
+            ],
+            [InlineKeyboardButton(text="🌐 Boshqa havola", callback_data="pchtype_other")],
+        ])
+
+    def platform_channels_admin_kb():
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="➕ Kanal qo'shish", callback_data="pch_add")],
+            [InlineKeyboardButton(text="📋 Kanallar ro'yxati", callback_data="pch_list")],
+            [InlineKeyboardButton(text="➖ Kanal o'chirish", callback_data="pch_del")],
+        ])
+
+    @dp.message(F.text == "📢 Majburiy obuna")
+    async def platform_channels_panel(message: Message):
+        if message.from_user.id != ADMIN_ID:
+            return
+        await message.answer("📢 Bot Creator uchun majburiy obuna boshqaruvi:", reply_markup=platform_channels_admin_kb())
+
+    @dp.callback_query(F.data == "pch_add")
+    async def pch_add_cb(callback: CallbackQuery, state: FSMContext):
+        if callback.from_user.id != ADMIN_ID:
+            return
+        await callback.message.answer("Kanal turini tanlang:", reply_markup=platform_channel_type_kb())
+        await state.set_state(PlatformChannel.choosing_type)
+        await callback.answer()
+
+    @dp.callback_query(PlatformChannel.choosing_type, F.data.startswith("pchtype_"))
+    async def pch_type_chosen_cb(callback: CallbackQuery, state: FSMContext):
+        if callback.from_user.id != ADMIN_ID:
+            return
+        ctype = callback.data.split("_", 1)[1]
+        if ctype == "telegram":
+            await callback.message.answer(
+                "Kanal usernameni yuboring (masalan: @mening_kanalim).\n"
+                "⚠️ Bot o'sha kanalda ADMIN bo'lishi shart!"
+            )
+            await state.set_state(PlatformChannel.waiting_username)
+        else:
+            await state.update_data(ch_type=ctype)
+            await callback.message.answer("Kanal/sahifa nomini yuboring (masalan: Ravshan Media):")
+            await state.set_state(PlatformChannel.waiting_title)
+        await callback.answer()
+
+    @dp.message(PlatformChannel.waiting_username)
+    async def pch_username_process(message: Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID:
+            return
+        username = message.text.strip()
+        try:
+            chat = await message.bot.get_chat(username)
+            data["platform_channels"][str(chat.id)] = {"type": "telegram", "username": username, "title": chat.title}
+            save_data()
+            await message.answer(f"✅ Qo'shildi: {chat.title}")
+            try:
+                bot_member = await message.bot.get_chat_member(chat_id=chat.id, user_id=message.bot.id)
+                if bot_member.status not in ("administrator", "creator"):
+                    await message.answer(
+                        f"⚠️ <b>Diqqat!</b> Bot \"{chat.title}\" kanalida ADMIN emas.\n"
+                        "Obuna tekshiruvi ishlashi uchun botni o'sha kanalga ADMIN qilib qo'ying!"
+                    )
+            except Exception:
+                await message.answer(
+                    f"⚠️ <b>Diqqat!</b> Bot \"{chat.title}\" kanalida ADMIN ekanligini tekshira olmadim.\n"
+                    "Iltimos, botni o'sha kanalga ADMIN qilib qo'ying, aks holda obuna tekshiruvi ishlamaydi!"
+                )
+        except Exception as e:
+            await message.answer(f"❌ Xatolik: kanal topilmadi.\n{e}")
+        await state.clear()
+
+    @dp.message(PlatformChannel.waiting_title)
+    async def pch_title_process(message: Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID:
+            return
+        await state.update_data(ch_title=message.text.strip())
+        await state.set_state(PlatformChannel.waiting_link)
+        await message.answer("Endi havolani (linkni) yuboring (masalan: https://instagram.com/...):")
+
+    @dp.message(PlatformChannel.waiting_link)
+    async def pch_link_process(message: Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID:
+            return
+        url = message.text.strip()
+        if not (url.startswith("http://") or url.startswith("https://")):
+            url = "https://" + url
+        fsm_data = await state.get_data()
+        ctype = fsm_data.get("ch_type", "other")
+        title = fsm_data.get("ch_title", "Havola")
+        key = f"social_{uuid.uuid4().hex[:8]}"
+        data["platform_channels"][key] = {"type": ctype, "title": title, "url": url}
+        save_data()
+        await message.answer(f"✅ Qo'shildi: {title}")
+        await state.clear()
+
+    @dp.callback_query(F.data == "pch_list")
+    async def pch_list_cb(callback: CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            return
+        if not data["platform_channels"]:
+            await callback.message.answer("Hozircha majburiy kanallar yo'q.")
+        else:
+            lines = [f"{SOCIAL_EMOJI.get(c.get('type', 'telegram'), '📢')} {c['title']}" for c in data["platform_channels"].values()]
+            await callback.message.answer("📋 <b>Majburiy kanallar:</b>\n\n" + "\n".join(lines))
+        await callback.answer()
+
+    @dp.callback_query(F.data == "pch_del")
+    async def pch_del_cb(callback: CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            return
+        if not data["platform_channels"]:
+            await callback.answer("Hozircha kanallar yo'q.", show_alert=True)
+            return
+        buttons = [[InlineKeyboardButton(text=c["title"], callback_data=f"pchdel_{cid}")] for cid, c in data["platform_channels"].items()]
+        await callback.message.answer("O'chirmoqchi bo'lgan kanalni tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await callback.answer()
+
+    @dp.callback_query(F.data.startswith("pchdel_"))
+    async def pch_del_pick_cb(callback: CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            return
+        cid = callback.data.split("_", 1)[1]
+        removed = data["platform_channels"].pop(cid, None)
+        save_data()
+        if removed:
+            await callback.message.answer(f"🗑 O'chirildi: {removed['title']}")
+        await callback.answer()
+
+    @dp.callback_query(F.data == "check_sub")
+    async def platform_check_sub_cb(callback: CallbackQuery):
+        missing = await get_missing_channels(callback.bot, data["platform_channels"], callback.from_user.id)
+        if missing:
+            await callback.answer("Hali barcha kanallarga obuna bo'lmagansiz ❌", show_alert=True)
+        else:
+            await callback.message.edit_text("✅ Obuna tasdiqlandi! Endi /start bosing.")
+            await callback.answer()
+
     @dp.message(Command("cancel"))
     async def main_cancel(message: Message, state: FSMContext):
         current_state = await state.get_state()
@@ -1044,8 +1224,12 @@ def setup_platform_bot(dp: Dispatcher):
             keyboard.append([KeyboardButton(text="📊 Statistika"), KeyboardButton(text="➕ Hisob qo'shish")])
             keyboard.append([KeyboardButton(text="💵 Tariflar"), KeyboardButton(text="💳 To'lov tizimlar")])
             keyboard.append([KeyboardButton(text="⭐ Stars kursi"), KeyboardButton(text="👥 Hamkor-adminlar")])
-            keyboard.append([KeyboardButton(text="🤖 Botlar narxi"), KeyboardButton(text="🎁 Sinov/Pullik")])
+            keyboard.append([KeyboardButton(text="🎁 Sinov/Pullik")])
             keyboard.append([KeyboardButton(text="🚀 Ultra statistika"), KeyboardButton(text="🏆 Top referal")])
+            keyboard.append([KeyboardButton(text="📢 Majburiy obuna")])
+            keyboard.append([KeyboardButton(text="🔍 Foydalanuvchi qidirish"), KeyboardButton(text="🚫 Bloklash")])
+            keyboard.append([KeyboardButton(text="🗑 Botni o'chirish"), KeyboardButton(text="📅 Tugayotgan botlar")])
+            keyboard.append([KeyboardButton(text="📢 Barchaga xabar"), KeyboardButton(text="📤 Zaxira nusxa")])
         elif str(uid) in data["sub_admins"]:
             keyboard.append([KeyboardButton(text="➕ Hisob qo'shish"), KeyboardButton(text="💼 Mening daromadim")])
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
@@ -1053,6 +1237,9 @@ def setup_platform_bot(dp: Dispatcher):
     @dp.message(Command("start"))
     async def main_start(message: Message):
         uid = message.from_user.id
+        if uid in data["blocked_users"] and uid != ADMIN_ID:
+            await message.answer("🚫 Siz Bot Creator'dan foydalanishdan bloklangansiz.\n\nAdmin bilan bog'lanish uchun murojaat qiling.", reply_markup=contact_admin_kb())
+            return
         args = message.text.split(maxsplit=1)
         uname = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
         data["platform_user_info"].setdefault(str(uid), {"username": uname, "phone": None})
@@ -1082,6 +1269,21 @@ def setup_platform_bot(dp: Dispatcher):
             save_data()
         else:
             save_data()
+        if not await require_subscription(message, platform_info(), ADMIN_ID):
+            return
+        if uid != ADMIN_ID and not data["platform_user_info"].get(str(uid), {}).get("phone"):
+            phone_kb = ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton(text="📱 Raqamni ulashish", request_contact=True)]],
+                resize_keyboard=True,
+            )
+            await message.answer(
+                "📱 Botdan foydalanish uchun telefon raqamingizni ulashing:",
+                reply_markup=phone_kb,
+            )
+            return
+        await show_platform_main_menu(message)
+
+    async def show_platform_main_menu(message: Message):
         tariff_lines = "\n".join(
             f"💠 {t['name']} — {t['price']:,} so'm/oy ({tariff_limit_text(t)})"
             for t in data["tariffs"].values()
@@ -1150,28 +1352,17 @@ def setup_platform_bot(dp: Dispatcher):
             f"🔗 Sizning shaxsiy havolangiz:\n<code>{link}</code>",
             reply_markup=kb,
         )
-        info = data["platform_user_info"].get(str(uid), {})
-        if not info.get("phone") and uid not in data["platform_phone_asked"]:
-            data["platform_phone_asked"].append(uid)
-            save_data()
-            phone_kb = ReplyKeyboardMarkup(
-                keyboard=[[KeyboardButton(text="📱 Raqamni ulashish", request_contact=True)], [KeyboardButton(text="⏭ O'tkazib yuborish")]],
-                resize_keyboard=True, one_time_keyboard=True,
-            )
-            await message.answer("📱 Statistikada aniqroq ko'rinish uchun telefon raqamingizni ulashing (ixtiyoriy):", reply_markup=phone_kb)
 
     @dp.message(F.contact)
     async def platform_contact_received(message: Message):
         uid = message.from_user.id
-        if message.contact.user_id == uid:
-            data["platform_user_info"].setdefault(str(uid), {"username": None, "phone": None})
-            data["platform_user_info"][str(uid)]["phone"] = message.contact.phone_number
-            save_data()
-        await message.answer("✅ Rahmat!", reply_markup=main_menu_kb(uid))
-
-    @dp.message(F.text == "⏭ O'tkazib yuborish")
-    async def platform_phone_skip(message: Message):
-        await message.answer("Xo'p bo'ladi 👍", reply_markup=main_menu_kb(message.from_user.id))
+        if message.contact.user_id != uid:
+            return
+        data["platform_user_info"].setdefault(str(uid), {"username": None, "phone": None})
+        data["platform_user_info"][str(uid)]["phone"] = message.contact.phone_number
+        save_data()
+        await message.answer("✅ Rahmat!")
+        await show_platform_main_menu(message)
 
     async def send_platform_paginated(message: Message, header: str, lines: list, chunk_size: int = 30):
         if not lines:
@@ -1213,6 +1404,202 @@ def setup_platform_bot(dp: Dispatcher):
             for i, (uid, uname, phone, refcount) in enumerate(rows)
         ]
         await send_platform_paginated(message, f"🏆 <b>Top referal</b> — jami {len(rows)} foydalanuvchi", lines)
+
+    # ---------- 🔍 Foydalanuvchi qidirish ----------
+    @dp.message(F.text == "🔍 Foydalanuvchi qidirish")
+    async def admin_user_search_prompt(message: Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID:
+            return
+        await message.answer("🔍 Foydalanuvchi ID yoki username'ini kiriting:")
+        await state.set_state(AdminUserSearch.waiting_query)
+
+    @dp.message(AdminUserSearch.waiting_query)
+    async def admin_user_search_run(message: Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID:
+            return
+        await state.clear()
+        query = message.text.strip().lstrip("@").lower()
+        found_uid = None
+        if query.isdigit():
+            found_uid = int(query)
+        else:
+            for uid_str, uinfo in data["platform_user_info"].items():
+                uname = (uinfo.get("username") or "").lstrip("@").lower()
+                if uname == query:
+                    found_uid = int(uid_str)
+                    break
+        if found_uid is None or found_uid not in data["platform_users"]:
+            await message.answer("❌ Bunday foydalanuvchi topilmadi.")
+            return
+        uinfo = data["platform_user_info"].get(str(found_uid), {})
+        balance = data["user_balances"].get(str(found_uid), 0)
+        own_bots = [b for b in data["bots"].values() if found_uid in b.get("admin_ids", [b["admin_id"]])]
+        refcount = len(data["platform_referrals"].get(str(found_uid), []))
+        blocked = "🚫 Ha" if found_uid in data["blocked_users"] else "✅ Yo'q"
+        bots_lines = "\n".join(f"   • {b['name']} ({BOT_TYPES.get(b['type'], b['type'])})" for b in own_bots) or "   • yo'q"
+        await message.answer(
+            f"👤 <b>{uinfo.get('username') or '—'}</b>\n"
+            f"🆔 ID: <code>{found_uid}</code>\n"
+            f"📞 Telefon: {uinfo.get('phone') or '—'}\n"
+            f"💰 Balans: {balance:,} so'm\n"
+            f"🎁 Takliflar: {refcount} kishi\n"
+            f"🚫 Bloklangan: {blocked}\n\n"
+            f"🤖 <b>Botlari ({len(own_bots)}):</b>\n{bots_lines}"
+        )
+
+    # ---------- 🚫 Bloklash ----------
+    @dp.message(F.text == "🚫 Bloklash")
+    async def admin_block_prompt(message: Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID:
+            return
+        await message.answer("🚫 Bloklash/blokdan chiqarish uchun foydalanuvchi ID'sini kiriting:")
+        await state.set_state(AdminBlockUser.waiting_id)
+
+    @dp.message(AdminBlockUser.waiting_id)
+    async def admin_block_run(message: Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID:
+            return
+        await state.clear()
+        try:
+            target_uid = int(message.text.strip())
+        except ValueError:
+            await message.answer("❌ Noto'g'ri ID.")
+            return
+        if target_uid == ADMIN_ID:
+            await message.answer("❌ O'zingizni bloklay olmaysiz.")
+            return
+        if target_uid in data["blocked_users"]:
+            data["blocked_users"].remove(target_uid)
+            save_data()
+            await message.answer(f"✅ <code>{target_uid}</code> blokdan chiqarildi.")
+        else:
+            data["blocked_users"].append(target_uid)
+            save_data()
+            await message.answer(f"🚫 <code>{target_uid}</code> bloklandi.")
+
+    # ---------- 🗑 Botni o'chirish ----------
+    @dp.message(F.text == "🗑 Botni o'chirish")
+    async def admin_delete_bot_prompt(message: Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID:
+            return
+        await message.answer("🗑 O'chirmoqchi bo'lgan botning ID raqamini kiriting (Botlar narxi ro'yxatida ko'rinadi):")
+        await state.set_state(AdminDeleteBot.waiting_id)
+
+    @dp.message(AdminDeleteBot.waiting_id)
+    async def admin_delete_bot_run(message: Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID:
+            return
+        await state.clear()
+        try:
+            bot_id = int(message.text.strip())
+        except ValueError:
+            await message.answer("❌ Noto'g'ri ID.")
+            return
+        target_token = None
+        target_info = None
+        for token, b in data["bots"].items():
+            if b["id"] == bot_id:
+                target_token, target_info = token, b
+                break
+        if not target_info:
+            await message.answer("❌ Bunday ID'li bot topilmadi.")
+            return
+        task = running_bots.pop(target_token, None)
+        if task:
+            task.cancel()
+        del data["bots"][target_token]
+        save_data()
+        await message.answer(f"🗑 <b>{target_info['name']}</b> o'chirildi va to'xtatildi.")
+
+    # ---------- 📅 Tugayotgan botlar ----------
+    @dp.message(F.text == "📅 Tugayotgan botlar")
+    async def admin_expiring_bots(message: Message):
+        if message.from_user.id != ADMIN_ID:
+            return
+        now = datetime.now()
+        soon = []
+        for b in data["bots"].values():
+            if b.get("admin_id") == ADMIN_ID:
+                continue
+            paid_until = b.get("paid_until")
+            if paid_until:
+                expiry = datetime.fromisoformat(paid_until)
+            else:
+                trial_cfg = get_trial_config(b.get("type"))
+                if not trial_cfg.get("enabled", True):
+                    continue
+                expiry = datetime.fromisoformat(b["created_at"]) + timedelta(days=trial_cfg.get("days", TRIAL_DAYS))
+            remaining = expiry - now
+            if timedelta(0) <= remaining <= timedelta(days=2):
+                soon.append((b, expiry, remaining))
+        if not soon:
+            await message.answer("✅ Yaqin 2 kun ichida muddati tugaydigan bot yo'q.")
+            return
+        soon.sort(key=lambda x: x[2])
+        lines = [
+            f"⏳ <b>{b['name']}</b> ({BOT_TYPES.get(b['type'], b['type'])}) — {format_remaining(rem)} qoldi (egasi: <code>{b['admin_id']}</code>)"
+            for b, exp, rem in soon
+        ]
+        await send_platform_paginated(message, f"📅 <b>Yaqin muddatda tugaydigan botlar</b> — {len(soon)} ta", lines)
+
+    # ---------- 📢 Barchaga xabar (broadcast) ----------
+    @dp.message(F.text == "📢 Barchaga xabar")
+    async def admin_broadcast_prompt(message: Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID:
+            return
+        await message.answer("📢 Barcha foydalanuvchilarga yubormoqchi bo'lgan xabar matnini kiriting:")
+        await state.set_state(AdminBroadcast.waiting_text)
+
+    @dp.message(AdminBroadcast.waiting_text)
+    async def admin_broadcast_preview(message: Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID:
+            return
+        await state.update_data(broadcast_text=message.text)
+        await state.set_state(AdminBroadcast.waiting_confirm)
+        await message.answer(
+            f"📢 <b>Quyidagi xabar {len(data['platform_users'])} ta foydalanuvchiga yuboriladi:</b>\n\n{message.text}",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="✅ Yuborish", callback_data="bc_send"), InlineKeyboardButton(text="❌ Bekor qilish", callback_data="bc_cancel")]
+            ]),
+        )
+
+    @dp.callback_query(AdminBroadcast.waiting_confirm, F.data == "bc_cancel")
+    async def admin_broadcast_cancel_cb(callback: CallbackQuery, state: FSMContext):
+        if callback.from_user.id != ADMIN_ID:
+            return
+        await state.clear()
+        await callback.message.edit_text("❌ Bekor qilindi.")
+        await callback.answer()
+
+    @dp.callback_query(AdminBroadcast.waiting_confirm, F.data == "bc_send")
+    async def admin_broadcast_send_cb(callback: CallbackQuery, state: FSMContext):
+        if callback.from_user.id != ADMIN_ID:
+            return
+        fsm_data = await state.get_data()
+        text = fsm_data.get("broadcast_text", "")
+        await state.clear()
+        await callback.message.edit_text("⏳ Yuborilmoqda...")
+        sent, failed = 0, 0
+        for uid in data["platform_users"]:
+            try:
+                await callback.bot.send_message(uid, text)
+                sent += 1
+            except Exception:
+                failed += 1
+            await asyncio.sleep(0.05)
+        await callback.message.answer(f"✅ Yuborildi: {sent} ta\n❌ Yuborilmadi: {failed} ta")
+        await callback.answer()
+
+    # ---------- 📤 Zaxira nusxa ----------
+    @dp.message(F.text == "📤 Zaxira nusxa")
+    async def admin_backup(message: Message):
+        if message.from_user.id != ADMIN_ID:
+            return
+        save_data()
+        try:
+            await message.answer_document(FSInputFile(DATA_FILE), caption=f"📤 Zaxira nusxa — {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}")
+        except Exception as e:
+            await message.answer(f"❌ Xatolik: {e}")
 
     @dp.message(F.text == "👤 Shaxsiy kabinet")
     async def cabinet_handler(message: Message):
@@ -1468,11 +1855,19 @@ def setup_platform_bot(dp: Dispatcher):
         total_bots = len(data["bots"])
         active_bots = sum(1 for i in data["bots"].values() if is_active(i))
         total_balance = sum(data["user_balances"].values())
+        type_counts = {}
+        for b in data["bots"].values():
+            type_counts[b["type"]] = type_counts.get(b["type"], 0) + 1
+        type_lines = "\n".join(
+            f"   • {BOT_TYPES.get(bt, bt)}: {cnt}"
+            for bt, cnt in sorted(type_counts.items(), key=lambda x: x[1], reverse=True)
+        ) or "   • hali botlar yo'q"
         await message.answer(
             "📊 <b>Platforma statistikasi</b>\n\n"
             f"👤 Bot Creator'ga kirgan odamlar: {len(data['platform_users']):,}\n\n"
             f"🤖 Jami botlar: {total_bots}\n"
-            f"🟢 Faol botlar: {active_bots}\n"
+            f"🟢 Faol botlar: {active_bots}\n\n"
+            f"📁 <b>Turlari bo'yicha:</b>\n{type_lines}\n\n"
             f"👥 Balansi bor foydalanuvchilar: {len(data['user_balances'])}\n"
             f"💰 Tizimdagi jami balans: {total_balance:,} so'm"
         )
@@ -1618,7 +2013,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     def type_detail_text(bot_type: str) -> str:
         desc = BOT_DESCRIPTIONS.get(bot_type, "")
-        if bot_type == "kino":
+        if bot_type in ("kino", "kino_pro"):
             price_line = "💰 Oylik to'lov: tarifga qarab belgilanadi"
         else:
             price_line = f"💰 Oylik to'lov: {data.get('other_bot_price', DEFAULT_OTHER_BOT_PRICE):,} so'm/oy"
@@ -1637,7 +2032,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     def type_detail_kb(bot_type: str):
         buttons = []
-        if bot_type == "kino":
+        if bot_type in ("kino", "kino_pro"):
             buttons.append([InlineKeyboardButton(text="💳 Tariflar ro'yxati", callback_data=f"tariffpreview_{bot_type}")])
         buttons.append([InlineKeyboardButton(text="✅ Bot yaratish — Bepul", callback_data=f"createbot_{bot_type}")])
         buttons.append([InlineKeyboardButton(text="◀️ Orqaga", callback_data="backtotypes")])
@@ -2054,6 +2449,23 @@ def setup_platform_bot(dp: Dispatcher):
         await callback.answer()
 
     @dp.message(Command("mybots"))
+    def format_remaining(td: timedelta) -> str:
+        total = int(td.total_seconds())
+        if total < 0:
+            total = 0
+        days, rem = divmod(total, 86400)
+        hours, rem = divmod(rem, 3600)
+        minutes, seconds = divmod(rem, 60)
+        parts = []
+        if days:
+            parts.append(f"{days} kun")
+        if hours or days:
+            parts.append(f"{hours} soat")
+        if minutes or hours or days:
+            parts.append(f"{minutes} daqiqa")
+        parts.append(f"{seconds} soniya")
+        return " ".join(parts)
+
     @dp.message(F.text == "📁 Botlarim")
     async def mybots(message: Message):
         uid = message.from_user.id
@@ -2063,19 +2475,37 @@ def setup_platform_bot(dp: Dispatcher):
             await message.answer("Hali botlaringiz yo'q. /newbot orqali yarating.")
             return
 
+        now = datetime.now()
         for token, info in items:
             status = "🟢 Faol" if is_active(info) else "🔴 Sinov/to'lov tugagan"
             paid_until = info.get("paid_until")
+            expiry_line = ""
             if info.get("admin_id") == ADMIN_ID:
                 paid_note = " (umrbod)"
             elif paid_until:
-                date_str = datetime.fromisoformat(paid_until).strftime("%d.%m.%Y")
+                expiry_dt = datetime.fromisoformat(paid_until)
+                date_str = expiry_dt.strftime("%d.%m.%Y %H:%M:%S")
                 paid_note = f" (to'langan: {date_str} gacha)"
+                if expiry_dt > now:
+                    expiry_line = f"\n⏳ Tugashiga qoldi: {format_remaining(expiry_dt - now)}"
+                else:
+                    expiry_line = "\n⏳ Muddati allaqachon tugagan"
             else:
-                paid_note = ""
+                trial_cfg = get_trial_config(info.get("type"))
+                if not trial_cfg.get("enabled", True):
+                    paid_note = ""
+                    expiry_line = "\n💰 Bu bot turi uchun sinov yo'q — to'lov qilish talab qilinadi"
+                else:
+                    expiry_dt = datetime.fromisoformat(info["created_at"]) + timedelta(days=trial_cfg.get("days", TRIAL_DAYS))
+                    date_str = expiry_dt.strftime("%d.%m.%Y %H:%M:%S")
+                    paid_note = f" (sinov: {date_str} gacha)"
+                    if expiry_dt > now:
+                        expiry_line = f"\n⏳ Sinov tugashiga qoldi: {format_remaining(expiry_dt - now)}"
+                    else:
+                        expiry_line = "\n⏳ Sinov muddati allaqachon tugagan"
             tariff = get_bot_tariff(info)
             text = (
-                f"{BOT_TYPES.get(info['type'])}: <b>{info['name']}</b>\n{status}{paid_note}\n"
+                f"{BOT_TYPES.get(info['type'])}: <b>{info['name']}</b>\n{status}{paid_note}{expiry_line}\n"
                 f"💠 Tarif: {tariff['name']} ({tariff_limit_text(tariff)})"
             )
             buttons = []
@@ -2133,88 +2563,6 @@ def setup_platform_bot(dp: Dispatcher):
             if info.get("id") == bot_id:
                 return token, info
         return None, None
-
-    # ---------- Botlar narxi (admin har bir botni alohida tahrirlashi) ----------
-    @dp.message(F.text == "🤖 Botlar narxi")
-    async def bot_prices_panel(message: Message):
-        if message.from_user.id != ADMIN_ID:
-            return
-        if not data["bots"]:
-            await message.answer("Hozircha botlar yo'q.")
-            return
-        buttons = []
-        for token, b in data["bots"].items():
-            tariff = get_bot_tariff(b)
-            mark = "⚙️" if b.get("custom_price") else ""
-            buttons.append([InlineKeyboardButton(
-                text=f"{mark}{b['name']} ({BOT_TYPES.get(b['type'], b['type'])}) — {tariff['price']:,} so'm",
-                callback_data=f"botpricepick_{b['id']}",
-            )])
-        await message.answer("🤖 <b>Botlar narxi</b>\n\n⚙️ — maxsus narx qo'yilgan botlar.\n\nTahrirlamoqchi bo'lgan botni tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
-
-    @dp.callback_query(F.data.startswith("botpricepick_"))
-    async def bot_price_pick_cb(callback: CallbackQuery, state: FSMContext):
-        if callback.from_user.id != ADMIN_ID:
-            return
-        bot_id = int(callback.data.split("_", 1)[1])
-        token, target = find_bot_by_id(bot_id)
-        if not target:
-            await callback.answer("❌ Bot topilmadi.", show_alert=True)
-            return
-        tariff = get_bot_tariff(target)
-        buttons = [[InlineKeyboardButton(text="✏️ Yangi narx belgilash", callback_data=f"botpriceset_{bot_id}")]]
-        if target.get("custom_price"):
-            buttons.append([InlineKeyboardButton(text="↩️ Standart narxga qaytarish", callback_data=f"botpricereset_{bot_id}")])
-        await callback.message.answer(
-            f"🤖 <b>{target['name']}</b> ({BOT_TYPES.get(target['type'], target['type'])})\n"
-            f"👤 Egasi ID: {target['admin_id']}\n"
-            f"💰 Joriy narx: {tariff['price']:,} so'm/oy{' (maxsus)' if target.get('custom_price') else ''}",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-        )
-        await callback.answer()
-
-    @dp.callback_query(F.data.startswith("botpriceset_"))
-    async def bot_price_set_cb(callback: CallbackQuery, state: FSMContext):
-        if callback.from_user.id != ADMIN_ID:
-            return
-        bot_id = int(callback.data.split("_", 1)[1])
-        await state.update_data(price_bot_id=bot_id)
-        await callback.message.answer("Yangi oylik narxni kiriting (so'm, faqat raqam):")
-        await state.set_state(BotCustomPrice.waiting_price)
-        await callback.answer()
-
-    @dp.message(BotCustomPrice.waiting_price)
-    async def bot_price_set_save(message: Message, state: FSMContext):
-        if message.from_user.id != ADMIN_ID:
-            return
-        try:
-            price = int(message.text.strip().replace(" ", ""))
-            if price <= 0:
-                raise ValueError
-        except ValueError:
-            await message.answer("❌ Musbat butun raqam kiriting.")
-            return
-        fsm_data = await state.get_data()
-        bot_id = fsm_data.get("price_bot_id")
-        token, target = find_bot_by_id(bot_id)
-        if target:
-            target["custom_price"] = price
-            save_data()
-            await message.answer(f"✅ <b>{target['name']}</b> uchun narx endi: {price:,} so'm/oy (maxsus).")
-        await state.clear()
-
-    @dp.callback_query(F.data.startswith("botpricereset_"))
-    async def bot_price_reset_cb(callback: CallbackQuery):
-        if callback.from_user.id != ADMIN_ID:
-            return
-        bot_id = int(callback.data.split("_", 1)[1])
-        token, target = find_bot_by_id(bot_id)
-        if target:
-            target.pop("custom_price", None)
-            save_data()
-            tariff = get_bot_tariff(target)
-            await callback.message.answer(f"↩️ <b>{target['name']}</b> standart narxga qaytarildi: {tariff['price']:,} so'm/oy.")
-        await callback.answer()
 
     @dp.callback_query(F.data.startswith("upgradepro_"))
     async def upgrade_pro_cb(callback: CallbackQuery):
@@ -2413,6 +2761,14 @@ async def start_platform_clone(token: str, username: str = None):
     clone_bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     clone_dp = Dispatcher(storage=MemoryStorage())
     setup_platform_bot(clone_dp)
+    miniapp_url = get_miniapp_url()
+    if miniapp_url:
+        try:
+            await clone_bot.set_chat_menu_button(
+                menu_button=MenuButtonWebApp(text="Botlarim", web_app=WebAppInfo(url=miniapp_url))
+            )
+        except Exception as e:
+            logging.error(f"Klon ({token[:10]}...) uchun menyu tugmasi sozlanmadi: {e}")
     task = asyncio.create_task(clone_dp.start_polling(clone_bot))
     running_platform_clones[token] = task
 
@@ -6999,10 +7355,39 @@ MINIAPP_HTML = """<!DOCTYPE html>
   }
 
   function fetchWithTimeout(url, ms) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), ms);
-    return fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timer));
+    return new Promise((resolve, reject) => {
+      const controller = new AbortController();
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        controller.abort();
+        reject(new Error("timeout"));
+      }, ms);
+      fetch(url, { signal: controller.signal })
+        .then((res) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(res);
+        })
+        .catch((err) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(err);
+        });
+    });
   }
+
+  // Ba'zi eski Android WebView'larda fetch/AbortController osilib qolishi mumkin —
+  // shu sabab 15 soniyadan keyin "Yuklanmoqda" hali tursa, majburan xatolik ko'rsatamiz.
+  setTimeout(function () {
+    const content = document.getElementById("content");
+    if (content && content.textContent.indexOf("Yuklanmoqda") !== -1) {
+      content.innerHTML = '<div class="state-msg">Yuklashda muammo yuz berdi.<br>Sahifani yopib, qayta urinib ko\\'ring.</div>';
+    }
+  }, 15000);
 
   async function load() {
     const content = document.getElementById("content");
