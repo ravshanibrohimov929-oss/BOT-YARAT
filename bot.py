@@ -175,11 +175,16 @@ def somz_to_stars(somz: int) -> int:
 # Har bir bot uchun 3 xil oylik tarif (narx + kunlik foydalanuvchi limiti)
 # Kino bot uchun 5 xil oylik tarif (narx + kunlik foydalanuvchi limiti)
 data.setdefault("tariffs", {tid: dict(t) for tid, t in DEFAULT_TARIFFS.items()})
-for _tid, _t in DEFAULT_TARIFFS.items():
-    data["tariffs"].setdefault(_tid, dict(_t))
 
 # Kino'dan boshqa barcha bot turlari uchun yagona oylik narx (tarifsiz, cheksiz foydalanuvchi)
 data.setdefault("other_bot_price", DEFAULT_OTHER_BOT_PRICE)
+
+# Kino'dan boshqa har bir bot turi endi o'zining alohida (lekin bot turi ichida hammaga bir xil) narxiga ega
+data.setdefault("type_prices", {})
+for _bt in BOT_TYPES:
+    if _bt in ("kino", "kino_pro"):
+        continue
+    data["type_prices"].setdefault(_bt, data["other_bot_price"])
 
 # Har bir bot turi uchun: bepul sinov muddati bormi yoki darhol pullikmi (admin sozlaydi)
 # {bot_type: {"enabled": bool, "days": int}}
@@ -210,6 +215,14 @@ data.setdefault("platform_channels", {})
 # Admin tomonidan bloklangan foydalanuvchilar (bot yaratish/Bot Creator'dan foydalanish ta'qiqlanadi)
 data.setdefault("blocked_users", [])
 
+# Bosh admin (ADMIN_ID) tomonidan qo'shilgan, bosh admin bilan BARAVAR huquqqa ega
+# to'liq adminlar (Bot Creator'ning butun admin panelidan foydalana oladi)
+data.setdefault("full_admins", [])
+
+
+def is_full_admin(uid: int) -> bool:
+    return uid == ADMIN_ID or uid in data["full_admins"]
+
 # Endi barcha botlar narxi hamma uchun bir xil (tarifga/other_bot_price'ga qarab) —
 # ilgari qo'yilgan har qanday "maxsus narx"larni tozalaymiz.
 for _b in data["bots"].values():
@@ -226,6 +239,12 @@ def get_monthly_rate() -> float:
     return data.get("monthly_rate", DEFAULT_MONTHLY_RATE)
 
 
+def cheapest_tariff_price() -> int:
+    if not data["tariffs"]:
+        return 0
+    return min(t["price"] for t in data["tariffs"].values())
+
+
 def get_tariff(tariff_id: str) -> dict:
     return data["tariffs"].get(tariff_id, DEFAULT_TARIFFS.get(tariff_id, DEFAULT_TARIFFS["2"]))
 
@@ -236,7 +255,8 @@ OTHER_BOT_TARIFF_NAME = "Standart"
 def get_bot_tariff(info: dict) -> dict:
     if info.get("type") in ("kino", "kino_pro"):
         return get_tariff(info.get("tariff", "2"))
-    return {"name": OTHER_BOT_TARIFF_NAME, "price": data.get("other_bot_price", DEFAULT_OTHER_BOT_PRICE), "daily_limit": None}
+    price = data["type_prices"].get(info.get("type"), data.get("other_bot_price", DEFAULT_OTHER_BOT_PRICE))
+    return {"name": OTHER_BOT_TARIFF_NAME, "price": price, "daily_limit": None}
 
 
 def tariff_limit_text(t: dict) -> str:
@@ -320,8 +340,8 @@ BOT_DESCRIPTIONS = {
 }
 
 def is_active(info: dict) -> bool:
-    if info.get("admin_id") == ADMIN_ID:
-        return True  # Platforma egasi yaratgan botlar — umrbod, hech qachon to'lov so'ralmaydi
+    if is_full_admin(info.get("admin_id")):
+        return True  # Platforma egasi/to'liq adminlar yaratgan botlar — umrbod, hech qachon to'lov so'ralmaydi
     paid_until = info.get("paid_until")
     if paid_until and datetime.now() < datetime.fromisoformat(paid_until):
         return True
@@ -466,6 +486,10 @@ class AdminBroadcast(StatesGroup):
     waiting_confirm = State()
 
 
+class FullAdminManage(StatesGroup):
+    waiting_id = State()
+
+
 class PaymentSystemAdd(StatesGroup):
     waiting_name = State()
     waiting_number = State()
@@ -504,6 +528,11 @@ class TopUpFlow(StatesGroup):
 
 
 class AdminAddBalance(StatesGroup):
+    waiting_user_id = State()
+    waiting_amount = State()
+
+
+class AdminSubtractBalance(StatesGroup):
     waiting_user_id = State()
     waiting_amount = State()
 
@@ -1079,13 +1108,13 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.message(F.text == "📢 Majburiy obuna")
     async def platform_channels_panel(message: Message):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         await message.answer("📢 Bot Creator uchun majburiy obuna boshqaruvi:", reply_markup=platform_channels_admin_kb())
 
     @dp.callback_query(F.data == "pch_add")
     async def pch_add_cb(callback: CallbackQuery, state: FSMContext):
-        if callback.from_user.id != ADMIN_ID:
+        if not is_full_admin(callback.from_user.id):
             return
         await callback.message.answer("Kanal turini tanlang:", reply_markup=platform_channel_type_kb())
         await state.set_state(PlatformChannel.choosing_type)
@@ -1093,7 +1122,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.callback_query(PlatformChannel.choosing_type, F.data.startswith("pchtype_"))
     async def pch_type_chosen_cb(callback: CallbackQuery, state: FSMContext):
-        if callback.from_user.id != ADMIN_ID:
+        if not is_full_admin(callback.from_user.id):
             return
         ctype = callback.data.split("_", 1)[1]
         if ctype == "telegram":
@@ -1110,7 +1139,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.message(PlatformChannel.waiting_username)
     async def pch_username_process(message: Message, state: FSMContext):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         username = message.text.strip()
         try:
@@ -1136,7 +1165,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.message(PlatformChannel.waiting_title)
     async def pch_title_process(message: Message, state: FSMContext):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         await state.update_data(ch_title=message.text.strip())
         await state.set_state(PlatformChannel.waiting_link)
@@ -1144,7 +1173,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.message(PlatformChannel.waiting_link)
     async def pch_link_process(message: Message, state: FSMContext):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         url = message.text.strip()
         if not (url.startswith("http://") or url.startswith("https://")):
@@ -1160,7 +1189,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.callback_query(F.data == "pch_list")
     async def pch_list_cb(callback: CallbackQuery):
-        if callback.from_user.id != ADMIN_ID:
+        if not is_full_admin(callback.from_user.id):
             return
         if not data["platform_channels"]:
             await callback.message.answer("Hozircha majburiy kanallar yo'q.")
@@ -1171,7 +1200,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.callback_query(F.data == "pch_del")
     async def pch_del_cb(callback: CallbackQuery):
-        if callback.from_user.id != ADMIN_ID:
+        if not is_full_admin(callback.from_user.id):
             return
         if not data["platform_channels"]:
             await callback.answer("Hozircha kanallar yo'q.", show_alert=True)
@@ -1182,7 +1211,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.callback_query(F.data.startswith("pchdel_"))
     async def pch_del_pick_cb(callback: CallbackQuery):
-        if callback.from_user.id != ADMIN_ID:
+        if not is_full_admin(callback.from_user.id):
             return
         cid = callback.data.split("_", 1)[1]
         removed = data["platform_channels"].pop(cid, None)
@@ -1220,16 +1249,20 @@ def setup_platform_bot(dp: Dispatcher):
             [KeyboardButton(text="🎁 Referal"), KeyboardButton(text="🌐 Saytga kirish")],
             [KeyboardButton(text="📩 Murojaat"), KeyboardButton(text="📖 Qo'llanma")],
         ]
-        if uid == ADMIN_ID:
+        if is_full_admin(uid):
             keyboard.append([KeyboardButton(text="📊 Statistika"), KeyboardButton(text="➕ Hisob qo'shish")])
+            keyboard.append([KeyboardButton(text="➖ Hisob ayirish")])
             keyboard.append([KeyboardButton(text="💵 Tariflar"), KeyboardButton(text="💳 To'lov tizimlar")])
             keyboard.append([KeyboardButton(text="⭐ Stars kursi"), KeyboardButton(text="👥 Hamkor-adminlar")])
             keyboard.append([KeyboardButton(text="🎁 Sinov/Pullik")])
             keyboard.append([KeyboardButton(text="🚀 Ultra statistika"), KeyboardButton(text="🏆 Top referal")])
+            keyboard.append([KeyboardButton(text="🔝 TOP faol")])
             keyboard.append([KeyboardButton(text="📢 Majburiy obuna")])
             keyboard.append([KeyboardButton(text="🔍 Foydalanuvchi qidirish"), KeyboardButton(text="🚫 Bloklash")])
             keyboard.append([KeyboardButton(text="🗑 Botni o'chirish"), KeyboardButton(text="📅 Tugayotgan botlar")])
             keyboard.append([KeyboardButton(text="📢 Barchaga xabar"), KeyboardButton(text="📤 Zaxira nusxa")])
+            if uid == ADMIN_ID:
+                keyboard.append([KeyboardButton(text="👑 To'liq admin qo'shish/olib tashlash")])
         elif str(uid) in data["sub_admins"]:
             keyboard.append([KeyboardButton(text="➕ Hisob qo'shish"), KeyboardButton(text="💼 Mening daromadim")])
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
@@ -1237,7 +1270,7 @@ def setup_platform_bot(dp: Dispatcher):
     @dp.message(Command("start"))
     async def main_start(message: Message):
         uid = message.from_user.id
-        if uid in data["blocked_users"] and uid != ADMIN_ID:
+        if uid in data["blocked_users"] and not is_full_admin(uid):
             await message.answer("🚫 Siz Bot Creator'dan foydalanishdan bloklangansiz.\n\nAdmin bilan bog'lanish uchun murojaat qiling.", reply_markup=contact_admin_kb())
             return
         args = message.text.split(maxsplit=1)
@@ -1271,7 +1304,7 @@ def setup_platform_bot(dp: Dispatcher):
             save_data()
         if not await require_subscription(message, platform_info(), ADMIN_ID):
             return
-        if uid != ADMIN_ID and not data["platform_user_info"].get(str(uid), {}).get("phone"):
+        if not is_full_admin(uid) and not data["platform_user_info"].get(str(uid), {}).get("phone"):
             phone_kb = ReplyKeyboardMarkup(
                 keyboard=[[KeyboardButton(text="📱 Raqamni ulashish", request_contact=True)]],
                 resize_keyboard=True,
@@ -1288,7 +1321,10 @@ def setup_platform_bot(dp: Dispatcher):
             f"💠 {t['name']} — {t['price']:,} so'm/oy ({tariff_limit_text(t)})"
             for t in data["tariffs"].values()
         )
-        other_price = data.get("other_bot_price", DEFAULT_OTHER_BOT_PRICE)
+        other_lines = "\n".join(
+            f"💠 {BOT_TYPES[bt]} — {price:,} so'm/oy"
+            for bt, price in data["type_prices"].items()
+        )
         text = (
             "🤖 <b>Bot Creator</b> — Telegram botlar yaratish uchun qulay platforma\n\n"
             "Bu platforma orqali siz hech qanday kod yozmasdan o'z Telegram botlaringizni "
@@ -1301,7 +1337,7 @@ def setup_platform_bot(dp: Dispatcher):
             "• Barcha jarayonlar avtomatik va tushunarli\n\n"
             "💳 <b>🎬 Kino bot tariflari:</b>\n"
             f"{tariff_lines}\n\n"
-            f"💳 <b>Boshqa barcha bot turlari:</b> {other_price:,} so'm/oy\n\n"
+            f"💳 <b>Boshqa bot turlari:</b>\n{other_lines}\n\n"
             f"🎁 Har bir bot uchun {TRIAL_DAYS} kunlik BEPUL sinov muddati bor!\n\n"
             "Pastdagi menyudan foydalaning 👇"
         )
@@ -1375,7 +1411,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.message(F.text == "🚀 Ultra statistika")
     async def platform_ultra_statistika(message: Message):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         rows = []
         for uid in data["platform_users"]:
@@ -1389,7 +1425,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.message(F.text == "🏆 Top referal")
     async def platform_top_referal(message: Message):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         rows = []
         for uid in data["platform_users"]:
@@ -1405,17 +1441,37 @@ def setup_platform_bot(dp: Dispatcher):
         ]
         await send_platform_paginated(message, f"🏆 <b>Top referal</b> — jami {len(rows)} foydalanuvchi", lines)
 
+    @dp.message(F.text == "🔝 TOP faol")
+    async def platform_top_active(message: Message):
+        if not is_full_admin(message.from_user.id):
+            return
+        rows = []
+        for uid in data["platform_users"]:
+            refcount = len(data["platform_referrals"].get(str(uid), []))
+            if refcount <= 0:
+                continue
+            uinfo = data["platform_user_info"].get(str(uid), {})
+            rows.append((uid, uinfo.get("username") or "—", refcount))
+        rows.sort(key=lambda r: r[2], reverse=True)
+        top3 = rows[:3]
+        if not top3:
+            await message.answer("🔝 <b>TOP faol</b>\n\nHozircha hech kim taklif qilmagan.")
+            return
+        medals = ["🥇", "🥈", "🥉"]
+        lines = "\n".join(f"{medals[i]} {uname} — <code>{uid}</code> — {cnt} ta taklif" for i, (uid, uname, cnt) in enumerate(top3))
+        await message.answer(f"🔝 <b>TOP faol — eng ko'p taklif qilgan 3 kishi</b>\n\n{lines}")
+
     # ---------- 🔍 Foydalanuvchi qidirish ----------
     @dp.message(F.text == "🔍 Foydalanuvchi qidirish")
     async def admin_user_search_prompt(message: Message, state: FSMContext):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         await message.answer("🔍 Foydalanuvchi ID yoki username'ini kiriting:")
         await state.set_state(AdminUserSearch.waiting_query)
 
     @dp.message(AdminUserSearch.waiting_query)
     async def admin_user_search_run(message: Message, state: FSMContext):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         await state.clear()
         query = message.text.strip().lstrip("@").lower()
@@ -1450,14 +1506,14 @@ def setup_platform_bot(dp: Dispatcher):
     # ---------- 🚫 Bloklash ----------
     @dp.message(F.text == "🚫 Bloklash")
     async def admin_block_prompt(message: Message, state: FSMContext):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         await message.answer("🚫 Bloklash/blokdan chiqarish uchun foydalanuvchi ID'sini kiriting:")
         await state.set_state(AdminBlockUser.waiting_id)
 
     @dp.message(AdminBlockUser.waiting_id)
     async def admin_block_run(message: Message, state: FSMContext):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         await state.clear()
         try:
@@ -1465,8 +1521,8 @@ def setup_platform_bot(dp: Dispatcher):
         except ValueError:
             await message.answer("❌ Noto'g'ri ID.")
             return
-        if target_uid == ADMIN_ID:
-            await message.answer("❌ O'zingizni bloklay olmaysiz.")
+        if is_full_admin(target_uid):
+            await message.answer("❌ Bosh admin yoki boshqa to'liq adminni bloklab bo'lmaydi.")
             return
         if target_uid in data["blocked_users"]:
             data["blocked_users"].remove(target_uid)
@@ -1480,14 +1536,14 @@ def setup_platform_bot(dp: Dispatcher):
     # ---------- 🗑 Botni o'chirish ----------
     @dp.message(F.text == "🗑 Botni o'chirish")
     async def admin_delete_bot_prompt(message: Message, state: FSMContext):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         await message.answer("🗑 O'chirmoqchi bo'lgan botning ID raqamini kiriting (Botlar narxi ro'yxatida ko'rinadi):")
         await state.set_state(AdminDeleteBot.waiting_id)
 
     @dp.message(AdminDeleteBot.waiting_id)
     async def admin_delete_bot_run(message: Message, state: FSMContext):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         await state.clear()
         try:
@@ -1514,12 +1570,12 @@ def setup_platform_bot(dp: Dispatcher):
     # ---------- 📅 Tugayotgan botlar ----------
     @dp.message(F.text == "📅 Tugayotgan botlar")
     async def admin_expiring_bots(message: Message):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         now = datetime.now()
         soon = []
         for b in data["bots"].values():
-            if b.get("admin_id") == ADMIN_ID:
+            if is_full_admin(b.get("admin_id")):
                 continue
             paid_until = b.get("paid_until")
             if paid_until:
@@ -1545,14 +1601,14 @@ def setup_platform_bot(dp: Dispatcher):
     # ---------- 📢 Barchaga xabar (broadcast) ----------
     @dp.message(F.text == "📢 Barchaga xabar")
     async def admin_broadcast_prompt(message: Message, state: FSMContext):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         await message.answer("📢 Barcha foydalanuvchilarga yubormoqchi bo'lgan xabar matnini kiriting:")
         await state.set_state(AdminBroadcast.waiting_text)
 
     @dp.message(AdminBroadcast.waiting_text)
     async def admin_broadcast_preview(message: Message, state: FSMContext):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         await state.update_data(broadcast_text=message.text)
         await state.set_state(AdminBroadcast.waiting_confirm)
@@ -1565,7 +1621,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.callback_query(AdminBroadcast.waiting_confirm, F.data == "bc_cancel")
     async def admin_broadcast_cancel_cb(callback: CallbackQuery, state: FSMContext):
-        if callback.from_user.id != ADMIN_ID:
+        if not is_full_admin(callback.from_user.id):
             return
         await state.clear()
         await callback.message.edit_text("❌ Bekor qilindi.")
@@ -1573,7 +1629,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.callback_query(AdminBroadcast.waiting_confirm, F.data == "bc_send")
     async def admin_broadcast_send_cb(callback: CallbackQuery, state: FSMContext):
-        if callback.from_user.id != ADMIN_ID:
+        if not is_full_admin(callback.from_user.id):
             return
         fsm_data = await state.get_data()
         text = fsm_data.get("broadcast_text", "")
@@ -1593,13 +1649,53 @@ def setup_platform_bot(dp: Dispatcher):
     # ---------- 📤 Zaxira nusxa ----------
     @dp.message(F.text == "📤 Zaxira nusxa")
     async def admin_backup(message: Message):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         save_data()
         try:
             await message.answer_document(FSInputFile(DATA_FILE), caption=f"📤 Zaxira nusxa — {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}")
         except Exception as e:
             await message.answer(f"❌ Xatolik: {e}")
+
+    @dp.message(F.text == "👑 To'liq admin qo'shish/olib tashlash")
+    async def full_admin_prompt(message: Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID:
+            return
+        lines = "\n".join(f"👑 <code>{uid}</code>" for uid in data["full_admins"]) or "   • hozircha yo'q"
+        await message.answer(
+            f"👑 <b>To'liq adminlar</b> (bosh admin bilan bir xil huquqqa ega):\n{lines}\n\n"
+            "Qo'shish yoki olib tashlash uchun foydalanuvchi ID raqamini kiriting:"
+        )
+        await state.set_state(FullAdminManage.waiting_id)
+
+    @dp.message(FullAdminManage.waiting_id)
+    async def full_admin_toggle(message: Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID:
+            return
+        await state.clear()
+        try:
+            target_uid = int(message.text.strip())
+        except ValueError:
+            await message.answer("❌ Noto'g'ri ID.")
+            return
+        if target_uid == ADMIN_ID:
+            await message.answer("❌ Siz allaqachon bosh adminsiz.")
+            return
+        if target_uid in data["full_admins"]:
+            data["full_admins"].remove(target_uid)
+            save_data()
+            await message.answer(f"➖ <code>{target_uid}</code> endi to'liq admin emas.")
+        else:
+            data["full_admins"].append(target_uid)
+            save_data()
+            await message.answer(f"👑 <code>{target_uid}</code> endi bosh admin bilan BARAVAR huquqqa ega to'liq admin!")
+            try:
+                await message.bot.send_message(
+                    target_uid,
+                    "👑 Sizga Bot Creator'da <b>to'liq admin</b> huquqi berildi — endi bosh admin bilan bir xil barcha imkoniyatlardan foydalana olasiz.\n\n/start bosing.",
+                )
+            except Exception:
+                pass
 
     @dp.message(F.text == "👤 Shaxsiy kabinet")
     async def cabinet_handler(message: Message):
@@ -1623,7 +1719,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.message(F.text == "💳 To'lov tizimlar")
     async def platform_payment_systems_panel(message: Message):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         if not data["payment_systems"]:
             await message.answer("⚠️ To'lov tizimlari mavjud emas.", reply_markup=platform_payment_systems_kb())
@@ -1632,7 +1728,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.callback_query(F.data == "pps_add")
     async def pps_add_cb(callback: CallbackQuery, state: FSMContext):
-        if callback.from_user.id != ADMIN_ID:
+        if not is_full_admin(callback.from_user.id):
             return
         await callback.message.answer("Iltimos, to'lov tizimi nomini kiriting:\n\n(Masalan: Click, Payme, Humo, Uzcard...)")
         await state.set_state(PaymentSystemAdd.waiting_name)
@@ -1640,7 +1736,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.message(PaymentSystemAdd.waiting_name)
     async def pps_name_process(message: Message, state: FSMContext):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         await state.update_data(ps_name=message.text.strip())
         await message.answer("Iltimos, to'lov tizimi raqamini kiriting:\n\n(Masalan: karta yoki hisob raqami)")
@@ -1648,7 +1744,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.message(PaymentSystemAdd.waiting_number)
     async def pps_number_process(message: Message, state: FSMContext):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         await state.update_data(ps_number=message.text.strip())
         await message.answer("Hisob raqami egasining to'liq ismini kiriting:\n\n(Masalan: Ism Familiya)")
@@ -1656,7 +1752,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.message(PaymentSystemAdd.waiting_owner)
     async def pps_owner_process(message: Message, state: FSMContext):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         fsm_data = await state.get_data()
         psid = uuid.uuid4().hex[:8]
@@ -1671,7 +1767,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.callback_query(F.data == "pps_list")
     async def pps_list_cb(callback: CallbackQuery):
-        if callback.from_user.id != ADMIN_ID:
+        if not is_full_admin(callback.from_user.id):
             return
         if not data["payment_systems"]:
             await callback.message.answer("To'lov tizimlari mavjud emas.")
@@ -1682,7 +1778,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.callback_query(F.data == "pps_del")
     async def pps_del_cb(callback: CallbackQuery):
-        if callback.from_user.id != ADMIN_ID:
+        if not is_full_admin(callback.from_user.id):
             return
         if not data["payment_systems"]:
             await callback.message.answer("O'chirish uchun to'lov tizimi yo'q.")
@@ -1694,7 +1790,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.callback_query(F.data.startswith("ppsdel_"))
     async def pps_delid_cb(callback: CallbackQuery):
-        if callback.from_user.id != ADMIN_ID:
+        if not is_full_admin(callback.from_user.id):
             return
         pid = callback.data.split("_", 1)[1]
         removed = data["payment_systems"].pop(pid, None)
@@ -1811,7 +1907,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.callback_query(F.data.startswith("topupapprove_"))
     async def topup_approve_cb(callback: CallbackQuery):
-        if callback.from_user.id != ADMIN_ID:
+        if not is_full_admin(callback.from_user.id):
             return
         _, target_uid, amount = callback.data.split("_", 2)
         amount = int(amount)
@@ -1834,7 +1930,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.callback_query(F.data.startswith("topupreject_"))
     async def topup_reject_cb(callback: CallbackQuery):
-        if callback.from_user.id != ADMIN_ID:
+        if not is_full_admin(callback.from_user.id):
             return
         target_uid = int(callback.data.split("_", 1)[1])
         try:
@@ -1850,7 +1946,7 @@ def setup_platform_bot(dp: Dispatcher):
     # ---------- Admin: Statistika va Hisob qo'shish ----------
     @dp.message(F.text == "📊 Statistika")
     async def platform_stats(message: Message):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         total_bots = len(data["bots"])
         active_bots = sum(1 for i in data["bots"].values() if is_active(i))
@@ -1908,7 +2004,7 @@ def setup_platform_bot(dp: Dispatcher):
         target_uid = fsm_data.get("target_uid")
         key = str(target_uid)
         data["user_balances"][key] = data["user_balances"].get(key, 0) + amount
-        if uid != ADMIN_ID and key not in data["user_referring_admin"]:
+        if not is_full_admin(uid) and key not in data["user_referring_admin"]:
             data["user_referring_admin"][key] = uid
         save_data()
         await message.answer(f"✅ {target_uid} ID'li foydalanuvchiga {amount:,} so'm qo'shildi.\n💰 Yangi balans: {data['user_balances'][key]:,} so'm")
@@ -1921,10 +2017,55 @@ def setup_platform_bot(dp: Dispatcher):
             logging.error(f"Foydalanuvchiga xabar yuborishda xato: {e}")
         await state.clear()
 
-    # ---------- Hamkor-adminlar (reseller) ----------
+    @dp.message(F.text == "➖ Hisob ayirish")
+    async def admin_sub_balance_start(message: Message, state: FSMContext):
+        if not is_full_admin(message.from_user.id):
+            return
+        await message.answer("Foydalanuvchi ID raqamini kiriting:")
+        await state.set_state(AdminSubtractBalance.waiting_user_id)
+
+    @dp.message(AdminSubtractBalance.waiting_user_id)
+    async def admin_sub_balance_uid(message: Message, state: FSMContext):
+        if not is_full_admin(message.from_user.id):
+            return
+        try:
+            target_uid = int(message.text.strip())
+        except ValueError:
+            await message.answer("❌ Faqat raqamli ID kiriting.")
+            return
+        await state.update_data(target_uid=target_uid)
+        current = data["user_balances"].get(str(target_uid), 0)
+        await message.answer(f"Joriy balans: {current:,} so'm.\nAyiriladigan summani kiriting (so'mda):")
+        await state.set_state(AdminSubtractBalance.waiting_amount)
+
+    @dp.message(AdminSubtractBalance.waiting_amount)
+    async def admin_sub_balance_amount(message: Message, state: FSMContext):
+        if not is_full_admin(message.from_user.id):
+            return
+        try:
+            amount = int(message.text.strip().replace(" ", ""))
+            if amount <= 0:
+                raise ValueError
+        except ValueError:
+            await message.answer("❌ Musbat butun raqam kiriting.")
+            return
+        fsm_data = await state.get_data()
+        target_uid = fsm_data.get("target_uid")
+        key = str(target_uid)
+        data["user_balances"][key] = data["user_balances"].get(key, 0) - amount
+        save_data()
+        await message.answer(f"✅ {target_uid} ID'li foydalanuvchidan {amount:,} so'm ayirildi.\n💰 Yangi balans: {data['user_balances'][key]:,} so'm")
+        try:
+            await message.bot.send_message(
+                chat_id=target_uid,
+                text=f"⚠️ Hisobingizdan administrator tomonidan {amount:,} so'm ayirildi.\n💰 Joriy balans: {data['user_balances'][key]:,} so'm",
+            )
+        except Exception as e:
+            logging.error(f"Foydalanuvchiga xabar yuborishda xato: {e}")
+        await state.clear()
     @dp.message(F.text == "👥 Hamkor-adminlar")
     async def sub_admins_panel(message: Message):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         buttons = [
             [InlineKeyboardButton(text="➕ Hamkor qo'shish", callback_data="subadmin_add")],
@@ -1942,7 +2083,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.callback_query(F.data == "subadmin_add")
     async def subadmin_add_cb(callback: CallbackQuery, state: FSMContext):
-        if callback.from_user.id != ADMIN_ID:
+        if not is_full_admin(callback.from_user.id):
             return
         await callback.message.answer("Hamkor-admin qilmoqchi bo'lgan foydalanuvchi ID raqamini kiriting:")
         await state.set_state(SubAdminAdd.waiting_id)
@@ -1950,7 +2091,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.message(SubAdminAdd.waiting_id)
     async def subadmin_add_save(message: Message, state: FSMContext):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         try:
             target = int(message.text.strip())
@@ -1973,7 +2114,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.callback_query(F.data == "subadmin_list")
     async def subadmin_list_cb(callback: CallbackQuery):
-        if callback.from_user.id != ADMIN_ID:
+        if not is_full_admin(callback.from_user.id):
             return
         if not data["sub_admins"]:
             await callback.message.answer("Hamkor-adminlar yo'q.")
@@ -1984,7 +2125,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.callback_query(F.data == "subadmin_del")
     async def subadmin_del_cb(callback: CallbackQuery):
-        if callback.from_user.id != ADMIN_ID:
+        if not is_full_admin(callback.from_user.id):
             return
         if not data["sub_admins"]:
             await callback.answer("Hamkor-adminlar yo'q.", show_alert=True)
@@ -1995,7 +2136,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.callback_query(F.data.startswith("subadmindel_"))
     async def subadmin_delid_cb(callback: CallbackQuery):
-        if callback.from_user.id != ADMIN_ID:
+        if not is_full_admin(callback.from_user.id):
             return
         target = callback.data.split("_", 1)[1]
         data["sub_admins"].pop(target, None)
@@ -2016,16 +2157,21 @@ def setup_platform_bot(dp: Dispatcher):
         if bot_type in ("kino", "kino_pro"):
             price_line = "💰 Oylik to'lov: tarifga qarab belgilanadi"
         else:
-            price_line = f"💰 Oylik to'lov: {data.get('other_bot_price', DEFAULT_OTHER_BOT_PRICE):,} so'm/oy"
+            price = data["type_prices"].get(bot_type, data.get("other_bot_price", DEFAULT_OTHER_BOT_PRICE))
+            price_line = f"💰 Oylik to'lov: {price:,} so'm/oy"
         trial_cfg = get_trial_config(bot_type)
         if trial_cfg.get("enabled", True):
             trial_line = f"🎁 Bepul sinov muddati: {trial_cfg.get('days', TRIAL_DAYS)} kun"
         else:
             trial_line = "💰 Bepul sinov yo'q — bot yaratilgach darhol to'lov talab qilinadi"
+        if bot_type == "kino_pro":
+            create_price_line = f"💵 Yaratish narxi: {cheapest_tariff_price():,} so'm"
+        else:
+            create_price_line = "💵 Yaratish narxi: 0 so'm"
         return (
             f"{BOT_TYPES[bot_type]}\n\n"
-            f"{desc}\n\n"
-            f"💵 Yaratish narxi: 0 so'm\n"
+            f"<blockquote expandable>{desc}</blockquote>\n\n"
+            f"{create_price_line}\n"
             f"{price_line}\n"
             f"{trial_line}"
         )
@@ -2034,7 +2180,10 @@ def setup_platform_bot(dp: Dispatcher):
         buttons = []
         if bot_type in ("kino", "kino_pro"):
             buttons.append([InlineKeyboardButton(text="💳 Tariflar ro'yxati", callback_data=f"tariffpreview_{bot_type}")])
-        buttons.append([InlineKeyboardButton(text="✅ Bot yaratish — Bepul", callback_data=f"createbot_{bot_type}")])
+        if bot_type == "kino_pro":
+            buttons.append([InlineKeyboardButton(text=f"✅ Bot yaratish — {cheapest_tariff_price():,} so'm", callback_data=f"createbot_{bot_type}")])
+        else:
+            buttons.append([InlineKeyboardButton(text="✅ Bot yaratish — Bepul", callback_data=f"createbot_{bot_type}")])
         buttons.append([InlineKeyboardButton(text="◀️ Orqaga", callback_data="backtotypes")])
         return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -2172,6 +2321,18 @@ def setup_platform_bot(dp: Dispatcher):
             await callback.answer("Xatolik: qaytadan \"🤖 Bot yaratish\" bosing.", show_alert=True)
             return
 
+        creation_charge = 0
+        if bot_type == "kino_pro" and not is_full_admin(callback.from_user.id):
+            creation_charge = cheapest_tariff_price()
+            balance = data["user_balances"].get(str(callback.from_user.id), 0)
+            if balance < creation_charge:
+                await callback.answer(
+                    f"❌ Balansingizda yetarli mablag' yo'q. Kerak: {creation_charge:,} so'm, joriy balans: {balance:,} so'm.",
+                    show_alert=True,
+                )
+                return
+            data["user_balances"][str(callback.from_user.id)] = balance - creation_charge
+
         info = await finalize_bot_creation(token, bot_name, bot_type, callback.from_user.id, tariff_id)
 
         tariff = get_tariff(tariff_id)
@@ -2181,8 +2342,10 @@ def setup_platform_bot(dp: Dispatcher):
         else:
             trial_note = "💰 Bu bot turi uchun sinov yo'q — foydalanish uchun darhol to'lov qiling.\n"
         go_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🤖 Botga o'tish", url=f"https://t.me/{bot_username}")]]) if bot_username else None
+        charge_note = f"💵 Yaratish uchun {creation_charge:,} so'm balansingizdan yechildi.\n" if creation_charge else ""
         await callback.message.edit_text(
             f"✅ {BOT_TYPES[bot_type]} ishga tushdi: <b>{bot_name}</b>\n\n"
+            f"{charge_note}"
             f"💠 Tarif: {tariff['name']} — {tariff['price']:,} so'm/oy ({tariff_limit_text(tariff)})\n"
             f"{trial_note}"
             "Majburiy obuna qo'shish uchun o'sha botga /channels yozing.",
@@ -2194,7 +2357,7 @@ def setup_platform_bot(dp: Dispatcher):
     @dp.message(Command("prices"))
     @dp.message(F.text == "💵 Tariflar")
     async def prices_panel(message: Message):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         buttons = [
             [InlineKeyboardButton(
@@ -2205,20 +2368,24 @@ def setup_platform_bot(dp: Dispatcher):
         ]
         buttons.append([InlineKeyboardButton(text="➕ Tarif qo'shish", callback_data="addtariff")])
         buttons.append([InlineKeyboardButton(text="➖ Tarif o'chirish", callback_data="deltariff")])
-        buttons.append([InlineKeyboardButton(
-            text=f"🤖 Boshqa botlar — {data.get('other_bot_price', DEFAULT_OTHER_BOT_PRICE):,} so'm/oy",
-            callback_data="editotherprice",
-        )])
+        for bt, bt_name in BOT_TYPES.items():
+            if bt in ("kino", "kino_pro"):
+                continue
+            price = data["type_prices"].get(bt, data.get("other_bot_price", DEFAULT_OTHER_BOT_PRICE))
+            buttons.append([InlineKeyboardButton(
+                text=f"{bt_name} — {price:,} so'm/oy",
+                callback_data=f"edittypeprice_{bt}",
+            )])
         await message.answer(
             "💰 <b>Tariflarni boshqarish</b>\n\n"
-            "🎬 Kino bot uchun 5 xil tarif, boshqa barcha bot turlari uchun yagona narx.\n\n"
+            "🎬 Kino bot uchun 5 xil tarif, boshqa har bir bot turi uchun o'zining narxi.\n\n"
             "Narxini o'zgartirish uchun tanlang:",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
         )
 
     @dp.callback_query(F.data == "addtariff")
     async def addtariff_cb(callback: CallbackQuery, state: FSMContext):
-        if callback.from_user.id != ADMIN_ID:
+        if not is_full_admin(callback.from_user.id):
             return
         await callback.message.answer("Yangi tarif nomini kiriting (masalan: 🚀 Mega):")
         await state.set_state(NewTariffAdd.waiting_name)
@@ -2226,7 +2393,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.message(NewTariffAdd.waiting_name)
     async def addtariff_name(message: Message, state: FSMContext):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         await state.update_data(new_tariff_name=message.text.strip())
         await message.answer("Oylik narxini kiriting (so'm, faqat raqam):")
@@ -2234,7 +2401,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.message(NewTariffAdd.waiting_price)
     async def addtariff_price(message: Message, state: FSMContext):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         try:
             price = int(message.text.strip().replace(" ", ""))
@@ -2249,7 +2416,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.message(NewTariffAdd.waiting_limit)
     async def addtariff_limit(message: Message, state: FSMContext):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         try:
             limit = int(message.text.strip().replace(" ", ""))
@@ -2271,7 +2438,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.callback_query(F.data == "deltariff")
     async def deltariff_cb(callback: CallbackQuery):
-        if callback.from_user.id != ADMIN_ID:
+        if not is_full_admin(callback.from_user.id):
             return
         if len(data["tariffs"]) <= 1:
             await callback.answer("Kamida bitta tarif qolishi kerak.", show_alert=True)
@@ -2285,7 +2452,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.callback_query(F.data.startswith("deltariffid_"))
     async def deltariffid_cb(callback: CallbackQuery):
-        if callback.from_user.id != ADMIN_ID:
+        if not is_full_admin(callback.from_user.id):
             return
         if len(data["tariffs"]) <= 1:
             await callback.answer("Kamida bitta tarif qolishi kerak.", show_alert=True)
@@ -2297,21 +2464,23 @@ def setup_platform_bot(dp: Dispatcher):
             await callback.message.answer(f"🗑 O'chirildi: {removed['name']}")
         await callback.answer()
 
-    @dp.callback_query(F.data == "editotherprice")
-    async def editotherprice_cb(callback: CallbackQuery, state: FSMContext):
-        if callback.from_user.id != ADMIN_ID:
+    @dp.callback_query(F.data.startswith("edittypeprice_"))
+    async def edittypeprice_cb(callback: CallbackQuery, state: FSMContext):
+        if not is_full_admin(callback.from_user.id):
             return
+        bt = callback.data.split("_", 1)[1]
+        current = data["type_prices"].get(bt, data.get("other_bot_price", DEFAULT_OTHER_BOT_PRICE))
         await callback.message.answer(
-            f"Kino'dan boshqa barcha botlar uchun yangi oylik narxni kiriting (so'm, faqat raqam):\n\n"
-            f"Joriy narx: {data.get('other_bot_price', DEFAULT_OTHER_BOT_PRICE):,} so'm/oy"
+            f"{BOT_TYPES.get(bt, bt)} uchun yangi oylik narxni kiriting (so'm, faqat raqam):\n\n"
+            f"Joriy narx: {current:,} so'm/oy"
         )
         await state.set_state(EditPrice.waiting_amount)
-        await state.update_data(edit_tariff_id=None, edit_other_price=True)
+        await state.update_data(edit_tariff_id=None, edit_type_price=bt)
         await callback.answer()
 
     @dp.message(F.text == "⭐ Stars kursi")
     async def stars_rate_start(message: Message, state: FSMContext):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         rate = data.get("stars_rate", 250)
         await message.answer(
@@ -2322,7 +2491,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.message(EditStarsRate.waiting_rate)
     async def stars_rate_save(message: Message, state: FSMContext):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         try:
             rate = int(message.text.strip().replace(" ", ""))
@@ -2338,7 +2507,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.callback_query(F.data.startswith("edittariff_"))
     async def edittariff_cb(callback: CallbackQuery, state: FSMContext):
-        if callback.from_user.id != ADMIN_ID:
+        if not is_full_admin(callback.from_user.id):
             return
         tid = callback.data.split("_", 1)[1]
         t = data["tariffs"][tid]
@@ -2360,10 +2529,11 @@ def setup_platform_bot(dp: Dispatcher):
             await message.answer("❌ Faqat musbat raqam kiriting.")
             return
         state_data = await state.get_data()
-        if state_data.get("edit_other_price"):
-            data["other_bot_price"] = amount
+        if state_data.get("edit_type_price"):
+            bt = state_data["edit_type_price"]
+            data["type_prices"][bt] = amount
             save_data()
-            await message.answer(f"✅ Boshqa botlar narxi endi {amount:,} so'm/oy.")
+            await message.answer(f"✅ {BOT_TYPES.get(bt, bt)} narxi endi {amount:,} so'm/oy.")
             await state.clear()
             return
         tid = state_data.get("edit_tariff_id")
@@ -2375,7 +2545,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.message(Command("globalbuttons"))
     async def global_buttons_panel(message: Message):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         buttons = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="➕ Tugma qo'shish", callback_data="gb_add")],
@@ -2390,7 +2560,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.callback_query(F.data == "gb_add")
     async def gb_add_cb(callback: CallbackQuery, state: FSMContext):
-        if callback.from_user.id != ADMIN_ID:
+        if not is_full_admin(callback.from_user.id):
             return
         await callback.message.answer("Tugma nomini yozing (masalan: ℹ️ Biz haqimizda):")
         await state.set_state(GlobalButtonAdd.waiting_label)
@@ -2413,7 +2583,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.callback_query(F.data == "gb_list")
     async def gb_list_cb(callback: CallbackQuery):
-        if callback.from_user.id != ADMIN_ID:
+        if not is_full_admin(callback.from_user.id):
             return
         if not data["global_buttons"]:
             await callback.message.answer("Hozircha global tugmalar yo'q.")
@@ -2424,7 +2594,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.callback_query(F.data == "gb_del")
     async def gb_del_cb(callback: CallbackQuery):
-        if callback.from_user.id != ADMIN_ID:
+        if not is_full_admin(callback.from_user.id):
             return
         if not data["global_buttons"]:
             await callback.message.answer("O'chirish uchun tugma yo'q.")
@@ -2439,7 +2609,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.callback_query(F.data.startswith("gbdel_"))
     async def gb_delid_cb(callback: CallbackQuery):
-        if callback.from_user.id != ADMIN_ID:
+        if not is_full_admin(callback.from_user.id):
             return
         idx = int(callback.data.split("_", 1)[1])
         if 0 <= idx < len(data["global_buttons"]):
@@ -2480,7 +2650,7 @@ def setup_platform_bot(dp: Dispatcher):
             status = "🟢 Faol" if is_active(info) else "🔴 Sinov/to'lov tugagan"
             paid_until = info.get("paid_until")
             expiry_line = ""
-            if info.get("admin_id") == ADMIN_ID:
+            if is_full_admin(info.get("admin_id")):
                 paid_note = " (umrbod)"
             elif paid_until:
                 expiry_dt = datetime.fromisoformat(paid_until)
@@ -2509,7 +2679,7 @@ def setup_platform_bot(dp: Dispatcher):
                 f"💠 Tarif: {tariff['name']} ({tariff_limit_text(tariff)})"
             )
             buttons = []
-            if info.get("admin_id") != ADMIN_ID:
+            if not is_full_admin(info.get("admin_id")):
                 if info["type"] in ("kino", "kino_pro"):
                     buttons.append([InlineKeyboardButton(text="🔄 Tarifni o'zgartirish", callback_data=f"changetariff_{info['id']}")])
                 if info["type"] == "kino":
@@ -2535,7 +2705,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.message(F.text == "🎁 Sinov/Pullik")
     async def trial_settings_panel(message: Message):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         await message.answer(
             "🎁💰 <b>Sinov / Pullik sozlamalari</b>\n\n"
@@ -2548,7 +2718,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.callback_query(F.data.startswith("trialtoggle_"))
     async def trial_toggle_cb(callback: CallbackQuery):
-        if callback.from_user.id != ADMIN_ID:
+        if not is_full_admin(callback.from_user.id):
             return
         bt = callback.data.split("_", 1)[1]
         cfg = data["bot_type_trial"].setdefault(bt, {"enabled": True, "days": TRIAL_DAYS})
@@ -2676,7 +2846,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.callback_query(F.data.startswith("activate_"))
     async def activate_cb(callback: CallbackQuery, state: FSMContext):
-        if callback.from_user.id != ADMIN_ID:
+        if not is_full_admin(callback.from_user.id):
             return
         bot_id = int(callback.data.split("_", 1)[1])
         await state.update_data(activate_bot_id=bot_id)
@@ -2706,7 +2876,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.callback_query(F.data.startswith("deactivate_"))
     async def deactivate_cb(callback: CallbackQuery):
-        if callback.from_user.id != ADMIN_ID:
+        if not is_full_admin(callback.from_user.id):
             return
         bot_id = int(callback.data.split("_", 1)[1])
         for token, info in data["bots"].items():
@@ -2720,7 +2890,7 @@ def setup_platform_bot(dp: Dispatcher):
     # ---- RAVSHAN BUILDER BOTning to'liq nusxasini (klon) yaratish — FAQAT ADMIN_ID ----
     @dp.message(Command("newplatform"))
     async def newplatform_start(message: Message, state: FSMContext):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             return
         await message.answer(
             "🏗 <b>RAVSHAN BUILDER BOTning yangi nusxasini yaratish</b>\n\n"
@@ -2733,7 +2903,7 @@ def setup_platform_bot(dp: Dispatcher):
 
     @dp.message(NewPlatformFlow.waiting_token)
     async def newplatform_token(message: Message, state: FSMContext):
-        if message.from_user.id != ADMIN_ID:
+        if not is_full_admin(message.from_user.id):
             await state.clear()
             return
         clone_token = message.text.strip()
@@ -2759,6 +2929,10 @@ async def start_platform_clone(token: str, username: str = None):
     if token in running_platform_clones:
         return
     clone_bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    try:
+        await clone_bot.delete_webhook(drop_pending_updates=False)
+    except Exception as e:
+        logging.error(f"delete_webhook xatosi (klon {token[:10]}...): {e}")
     clone_dp = Dispatcher(storage=MemoryStorage())
     setup_platform_bot(clone_dp)
     miniapp_url = get_miniapp_url()
@@ -7062,6 +7236,10 @@ async def start_child_bot(token: str, bot_type: str):
         )
         return
     child_bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    try:
+        await child_bot.delete_webhook(drop_pending_updates=False)
+    except Exception as e:
+        logging.error(f"delete_webhook xatosi ({token[-6:]}): {e}")
     child_dp = Dispatcher(storage=MemoryStorage())
     SETUP_FUNCTIONS[bot_type](child_dp, token)
     task = asyncio.create_task(child_dp.start_polling(child_bot))
@@ -7511,13 +7689,235 @@ async def api_mybots(request):
                 "tariff": tariff["name"],
             })
     balance = data["user_balances"].get(str(uid), 0)
-    return web.json_response({"bots": bots_list, "balance": balance}, headers={"Cache-Control": "no-store"})
+    return web.json_response({"bots": bots_list, "balance": balance, "is_admin": is_full_admin(uid)}, headers={"Cache-Control": "no-store"})
+
+
+def is_admin_init_data(init_data: str) -> bool:
+    """initData imzosini tekshiradi va faqat ADMIN_ID bo'lsa True qaytaradi."""
+    parsed = validate_webapp_init_data(init_data or "", MAIN_BOT_TOKEN)
+    if not parsed:
+        return False
+    try:
+        user = json.loads(parsed.get("user", "{}"))
+        uid = user.get("id")
+    except Exception:
+        return False
+    return is_full_admin(uid)
+
+
+async def api_admin_stats(request):
+    if not is_admin_init_data(request.query.get("initData", "")):
+        return web.json_response({"error": "forbidden"}, status=403)
+    type_counts = {}
+    for b in data["bots"].values():
+        type_counts[b["type"]] = type_counts.get(b["type"], 0) + 1
+    return web.json_response({
+        "platform_users": len(data["platform_users"]),
+        "total_bots": len(data["bots"]),
+        "active_bots": sum(1 for i in data["bots"].values() if is_active(i)),
+        "type_counts": [{"type": BOT_TYPES.get(bt, bt), "count": c} for bt, c in sorted(type_counts.items(), key=lambda x: x[1], reverse=True)],
+        "users_with_balance": len(data["user_balances"]),
+        "total_balance": sum(data["user_balances"].values()),
+    }, headers={"Cache-Control": "no-store"})
+
+
+async def api_admin_users(request):
+    if not is_admin_init_data(request.query.get("initData", "")):
+        return web.json_response({"error": "forbidden"}, status=403)
+    query = request.query.get("q", "").strip().lower().lstrip("@")
+    results = []
+    for uid_str, uinfo in data["platform_user_info"].items():
+        uname = (uinfo.get("username") or "").lstrip("@").lower()
+        if query and query not in uname and query != uid_str:
+            continue
+        uid = int(uid_str)
+        results.append({
+            "id": uid,
+            "username": uinfo.get("username") or "—",
+            "phone": uinfo.get("phone") or "—",
+            "balance": data["user_balances"].get(uid_str, 0),
+            "referrals": len(data["platform_referrals"].get(uid_str, [])),
+            "blocked": uid in data["blocked_users"],
+            "bots": [{"name": b["name"], "type": BOT_TYPES.get(b["type"], b["type"])} for b in data["bots"].values() if uid in b.get("admin_ids", [b["admin_id"]])],
+        })
+        if len(results) >= 50:
+            break
+    return web.json_response({"users": results}, headers={"Cache-Control": "no-store"})
+
+
+async def api_admin_block(request):
+    body = await request.json()
+    if not is_admin_init_data(body.get("initData", "")):
+        return web.json_response({"error": "forbidden"}, status=403)
+    uid = int(body.get("uid", 0))
+    if is_full_admin(uid) or not uid:
+        return web.json_response({"error": "invalid"}, status=400)
+    if uid in data["blocked_users"]:
+        data["blocked_users"].remove(uid)
+        blocked = False
+    else:
+        data["blocked_users"].append(uid)
+        blocked = True
+    save_data()
+    return web.json_response({"blocked": blocked})
+
+
+async def api_admin_tariffs(request):
+    if not is_admin_init_data(request.query.get("initData", "")):
+        return web.json_response({"error": "forbidden"}, status=403)
+    tariffs = [{"id": tid, "name": t["name"], "price": t["price"], "daily_limit": t.get("daily_limit")} for tid, t in data["tariffs"].items()]
+    type_prices = [{"type": bt, "name": BOT_TYPES.get(bt, bt), "price": price} for bt, price in data["type_prices"].items()]
+    return web.json_response({"tariffs": tariffs, "type_prices": type_prices}, headers={"Cache-Control": "no-store"})
+
+
+async def api_admin_tariff_save(request):
+    body = await request.json()
+    if not is_admin_init_data(body.get("initData", "")):
+        return web.json_response({"error": "forbidden"}, status=403)
+    tid = body.get("id")
+    try:
+        price = int(body.get("price", 0))
+        if price <= 0:
+            raise ValueError
+    except (ValueError, TypeError):
+        return web.json_response({"error": "invalid_price"}, status=400)
+    if tid and tid in data["tariffs"]:
+        data["tariffs"][tid]["price"] = price
+        if body.get("name"):
+            data["tariffs"][tid]["name"] = body["name"]
+    else:
+        name = body.get("name") or "Yangi tarif"
+        limit = body.get("daily_limit")
+        new_id = str(max((int(k) for k in data["tariffs"].keys() if k.isdigit()), default=0) + 1)
+        data["tariffs"][new_id] = {"name": name, "price": price, "daily_limit": limit if limit else None}
+    save_data()
+    return web.json_response({"ok": True})
+
+
+async def api_admin_tariff_delete(request):
+    body = await request.json()
+    if not is_admin_init_data(body.get("initData", "")):
+        return web.json_response({"error": "forbidden"}, status=403)
+    tid = body.get("id")
+    data["tariffs"].pop(tid, None)
+    save_data()
+    return web.json_response({"ok": True})
+
+
+async def api_admin_typeprice_save(request):
+    body = await request.json()
+    if not is_admin_init_data(body.get("initData", "")):
+        return web.json_response({"error": "forbidden"}, status=403)
+    bt = body.get("type")
+    try:
+        price = int(body.get("price", 0))
+        if price <= 0 or bt not in data["type_prices"]:
+            raise ValueError
+    except (ValueError, TypeError):
+        return web.json_response({"error": "invalid"}, status=400)
+    data["type_prices"][bt] = price
+    save_data()
+    return web.json_response({"ok": True})
+
+
+async def api_admin_expiring(request):
+    if not is_admin_init_data(request.query.get("initData", "")):
+        return web.json_response({"error": "forbidden"}, status=403)
+    now = datetime.now()
+    soon = []
+    for b in data["bots"].values():
+        if is_full_admin(b.get("admin_id")):
+            continue
+        paid_until = b.get("paid_until")
+        if paid_until:
+            expiry = datetime.fromisoformat(paid_until)
+        else:
+            trial_cfg = get_trial_config(b.get("type"))
+            if not trial_cfg.get("enabled", True):
+                continue
+            expiry = datetime.fromisoformat(b["created_at"]) + timedelta(days=trial_cfg.get("days", TRIAL_DAYS))
+        remaining = (expiry - now).total_seconds()
+        if 0 <= remaining <= 2 * 86400:
+            soon.append({"id": b["id"], "name": b["name"], "type": BOT_TYPES.get(b["type"], b["type"]), "owner": b["admin_id"], "seconds_left": int(remaining)})
+    soon.sort(key=lambda x: x["seconds_left"])
+    return web.json_response({"bots": soon}, headers={"Cache-Control": "no-store"})
+
+
+async def api_admin_bots(request):
+    if not is_admin_init_data(request.query.get("initData", "")):
+        return web.json_response({"error": "forbidden"}, status=403)
+    query = request.query.get("q", "").strip().lower()
+    results = []
+    for b in data["bots"].values():
+        if query and query not in b["name"].lower():
+            continue
+        tariff = get_bot_tariff(b)
+        results.append({
+            "id": b["id"],
+            "name": b["name"],
+            "type": BOT_TYPES.get(b["type"], b["type"]),
+            "owner": b["admin_id"],
+            "active": is_active(b),
+            "price": tariff["price"],
+        })
+        if len(results) >= 50:
+            break
+    return web.json_response({"bots": results}, headers={"Cache-Control": "no-store"})
+
+
+async def api_admin_bot_delete(request):
+    body = await request.json()
+    if not is_admin_init_data(body.get("initData", "")):
+        return web.json_response({"error": "forbidden"}, status=403)
+    bot_id = int(body.get("id", 0))
+    target_token = None
+    for token, b in data["bots"].items():
+        if b["id"] == bot_id:
+            target_token = token
+            break
+    if not target_token:
+        return web.json_response({"error": "not_found"}, status=404)
+    task = running_bots.pop(target_token, None)
+    if task:
+        task.cancel()
+    del data["bots"][target_token]
+    save_data()
+    return web.json_response({"ok": True})
+
+
+async def api_admin_broadcast(request):
+    body = await request.json()
+    if not is_admin_init_data(body.get("initData", "")):
+        return web.json_response({"error": "forbidden"}, status=403)
+    text = (body.get("text") or "").strip()
+    if not text:
+        return web.json_response({"error": "empty"}, status=400)
+    sent, failed = 0, 0
+    for uid in data["platform_users"]:
+        try:
+            await main_bot.send_message(uid, text)
+            sent += 1
+        except Exception:
+            failed += 1
+        await asyncio.sleep(0.05)
+    return web.json_response({"sent": sent, "failed": failed})
 
 
 async def start_web_server():
     app = web.Application()
     app.router.add_get("/miniapp", miniapp_page)
     app.router.add_get("/api/mybots", api_mybots)
+    app.router.add_get("/api/admin/stats", api_admin_stats)
+    app.router.add_get("/api/admin/users", api_admin_users)
+    app.router.add_post("/api/admin/block", api_admin_block)
+    app.router.add_get("/api/admin/tariffs", api_admin_tariffs)
+    app.router.add_post("/api/admin/tariff/save", api_admin_tariff_save)
+    app.router.add_post("/api/admin/tariff/delete", api_admin_tariff_delete)
+    app.router.add_post("/api/admin/typeprice/save", api_admin_typeprice_save)
+    app.router.add_get("/api/admin/expiring", api_admin_expiring)
+    app.router.add_get("/api/admin/bots", api_admin_bots)
+    app.router.add_post("/api/admin/bots/delete", api_admin_bot_delete)
+    app.router.add_post("/api/admin/broadcast", api_admin_broadcast)
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.getenv("PORT", 8080))
@@ -7576,6 +7976,10 @@ async def main():
         except Exception as e:
             logging.error(f"Klon ishga tushmadi: {e}")
     asyncio.create_task(trial_warning_loop())
+    try:
+        await main_bot.delete_webhook(drop_pending_updates=False)
+    except Exception as e:
+        logging.error(f"delete_webhook xatosi (asosiy bot): {e}")
     await main_dp.start_polling(main_bot)
 
 
