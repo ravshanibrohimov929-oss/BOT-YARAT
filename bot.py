@@ -175,6 +175,7 @@ def somz_to_stars(somz: int) -> int:
 # Har bir bot uchun 3 xil oylik tarif (narx + kunlik foydalanuvchi limiti)
 # Kino bot uchun 5 xil oylik tarif (narx + kunlik foydalanuvchi limiti)
 data.setdefault("tariffs", {tid: dict(t) for tid, t in DEFAULT_TARIFFS.items()})
+data.setdefault("pro_tariffs", {tid: dict(t) for tid, t in DEFAULT_TARIFFS.items()})
 
 # Kino'dan boshqa barcha bot turlari uchun yagona oylik narx (tarifsiz, cheksiz foydalanuvchi)
 data.setdefault("other_bot_price", DEFAULT_OTHER_BOT_PRICE)
@@ -239,14 +240,20 @@ def get_monthly_rate() -> float:
     return data.get("monthly_rate", DEFAULT_MONTHLY_RATE)
 
 
-def cheapest_tariff_price() -> int:
-    if not data["tariffs"]:
+def tariffs_for(bot_type: str) -> dict:
+    return data["pro_tariffs"] if bot_type == "kino_pro" else data["tariffs"]
+
+
+def cheapest_tariff_price(bot_type: str = "kino_pro") -> int:
+    pool = tariffs_for(bot_type)
+    if not pool:
         return 0
-    return min(t["price"] for t in data["tariffs"].values())
+    return min(t["price"] for t in pool.values())
 
 
-def get_tariff(tariff_id: str) -> dict:
-    return data["tariffs"].get(tariff_id, DEFAULT_TARIFFS.get(tariff_id, DEFAULT_TARIFFS["2"]))
+def get_tariff(tariff_id: str, bot_type: str = "kino") -> dict:
+    pool = tariffs_for(bot_type)
+    return pool.get(tariff_id, DEFAULT_TARIFFS.get(tariff_id, DEFAULT_TARIFFS["2"]))
 
 
 OTHER_BOT_TARIFF_NAME = "Standart"
@@ -254,7 +261,7 @@ OTHER_BOT_TARIFF_NAME = "Standart"
 
 def get_bot_tariff(info: dict) -> dict:
     if info.get("type") in ("kino", "kino_pro"):
-        return get_tariff(info.get("tariff", "2"))
+        return get_tariff(info.get("tariff", "2"), info.get("type"))
     price = data["type_prices"].get(info.get("type"), data.get("other_bot_price", DEFAULT_OTHER_BOT_PRICE))
     return {"name": OTHER_BOT_TARIFF_NAME, "price": price, "daily_limit": None}
 
@@ -1050,8 +1057,8 @@ def types_kb():
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def tariff_kb(only_ids=None):
-    items = data["tariffs"].items()
+def tariff_kb(only_ids=None, bot_type: str = "kino"):
+    items = tariffs_for(bot_type).items()
     if only_ids:
         items = [(tid, t) for tid, t in items if tid in only_ids]
     buttons = [
@@ -1321,6 +1328,10 @@ def setup_platform_bot(dp: Dispatcher):
             f"💠 {t['name']} — {t['price']:,} so'm/oy ({tariff_limit_text(t)})"
             for t in data["tariffs"].values()
         )
+        pro_tariff_lines = "\n".join(
+            f"💠 {t['name']} — {t['price']:,} so'm/oy ({tariff_limit_text(t)})"
+            for t in data["pro_tariffs"].values()
+        )
         other_lines = "\n".join(
             f"💠 {BOT_TYPES[bt]} — {price:,} so'm/oy"
             for bt, price in data["type_prices"].items()
@@ -1335,8 +1346,10 @@ def setup_platform_bot(dp: Dispatcher):
             "• To'liq o'zbek tilidagi qulay interfeys\n"
             "• Doimiy va tezkor qo'llab-quvvatlash xizmati\n"
             "• Barcha jarayonlar avtomatik va tushunarli\n\n"
-            "💳 <b>🎬 Kino bot tariflari:</b>\n"
+            "💳 <b>🎬 Oddiy Kino bot tariflari:</b>\n"
             f"{tariff_lines}\n\n"
+            "💳 <b>🎬💎 Pro Kino bot tariflari:</b>\n"
+            f"{pro_tariff_lines}\n\n"
             f"💳 <b>Boshqa bot turlari:</b>\n{other_lines}\n\n"
             f"🎁 Har bir bot uchun {TRIAL_DAYS} kunlik BEPUL sinov muddati bor!\n\n"
             "Pastdagi menyudan foydalaning 👇"
@@ -2188,7 +2201,7 @@ def setup_platform_bot(dp: Dispatcher):
         return InlineKeyboardMarkup(inline_keyboard=buttons)
 
     def tariff_preview_text(bot_type: str) -> str:
-        cards = "\n\n".join(tariff_card_text(tid, t) for tid, t in data["tariffs"].items())
+        cards = "\n\n".join(tariff_card_text(tid, t) for tid, t in tariffs_for(bot_type).items())
         return f"{BOT_TYPES[bot_type]} — Tariflar\n\n{cards}"
 
     def tariff_preview_kb(bot_type: str):
@@ -2305,7 +2318,7 @@ def setup_platform_bot(dp: Dispatcher):
         await state.set_state(NewBotFlow.waiting_tariff)
         await message.answer(
             f"✅ Bot topildi: <b>{me.first_name}</b>\n\n{BOT_TYPES[bot_type]} uchun tarifni tanlang:",
-            reply_markup=tariff_kb(),
+            reply_markup=tariff_kb(bot_type=bot_type),
         )
 
     @dp.callback_query(NewBotFlow.waiting_tariff, F.data.startswith("tariff_"))
@@ -2361,13 +2374,22 @@ def setup_platform_bot(dp: Dispatcher):
             return
         buttons = [
             [InlineKeyboardButton(
-                text=f"{t['name']} — {t['price']:,} so'm/oy ({tariff_limit_text(t)})",
-                callback_data=f"edittariff_{tid}",
+                text=f"🎬 {t['name']} — {t['price']:,} so'm/oy ({tariff_limit_text(t)})",
+                callback_data=f"edittariff_k_{tid}",
             )]
             for tid, t in data["tariffs"].items()
         ]
-        buttons.append([InlineKeyboardButton(text="➕ Tarif qo'shish", callback_data="addtariff")])
-        buttons.append([InlineKeyboardButton(text="➖ Tarif o'chirish", callback_data="deltariff")])
+        buttons.append([InlineKeyboardButton(text="➕ Oddiy tarif qo'shish", callback_data="addtariff_k")])
+        buttons.append([InlineKeyboardButton(text="➖ Oddiy tarif o'chirish", callback_data="deltariff_k")])
+        buttons += [
+            [InlineKeyboardButton(
+                text=f"💎 {t['name']} — {t['price']:,} so'm/oy ({tariff_limit_text(t)})",
+                callback_data=f"edittariff_p_{tid}",
+            )]
+            for tid, t in data["pro_tariffs"].items()
+        ]
+        buttons.append([InlineKeyboardButton(text="➕ Pro tarif qo'shish", callback_data="addtariff_p")])
+        buttons.append([InlineKeyboardButton(text="➖ Pro tarif o'chirish", callback_data="deltariff_p")])
         for bt, bt_name in BOT_TYPES.items():
             if bt in ("kino", "kino_pro"):
                 continue
@@ -2378,16 +2400,20 @@ def setup_platform_bot(dp: Dispatcher):
             )])
         await message.answer(
             "💰 <b>Tariflarni boshqarish</b>\n\n"
-            "🎬 Kino bot uchun 5 xil tarif, boshqa har bir bot turi uchun o'zining narxi.\n\n"
+            "🎬 Oddiy Kino Bot va 💎 Pro Kino Bot uchun narxlar endi mustaqil — "
+            "har biri o'zining alohida tariflariga ega.\n\n"
             "Narxini o'zgartirish uchun tanlang:",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
         )
 
-    @dp.callback_query(F.data == "addtariff")
+    @dp.callback_query(F.data.startswith("addtariff_"))
     async def addtariff_cb(callback: CallbackQuery, state: FSMContext):
         if not is_full_admin(callback.from_user.id):
             return
-        await callback.message.answer("Yangi tarif nomini kiriting (masalan: 🚀 Mega):")
+        pool = callback.data.split("_", 1)[1]
+        await state.update_data(tariff_pool=pool)
+        pool_label = "💎 Pro Kino" if pool == "p" else "🎬 Oddiy Kino"
+        await callback.message.answer(f"{pool_label} uchun yangi tarif nomini kiriting (masalan: 🚀 Mega):")
         await state.set_state(NewTariffAdd.waiting_name)
         await callback.answer()
 
@@ -2426,8 +2452,10 @@ def setup_platform_bot(dp: Dispatcher):
             await message.answer("❌ 0 yoki musbat butun raqam kiriting.")
             return
         fsm_data = await state.get_data()
-        new_id = str(max((int(k) for k in data["tariffs"].keys() if k.isdigit()), default=0) + 1)
-        data["tariffs"][new_id] = {
+        pool_key = "pro_tariffs" if fsm_data.get("tariff_pool") == "p" else "tariffs"
+        pool = data[pool_key]
+        new_id = str(max((int(k) for k in pool.keys() if k.isdigit()), default=0) + 1)
+        pool[new_id] = {
             "name": fsm_data["new_tariff_name"],
             "price": fsm_data["new_tariff_price"],
             "daily_limit": None if limit == 0 else limit,
@@ -2436,16 +2464,19 @@ def setup_platform_bot(dp: Dispatcher):
         await message.answer(f"✅ Yangi tarif qo'shildi: {fsm_data['new_tariff_name']} — {fsm_data['new_tariff_price']:,} so'm/oy")
         await state.clear()
 
-    @dp.callback_query(F.data == "deltariff")
+    @dp.callback_query(F.data.startswith("deltariff_"))
     async def deltariff_cb(callback: CallbackQuery):
         if not is_full_admin(callback.from_user.id):
             return
-        if len(data["tariffs"]) <= 1:
+        pool_code = callback.data.split("_", 1)[1]
+        pool_key = "pro_tariffs" if pool_code == "p" else "tariffs"
+        pool = data[pool_key]
+        if len(pool) <= 1:
             await callback.answer("Kamida bitta tarif qolishi kerak.", show_alert=True)
             return
         buttons = [
-            [InlineKeyboardButton(text=f"{t['name']} — {t['price']:,} so'm/oy", callback_data=f"deltariffid_{tid}")]
-            for tid, t in data["tariffs"].items()
+            [InlineKeyboardButton(text=f"{t['name']} — {t['price']:,} so'm/oy", callback_data=f"deltariffid_{pool_code}_{tid}")]
+            for tid, t in pool.items()
         ]
         await callback.message.answer("O'chirmoqchi bo'lgan tarifni tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
         await callback.answer()
@@ -2454,11 +2485,13 @@ def setup_platform_bot(dp: Dispatcher):
     async def deltariffid_cb(callback: CallbackQuery):
         if not is_full_admin(callback.from_user.id):
             return
-        if len(data["tariffs"]) <= 1:
+        _, pool_code, tid = callback.data.split("_", 2)
+        pool_key = "pro_tariffs" if pool_code == "p" else "tariffs"
+        pool = data[pool_key]
+        if len(pool) <= 1:
             await callback.answer("Kamida bitta tarif qolishi kerak.", show_alert=True)
             return
-        tid = callback.data.split("_", 1)[1]
-        removed = data["tariffs"].pop(tid, None)
+        removed = pool.pop(tid, None)
         save_data()
         if removed:
             await callback.message.answer(f"🗑 O'chirildi: {removed['name']}")
@@ -2509,9 +2542,10 @@ def setup_platform_bot(dp: Dispatcher):
     async def edittariff_cb(callback: CallbackQuery, state: FSMContext):
         if not is_full_admin(callback.from_user.id):
             return
-        tid = callback.data.split("_", 1)[1]
-        t = data["tariffs"][tid]
-        await state.update_data(edit_tariff_id=tid)
+        _, pool_code, tid = callback.data.split("_", 2)
+        pool_key = "pro_tariffs" if pool_code == "p" else "tariffs"
+        t = data[pool_key][tid]
+        await state.update_data(edit_tariff_id=tid, edit_tariff_pool=pool_key)
         await callback.message.answer(
             f"{t['name']} tarifi uchun yangi narxni kiriting (so'm/oy, faqat raqam):\n\n"
             f"Joriy narx: {t['price']:,} so'm/oy"
@@ -2537,10 +2571,11 @@ def setup_platform_bot(dp: Dispatcher):
             await state.clear()
             return
         tid = state_data.get("edit_tariff_id")
-        if tid and tid in data["tariffs"]:
-            data["tariffs"][tid]["price"] = amount
+        pool_key = state_data.get("edit_tariff_pool", "tariffs")
+        if tid and tid in data[pool_key]:
+            data[pool_key][tid]["price"] = amount
             save_data()
-            await message.answer(f"✅ {data['tariffs'][tid]['name']} tarifi endi {amount:,} so'm/oy.")
+            await message.answer(f"✅ {data[pool_key][tid]['name']} tarifi endi {amount:,} so'm/oy.")
         await state.clear()
 
     @dp.message(Command("globalbuttons"))
@@ -7317,325 +7352,6 @@ def build_kino_report(info: dict) -> str:
     )
 
 
-MINIAPP_HTML = """<!DOCTYPE html>
-<html lang="uz">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>Bot Creator</title>
-<style>
-  :root {
-    --bg: var(--tg-theme-bg-color, #ffffff);
-    --bg2: var(--tg-theme-secondary-bg-color, #f2f2f7);
-    --text: var(--tg-theme-text-color, #1c1c1e);
-    --hint: var(--tg-theme-hint-color, #8e8e93);
-    --accent: var(--tg-theme-button-color, #2481cc);
-    --accent-text: var(--tg-theme-button-text-color, #ffffff);
-    --line: color-mix(in srgb, var(--hint) 22%, transparent);
-  }
-  * { box-sizing: border-box; }
-  html, body {
-    margin: 0; padding: 0;
-    background: var(--bg);
-    color: var(--text);
-    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
-    -webkit-font-smoothing: antialiased;
-  }
-  .mono {
-    font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
-  }
-  .wrap {
-    max-width: 480px;
-    margin: 0 auto;
-    padding: 20px 16px 32px;
-  }
-  .hero {
-    text-align: center;
-    padding: 12px 0 22px;
-    opacity: 0;
-    animation: rise .5s ease forwards;
-  }
-  .hero-badge {
-    width: 64px; height: 64px;
-    margin: 0 auto 14px;
-    border-radius: 18px;
-    background: linear-gradient(145deg, var(--accent), color-mix(in srgb, var(--accent) 60%, #7b2ff7));
-    display: flex; align-items: center; justify-content: center;
-    font-size: 28px;
-    box-shadow: 0 8px 20px -8px color-mix(in srgb, var(--accent) 70%, transparent);
-  }
-  .hero h1 {
-    font-size: 21px;
-    font-weight: 700;
-    margin: 0 0 4px;
-    letter-spacing: -0.01em;
-  }
-  .hero p {
-    font-size: 13.5px;
-    color: var(--hint);
-    margin: 0;
-  }
-  .balance-card {
-    background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 55%, #7b2ff7));
-    color: var(--accent-text);
-    border-radius: 18px;
-    padding: 18px 20px;
-    margin-bottom: 22px;
-    opacity: 0;
-    animation: rise .5s ease .08s forwards;
-  }
-  .balance-card .label {
-    font-size: 12.5px;
-    opacity: .85;
-    text-transform: uppercase;
-    letter-spacing: .04em;
-    margin-bottom: 6px;
-  }
-  .balance-card .amount {
-    font-size: 28px;
-    font-weight: 700;
-    font-variant-numeric: tabular-nums;
-    letter-spacing: -0.01em;
-  }
-  .section-label {
-    font-size: 12.5px;
-    font-weight: 600;
-    color: var(--hint);
-    text-transform: uppercase;
-    letter-spacing: .05em;
-    margin: 0 4px 8px;
-  }
-  .bot-list {
-    background: var(--bg2);
-    border-radius: 16px;
-    overflow: hidden;
-    opacity: 0;
-    animation: rise .5s ease .16s forwards;
-  }
-  .bot-row {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 13px 14px;
-    border-bottom: 1px solid var(--line);
-    text-decoration: none;
-    color: inherit;
-  }
-  .bot-row:last-child { border-bottom: none; }
-  .avatar {
-    flex-shrink: 0;
-    width: 42px; height: 42px;
-    border-radius: 12px;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 18px;
-    color: #fff;
-    font-weight: 600;
-  }
-  .bot-meta { flex: 1; min-width: 0; }
-  .bot-name {
-    font-size: 15px;
-    font-weight: 600;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .bot-sub {
-    font-size: 12.5px;
-    color: var(--hint);
-    margin-top: 1px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  .pill {
-    flex-shrink: 0;
-    font-size: 11px;
-    font-weight: 600;
-    padding: 4px 9px;
-    border-radius: 999px;
-    white-space: nowrap;
-  }
-  .pill.on { background: color-mix(in srgb, #34c759 18%, transparent); color: #248a3d; }
-  .pill.off { background: color-mix(in srgb, #ff3b30 16%, transparent); color: #d70015; }
-  .empty {
-    text-align: center;
-    padding: 46px 20px;
-    color: var(--hint);
-    font-size: 14px;
-    line-height: 1.5;
-  }
-  .empty .emoji { font-size: 34px; margin-bottom: 10px; display: block; }
-  .state-msg {
-    text-align: center;
-    padding: 60px 20px;
-    color: var(--hint);
-    font-size: 14px;
-  }
-  @keyframes rise {
-    from { opacity: 0; transform: translateY(8px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .hero, .balance-card, .bot-list { animation: none !important; opacity: 1 !important; }
-  }
-</style>
-</head>
-<body>
-  <div class="wrap">
-    <div class="hero">
-      <div class="hero-badge">🤖</div>
-      <h1>Bot Creator</h1>
-      <p>Botlaringiz va balansingiz — bir joyda</p>
-    </div>
-
-    <div id="content">
-      <div class="state-msg">Yuklanmoqda…</div>
-    </div>
-  </div>
-
-<script>
-  window.addEventListener("error", function (e) {
-    const content = document.getElementById("content");
-    if (content) {
-      content.innerHTML = '<div class="state-msg">Sahifada xatolik: ' + escapeHtmlSafe(String(e.message || e)) + '</div>';
-    }
-  });
-
-  function escapeHtmlSafe(s) {
-    const d = document.createElement("div");
-    d.textContent = s;
-    return d.innerHTML;
-  }
-
-  function loadTelegramSdk(timeoutMs) {
-    return new Promise((resolve) => {
-      let done = false;
-      const finish = () => { if (!done) { done = true; resolve(); } };
-      const timer = setTimeout(finish, timeoutMs);
-      const el = document.createElement("script");
-      el.src = "https://telegram.org/js/telegram-web-app.js";
-      el.onload = () => { clearTimeout(timer); finish(); };
-      el.onerror = () => { clearTimeout(timer); finish(); };
-      document.head.appendChild(el);
-    });
-  }
-
-  const TYPE_COLORS = {
-    "kino": "#7b5cff",
-  };
-
-  function fmt(n) {
-    return Number(n || 0).toLocaleString("ru-RU").replace(/,/g, " ");
-  }
-
-  function initials(name) {
-    return (name || "?").trim().slice(0, 1).toUpperCase();
-  }
-
-  function fetchWithTimeout(url, ms) {
-    return new Promise((resolve, reject) => {
-      const controller = new AbortController();
-      let settled = false;
-      const timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        controller.abort();
-        reject(new Error("timeout"));
-      }, ms);
-      fetch(url, { signal: controller.signal })
-        .then((res) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          resolve(res);
-        })
-        .catch((err) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          reject(err);
-        });
-    });
-  }
-
-  // Ba'zi eski Android WebView'larda fetch/AbortController osilib qolishi mumkin —
-  // shu sabab 15 soniyadan keyin "Yuklanmoqda" hali tursa, majburan xatolik ko'rsatamiz.
-  setTimeout(function () {
-    const content = document.getElementById("content");
-    if (content && content.textContent.indexOf("Yuklanmoqda") !== -1) {
-      content.innerHTML = '<div class="state-msg">Yuklashda muammo yuz berdi.<br>Sahifani yopib, qayta urinib ko\\'ring.</div>';
-    }
-  }, 15000);
-
-  async function load() {
-    const content = document.getElementById("content");
-
-    await loadTelegramSdk(4000);
-    const tg = window.Telegram?.WebApp;
-    if (tg) { tg.ready(); tg.expand(); }
-
-    if (!tg) {
-      content.innerHTML = '<div class="state-msg">Telegram SDK yuklanmadi. Internet aloqasini tekshirib, sahifani qayta oching.</div>';
-      return;
-    }
-
-    const initData = tg?.initData || "";
-
-    if (!initData) {
-      content.innerHTML = '<div class="state-msg">Bu sahifa faqat Telegram ichida ishlaydi.</div>';
-      return;
-    }
-
-    try {
-      const res = await fetchWithTimeout("/api/mybots?" + new URLSearchParams({ initData }), 8000);
-      if (!res.ok) {
-        const errBody = await res.text().catch(() => "");
-        throw new Error("Server javobi: " + res.status + " " + errBody.slice(0, 120));
-      }
-      const data = await res.json();
-
-      let html = "";
-      html += '<div class="balance-card"><div class="label">Balans</div><div class="amount">' + fmt(data.balance) + " so'm</div></div>";
-      html += '<div class="section-label">Botlarim (' + data.bots.length + ')</div>';
-
-      if (data.bots.length === 0) {
-        html += '<div class="bot-list"><div class="empty"><span class="emoji">📭</span>Hali botingiz yo\'q.<br>Bot yaratish uchun bosh menyudan "🤖 Bot yaratish" tugmasini bosing.</div></div>';
-      } else {
-        html += '<div class="bot-list">';
-        for (const b of data.bots) {
-          const color = TYPE_COLORS[b.type_key] || "#8e8e93";
-          const pillClass = b.active ? "on" : "off";
-          const pillText = b.active ? "Faol" : "To'xtagan";
-          html += '<div class="bot-row">' +
-            '<div class="avatar" style="background:' + color + '">' + initials(b.name) + '</div>' +
-            '<div class="bot-meta">' +
-              '<div class="bot-name">' + escapeHtml(b.name) + '</div>' +
-              '<div class="bot-sub mono">' + escapeHtml(b.type) + ' · ' + escapeHtml(b.tariff) + '</div>' +
-            '</div>' +
-            '<div class="pill ' + pillClass + '">' + pillText + '</div>' +
-          '</div>';
-        }
-        html += '</div>';
-      }
-
-      content.innerHTML = html;
-    } catch (e) {
-      const reason = e && e.name === "AbortError" ? "Server 8 soniyada javob bermadi (timeout)." : (e.message || String(e));
-      content.innerHTML = '<div class="state-msg">Ma\'lumotlarni yuklab bo\'lmadi.<br><span style="font-size:12px">' + escapeHtmlSafe(reason) + '</span></div>';
-    }
-  }
-
-  function escapeHtml(s) {
-    const d = document.createElement("div");
-    d.textContent = s;
-    return d.innerHTML;
-  }
-
-  load();
-</script>
-</body>
-</html>
-"""
 
 
 # ---------- Telegram Mini App (BotFather'dagi kabi "Botlarim" veb-sahifasi) ----------
@@ -7656,9 +7372,17 @@ def validate_webapp_init_data(init_data: str, bot_token: str):
         return None
 
 
+MINIAPP_HTML_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "miniapp.html")
+
+
 async def miniapp_page(request):
+    try:
+        with open(MINIAPP_HTML_PATH, "r", encoding="utf-8") as f:
+            html = f.read()
+    except Exception as e:
+        return web.Response(text=f"miniapp.html topilmadi yoki o'qib bo'lmadi: {e}", status=500)
     return web.Response(
-        text=MINIAPP_HTML,
+        text=html,
         content_type="text/html",
         headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache"},
     )
