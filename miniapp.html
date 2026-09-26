@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Bot Creator</title>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #ffffff);
+    --bg2: var(--tg-theme-secondary-bg-color, #f2f2f7);
+    --text: var(--tg-theme-text-color, #1c1c1e);
+    --hint: var(--tg-theme-hint-color, #8e8e93);
+    --accent: var(--tg-theme-button-color, #2481cc);
+    --accent-text: var(--tg-theme-button-text-color, #ffffff);
+    --line: color-mix(in srgb, var(--hint) 22%, transparent);
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono {
+    font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  }
+  .wrap {
+    max-width: 480px;
+    margin: 0 auto;
+    padding: 20px 16px 32px;
+  }
+  .hero {
+    text-align: center;
+    padding: 12px 0 22px;
+    opacity: 0;
+    animation: rise .5s ease forwards;
+  }
+  .hero-badge {
+    width: 64px; height: 64px;
+    margin: 0 auto 14px;
+    border-radius: 18px;
+    background: linear-gradient(145deg, var(--accent), color-mix(in srgb, var(--accent) 60%, #7b2ff7));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 28px;
+    box-shadow: 0 8px 20px -8px color-mix(in srgb, var(--accent) 70%, transparent);
+  }
+  .hero h1 {
+    font-size: 21px;
+    font-weight: 700;
+    margin: 0 0 4px;
+    letter-spacing: -0.01em;
+  }
+  .hero p {
+    font-size: 13.5px;
+    color: var(--hint);
+    margin: 0;
+  }
+  .balance-card {
+    background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 55%, #7b2ff7));
+    color: var(--accent-text);
+    border-radius: 18px;
+    padding: 18px 20px;
+    margin-bottom: 22px;
+    opacity: 0;
+    animation: rise .5s ease .08s forwards;
+  }
+  .balance-card .label {
+    font-size: 12.5px;
+    opacity: .85;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    margin-bottom: 6px;
+  }
+  .balance-card .amount {
+    font-size: 28px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
+  }
+  .section-label {
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--hint);
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    margin: 0 4px 8px;
+  }
+  .bot-list {
+    background: var(--bg2);
+    border-radius: 16px;
+    overflow: hidden;
+    opacity: 0;
+    animation: rise .5s ease .16s forwards;
+  }
+  .bot-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 13px 14px;
+    border-bottom: 1px solid var(--line);
+    text-decoration: none;
+    color: inherit;
+  }
+  .bot-row:last-child { border-bottom: none; }
+  .avatar {
+    flex-shrink: 0;
+    width: 42px; height: 42px;
+    border-radius: 12px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+    color: #fff;
+    font-weight: 600;
+  }
+  .bot-meta { flex: 1; min-width: 0; }
+  .bot-name {
+    font-size: 15px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .bot-sub {
+    font-size: 12.5px;
+    color: var(--hint);
+    margin-top: 1px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .pill {
+    flex-shrink: 0;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 4px 9px;
+    border-radius: 999px;
+    white-space: nowrap;
+  }
+  .pill.on { background: color-mix(in srgb, #34c759 18%, transparent); color: #248a3d; }
+  .pill.off { background: color-mix(in srgb, #ff3b30 16%, transparent); color: #d70015; }
+  .empty {
+    text-align: center;
+    padding: 46px 20px;
+    color: var(--hint);
+    font-size: 14px;
+    line-height: 1.5;
+  }
+  .empty .emoji { font-size: 34px; margin-bottom: 10px; display: block; }
+  .state-msg {
+    text-align: center;
+    padding: 60px 20px;
+    color: var(--hint);
+    font-size: 14px;
+  }
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .hero, .balance-card, .bot-list { animation: none !important; opacity: 1 !important; }
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="hero">
+      <div class="hero-badge">🤖</div>
+      <h1>Bot Creator</h1>
+      <p>Botlaringiz va balansingiz — bir joyda</p>
+    </div>
+
+    <div id="content">
+      <div class="state-msg">Yuklanmoqda…</div>
+    </div>
+  </div>
+
+<script>
+  window.addEventListener("error", function (e) {
+    const content = document.getElementById("content");
+    if (content) {
+      content.innerHTML = '<div class="state-msg">Sahifada xatolik: ' + escapeHtmlSafe(String(e.message || e)) + '</div>';
+    }
+  });
+
+  window.addEventListener("unhandledrejection", function (e) {
+    const content = document.getElementById("content");
+    if (content) {
+      const msg = (e.reason && (e.reason.message || String(e.reason))) || "noma'lum xato";
+      content.innerHTML = '<div class="state-msg">Sahifada xatolik (async): ' + escapeHtmlSafe(msg) + '</div>';
+    }
+  });
+
+  function escapeHtmlSafe(s) {
+    const d = document.createElement("div");
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  function loadTelegramSdk(timeoutMs) {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = () => { if (!done) { done = true; resolve(); } };
+      const timer = setTimeout(finish, timeoutMs);
+      const el = document.createElement("script");
+      el.src = "https://telegram.org/js/telegram-web-app.js";
+      el.onload = () => { clearTimeout(timer); finish(); };
+      el.onerror = () => { clearTimeout(timer); finish(); };
+      document.head.appendChild(el);
+    });
+  }
+
+  const TYPE_COLORS = {
+    "kino": "#7b5cff",
+  };
+
+  function fmt(n) {
+    return Number(n || 0).toLocaleString("ru-RU").replace(/,/g, " ");
+  }
+
+  function initials(name) {
+    return (name || "?").trim().slice(0, 1).toUpperCase();
+  }
+
+  function fetchWithTimeout(url, ms) {
+    return new Promise((resolve, reject) => {
+      const controller = new AbortController();
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        controller.abort();
+        reject(new Error("timeout"));
+      }, ms);
+      fetch(url, { signal: controller.signal })
+        .then((res) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(res);
+        })
+        .catch((err) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(err);
+        });
+    });
+  }
+
+  // Ba'zi eski Android WebView'larda fetch/AbortController osilib qolishi mumkin —
+  // shu sabab 15 soniyadan keyin "Yuklanmoqda" hali tursa, majburan xatolik ko'rsatamiz.
+  setTimeout(function () {
+    const content = document.getElementById("content");
+    if (content && content.textContent.indexOf("Yuklanmoqda") !== -1) {
+      content.innerHTML = '<div class="state-msg">Yuklashda muammo yuz berdi.<br>Sahifani yopib, qayta urinib ko\'ring.</div>';
+    }
+  }, 15000);
+
+  async function load() {
+    const content = document.getElementById("content");
+    try {
+      await loadTelegramSdk(4000);
+      const tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
+      if (tg) {
+        try { tg.ready(); } catch (e) {}
+        try { tg.expand(); } catch (e) {}
+      }
+
+      if (!tg) {
+        content.innerHTML = '<div class="state-msg">Telegram SDK yuklanmadi. Internet aloqasini tekshirib, sahifani qayta oching.</div>';
+        return;
+      }
+
+      const initData = tg.initData || "";
+
+      if (!initData) {
+        content.innerHTML = '<div class="state-msg">Bu sahifa faqat Telegram ichida ishlaydi.</div>';
+        return;
+      }
+
+      const res = await fetchWithTimeout("/api/mybots?" + new URLSearchParams({ initData }), 8000);
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => "");
+        throw new Error("Server javobi: " + res.status + " " + errBody.slice(0, 120));
+      }
+      const data = await res.json();
+
+      let html = "";
+      html += '<div class="balance-card"><div class="label">Balans</div><div class="amount">' + fmt(data.balance) + " so'm</div></div>";
+      html += '<div class="section-label">Botlarim (' + data.bots.length + ')</div>';
+
+      if (data.bots.length === 0) {
+        html += '<div class="bot-list"><div class="empty"><span class="emoji">📭</span>Hali botingiz yo\'q.<br>Bot yaratish uchun bosh menyudan "🤖 Bot yaratish" tugmasini bosing.</div></div>';
+      } else {
+        html += '<div class="bot-list">';
+        for (const b of data.bots) {
+          const color = TYPE_COLORS[b.type_key] || "#8e8e93";
+          const pillClass = b.active ? "on" : "off";
+          const pillText = b.active ? "Faol" : "To'xtagan";
+          html += '<div class="bot-row">' +
+            '<div class="avatar" style="background:' + color + '">' + initials(b.name) + '</div>' +
+            '<div class="bot-meta">' +
+              '<div class="bot-name">' + escapeHtml(b.name) + '</div>' +
+              '<div class="bot-sub mono">' + escapeHtml(b.type) + ' · ' + escapeHtml(b.tariff) + '</div>' +
+            '</div>' +
+            '<div class="pill ' + pillClass + '">' + pillText + '</div>' +
+          '</div>';
+        }
+        html += '</div>';
+      }
+
+      content.innerHTML = html;
+    } catch (e) {
+      const reason = e && e.name === "AbortError" ? "Server 8 soniyada javob bermadi (timeout)." : (e.message || String(e));
+      content.innerHTML = '<div class="state-msg">Ma\'lumotlarni yuklab bo\'lmadi.<br><span style="font-size:12px">' + escapeHtmlSafe(reason) + '</span></div>';
+    }
+  }
+
+  function escapeHtml(s) {
+    const d = document.createElement("div");
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  load();
+</script>
+</body>
+</html>
