@@ -6,13 +6,24 @@
 <title>Bot Creator</title>
 <style>
   :root {
-    --bg: var(--tg-theme-bg-color, #ffffff);
-    --bg2: var(--tg-theme-secondary-bg-color, #f2f2f7);
-    --text: var(--tg-theme-text-color, #1c1c1e);
-    --hint: var(--tg-theme-hint-color, #8e8e93);
-    --accent: var(--tg-theme-button-color, #2481cc);
-    --accent-text: var(--tg-theme-button-text-color, #ffffff);
-    --line: color-mix(in srgb, var(--hint) 22%, transparent);
+    --bg: #0e1420;
+    --bg2: #151d2e;
+    --card: #131b2a;
+    --text: #f2f4f8;
+    --hint: #8b93a7;
+    --accent: #2f7dff;
+    --accent2: #7b2ff7;
+    --line: rgba(255,255,255,0.08);
+    --good: #34c759;
+    --bad: #ff453a;
+  }
+  html[data-theme="light"] {
+    --bg: #f4f6fb;
+    --bg2: #ffffff;
+    --card: #ffffff;
+    --text: #14161c;
+    --hint: #767a86;
+    --line: rgba(20,20,30,0.08);
   }
   * { box-sizing: border-box; }
   html, body {
@@ -21,152 +32,155 @@
     color: var(--text);
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
     -webkit-font-smoothing: antialiased;
+    transition: background .2s ease, color .2s ease;
   }
-  .mono {
-    font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  .wrap { max-width: 480px; margin: 0 auto; padding: 12px 14px 90px; }
+
+  /* Header */
+  .topbar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 2px 16px;
   }
-  .wrap {
-    max-width: 480px;
-    margin: 0 auto;
-    padding: 20px 16px 32px;
-  }
-  .hero {
-    text-align: center;
-    padding: 12px 0 22px;
-    opacity: 0;
-    animation: rise .5s ease forwards;
-  }
-  .hero-badge {
-    width: 64px; height: 64px;
-    margin: 0 auto 14px;
-    border-radius: 18px;
-    background: linear-gradient(145deg, var(--accent), color-mix(in srgb, var(--accent) 60%, #7b2ff7));
+  .icon-btn {
+    width: 36px; height: 36px; border-radius: 10px;
     display: flex; align-items: center; justify-content: center;
-    font-size: 28px;
-    box-shadow: 0 8px 20px -8px color-mix(in srgb, var(--accent) 70%, transparent);
+    background: var(--bg2); border: 1px solid var(--line);
+    font-size: 16px; cursor: pointer; flex-shrink: 0; position: relative;
+    color: var(--text);
   }
-  .hero h1 {
-    font-size: 21px;
-    font-weight: 700;
-    margin: 0 0 4px;
-    letter-spacing: -0.01em;
+  .brand { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 0; }
+  .brand .logo {
+    width: 34px; height: 34px; border-radius: 10px;
+    background: linear-gradient(145deg, var(--accent), var(--accent2));
+    display: flex; align-items: center; justify-content: center; font-size: 17px;
+    flex-shrink: 0;
   }
-  .hero p {
-    font-size: 13.5px;
-    color: var(--hint);
-    margin: 0;
+  .brand .name { font-size: 16px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .badge {
+    position: absolute; top: -3px; right: -3px;
+    background: var(--bad); color: #fff; font-size: 10px; font-weight: 700;
+    min-width: 16px; height: 16px; border-radius: 999px;
+    display: flex; align-items: center; justify-content: center; padding: 0 3px;
   }
-  .balance-card {
-    background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 55%, #7b2ff7));
-    color: var(--accent-text);
-    border-radius: 18px;
-    padding: 18px 20px;
-    margin-bottom: 22px;
-    opacity: 0;
-    animation: rise .5s ease .08s forwards;
+  .avatar-mini {
+    width: 36px; height: 36px; border-radius: 999px; flex-shrink: 0;
+    background: linear-gradient(145deg, var(--accent), var(--accent2));
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 14px; color: #fff; cursor: pointer;
   }
-  .balance-card .label {
-    font-size: 12.5px;
-    opacity: .85;
-    text-transform: uppercase;
-    letter-spacing: .04em;
-    margin-bottom: 6px;
+
+  /* Greeting */
+  .greet-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 4px 2px 16px; }
+  .greet h1 { font-size: 19px; margin: 0 0 3px; letter-spacing: -0.01em; }
+  .greet p { font-size: 13px; color: var(--hint); margin: 0; }
+  .btn-primary {
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    color: #fff; border: none; border-radius: 12px;
+    padding: 10px 14px; font-size: 13.5px; font-weight: 600;
+    display: flex; align-items: center; gap: 6px; white-space: nowrap; cursor: pointer;
   }
-  .balance-card .amount {
-    font-size: 28px;
-    font-weight: 700;
-    font-variant-numeric: tabular-nums;
-    letter-spacing: -0.01em;
+
+  /* Stat grid */
+  .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 18px; }
+  .stat-card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+    padding: 14px;
   }
-  .section-label {
-    font-size: 12.5px;
-    font-weight: 600;
-    color: var(--hint);
-    text-transform: uppercase;
-    letter-spacing: .05em;
-    margin: 0 4px 8px;
-  }
-  .bot-list {
-    background: var(--bg2);
-    border-radius: 16px;
-    overflow: hidden;
-    opacity: 0;
-    animation: rise .5s ease .16s forwards;
-  }
-  .bot-row {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 13px 14px;
-    border-bottom: 1px solid var(--line);
-    text-decoration: none;
-    color: inherit;
-  }
+  .stat-card .ic { width: 34px; height: 34px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 16px; margin-bottom: 10px; }
+  .stat-card .val { font-size: 21px; font-weight: 700; letter-spacing: -0.01em; }
+  .stat-card .lbl { font-size: 12px; color: var(--hint); margin-top: 2px; }
+
+  /* Section */
+  .section-head { display: flex; align-items: center; justify-content: space-between; margin: 0 2px 8px; }
+  .section-label { font-size: 13px; font-weight: 700; }
+  .section-link { font-size: 13px; color: var(--accent); text-decoration: none; cursor: pointer; }
+
+  .bot-list { background: var(--card); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; }
+  .bot-row { display: flex; align-items: center; gap: 12px; padding: 13px 14px; border-bottom: 1px solid var(--line); }
   .bot-row:last-child { border-bottom: none; }
-  .avatar {
-    flex-shrink: 0;
-    width: 42px; height: 42px;
-    border-radius: 12px;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 18px;
-    color: #fff;
-    font-weight: 600;
-  }
+  .avatar { flex-shrink: 0; width: 40px; height: 40px; border-radius: 11px; display: flex; align-items: center; justify-content: center; font-size: 17px; }
   .bot-meta { flex: 1; min-width: 0; }
-  .bot-name {
-    font-size: 15px;
-    font-weight: 600;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  .bot-name { font-size: 14.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bot-sub { font-size: 12px; color: var(--hint); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dot { width: 9px; height: 9px; border-radius: 999px; flex-shrink: 0; }
+  .dot.on { background: var(--good); }
+  .dot.off { background: var(--bad); }
+
+  .empty, .state-msg { text-align: center; padding: 46px 20px; color: var(--hint); font-size: 14px; line-height: 1.5; }
+  .empty .emoji { font-size: 32px; margin-bottom: 10px; display: block; }
+
+  /* Profile page */
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 14px; margin-bottom: 16px; }
+  .field { margin-bottom: 12px; }
+  .field:last-child { margin-bottom: 0; }
+  .field label { display: block; font-size: 11px; font-weight: 700; color: var(--hint); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 6px; }
+  .field .val-box { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 11px 12px; font-size: 14.5px; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  select {
+    width: 100%; background: var(--bg); border: 1px solid var(--line); color: var(--text);
+    border-radius: 10px; padding: 10px 12px; font-size: 14px; appearance: none;
   }
-  .bot-sub {
-    font-size: 12.5px;
-    color: var(--hint);
-    margin-top: 1px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+  .save-btn {
+    width: 100%; margin-top: 12px; padding: 11px; border: none; border-radius: 12px;
+    background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #fff;
+    font-size: 14px; font-weight: 700; cursor: pointer;
   }
-  .pill {
-    flex-shrink: 0;
-    font-size: 11px;
-    font-weight: 600;
-    padding: 4px 9px;
-    border-radius: 999px;
-    white-space: nowrap;
+  .help-item {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 13px 14px; border-bottom: 1px solid var(--line); font-size: 14px; cursor: pointer;
   }
-  .pill.on { background: color-mix(in srgb, #34c759 18%, transparent); color: #248a3d; }
-  .pill.off { background: color-mix(in srgb, #ff3b30 16%, transparent); color: #d70015; }
-  .empty {
-    text-align: center;
-    padding: 46px 20px;
-    color: var(--hint);
-    font-size: 14px;
-    line-height: 1.5;
+  .help-item:last-child { border-bottom: none; }
+  .help-item .arrow { color: var(--hint); }
+
+  /* Bottom tabs */
+  .tabbar {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    background: var(--bg2); border-top: 1px solid var(--line);
+    display: flex; padding: 6px max(8px, env(safe-area-inset-left)) calc(6px + env(safe-area-inset-bottom, 0px)) max(8px, env(safe-area-inset-right));
+    max-width: 480px; margin: 0 auto;
   }
-  .empty .emoji { font-size: 34px; margin-bottom: 10px; display: block; }
-  .state-msg {
-    text-align: center;
-    padding: 60px 20px;
-    color: var(--hint);
-    font-size: 14px;
+  .tab-btn {
+    flex: 1; text-align: center; padding: 6px 4px; font-size: 11.5px; color: var(--hint);
+    display: flex; flex-direction: column; align-items: center; gap: 3px; cursor: pointer; border-radius: 10px;
   }
-  @keyframes rise {
-    from { opacity: 0; transform: translateY(8px); }
-    to { opacity: 1; transform: translateY(0); }
+  .tab-btn .ti { font-size: 18px; }
+  .tab-btn.active { color: var(--accent); }
+
+  /* Notification modal */
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,.45); display: none;
+    align-items: flex-end; justify-content: center; z-index: 50;
   }
-  @media (prefers-reduced-motion: reduce) {
-    .hero, .balance-card, .bot-list { animation: none !important; opacity: 1 !important; }
+  .modal-backdrop.show { display: flex; }
+  .modal-sheet {
+    background: var(--bg2); width: 100%; max-width: 480px; border-radius: 18px 18px 0 0;
+    padding: 16px; max-height: 70vh; overflow-y: auto;
   }
+  .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+  .modal-head h3 { margin: 0; font-size: 16px; }
+  .mark-read {
+    width: 100%; padding: 10px; border-radius: 10px; border: 1px solid var(--line);
+    background: transparent; color: var(--good); font-size: 13.5px; font-weight: 600; margin-bottom: 10px; cursor: pointer;
+  }
+  .notif-item { border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-bottom: 8px; }
+  .notif-item .ti { font-size: 14px; font-weight: 700; margin-bottom: 4px; }
+  .notif-item .tx { font-size: 12.5px; color: var(--hint); line-height: 1.4; }
+  .notif-empty { text-align: center; color: var(--hint); font-size: 13.5px; padding: 24px 0; }
+
+  #page-home, #page-profile { opacity: 0; animation: rise .35s ease forwards; }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+  @media (prefers-reduced-motion: reduce) { #page-home, #page-profile { animation: none !important; opacity: 1 !important; } }
 </style>
 </head>
 <body>
   <div class="wrap">
-    <div class="hero">
-      <div class="hero-badge">🤖</div>
-      <h1>Bot Creator</h1>
-      <p>Botlaringiz va balansingiz — bir joyda</p>
+    <div class="topbar">
+      <div class="icon-btn" id="btnMenu">☰</div>
+      <div class="brand"><div class="logo">⚡</div><div class="name">Bot Creator</div></div>
+      <div class="icon-btn" id="btnTheme">🌙</div>
+      <div class="icon-btn" id="btnRefresh">⟳</div>
+      <div class="icon-btn" id="btnBell">🔔<span class="badge" id="bellBadge" style="display:none">0</span></div>
+      <div class="avatar-mini" id="avatarMini">?</div>
     </div>
 
     <div id="content">
@@ -174,27 +188,32 @@
     </div>
   </div>
 
+  <div class="tabbar">
+    <div class="tab-btn active" id="tabHome"><span class="ti">🏠</span>Bosh sahifa</div>
+    <div class="tab-btn" id="tabProfile"><span class="ti">👤</span>Profil</div>
+  </div>
+
+  <div class="modal-backdrop" id="notifModal">
+    <div class="modal-sheet">
+      <div class="modal-head"><h3>🔔 Bildirishnomalar</h3><div class="icon-btn" id="btnCloseModal">✕</div></div>
+      <button class="mark-read" id="btnMarkRead">✅ Hammasini o'qilgan qilish</button>
+      <div id="notifList"></div>
+    </div>
+  </div>
+
 <script>
   window.addEventListener("error", function (e) {
     const content = document.getElementById("content");
-    if (content) {
-      content.innerHTML = '<div class="state-msg">Sahifada xatolik: ' + escapeHtmlSafe(String(e.message || e)) + '</div>';
-    }
+    if (content) content.innerHTML = '<div class="state-msg">Sahifada xatolik: ' + escapeHtml(String(e.message || e)) + '</div>';
   });
-
   window.addEventListener("unhandledrejection", function (e) {
     const content = document.getElementById("content");
-    if (content) {
-      const msg = (e.reason && (e.reason.message || String(e.reason))) || "noma'lum xato";
-      content.innerHTML = '<div class="state-msg">Sahifada xatolik (async): ' + escapeHtmlSafe(msg) + '</div>';
-    }
+    const msg = (e.reason && (e.reason.message || String(e.reason))) || "noma'lum xato";
+    if (content) content.innerHTML = '<div class="state-msg">Sahifada xatolik (async): ' + escapeHtml(msg) + '</div>';
   });
-
-  function escapeHtmlSafe(s) {
-    const d = document.createElement("div");
-    d.textContent = s;
-    return d.innerHTML;
-  }
+  function escapeHtml(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+  function fmt(n) { return Number(n || 0).toLocaleString("ru-RU").replace(/,/g, " "); }
+  function initials(name) { return (name || "?").trim().slice(0, 1).toUpperCase(); }
 
   function loadTelegramSdk(timeoutMs) {
     return new Promise((resolve) => {
@@ -208,47 +227,17 @@
       document.head.appendChild(el);
     });
   }
-
-  const TYPE_COLORS = {
-    "kino": "#7b5cff",
-  };
-
-  function fmt(n) {
-    return Number(n || 0).toLocaleString("ru-RU").replace(/,/g, " ");
-  }
-
-  function initials(name) {
-    return (name || "?").trim().slice(0, 1).toUpperCase();
-  }
-
   function fetchWithTimeout(url, ms) {
     return new Promise((resolve, reject) => {
       const controller = new AbortController();
       let settled = false;
-      const timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        controller.abort();
-        reject(new Error("timeout"));
-      }, ms);
+      const timer = setTimeout(() => { if (settled) return; settled = true; controller.abort(); reject(new Error("timeout")); }, ms);
       fetch(url, { signal: controller.signal })
-        .then((res) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          resolve(res);
-        })
-        .catch((err) => {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          reject(err);
-        });
+        .then((res) => { if (settled) return; settled = true; clearTimeout(timer); resolve(res); })
+        .catch((err) => { if (settled) return; settled = true; clearTimeout(timer); reject(err); });
     });
   }
 
-  // Ba'zi eski Android WebView'larda fetch/AbortController osilib qolishi mumkin —
-  // shu sabab 15 soniyadan keyin "Yuklanmoqda" hali tursa, majburan xatolik ko'rsatamiz.
   setTimeout(function () {
     const content = document.getElementById("content");
     if (content && content.textContent.indexOf("Yuklanmoqda") !== -1) {
@@ -256,70 +245,196 @@
     }
   }, 15000);
 
+  // ---------- Theme ----------
+  function applyTheme(t) {
+    document.documentElement.setAttribute("data-theme", t);
+    document.getElementById("btnTheme").textContent = t === "light" ? "🌙" : "☀️";
+    localStorage.setItem("bc_theme", t);
+  }
+  document.getElementById("btnTheme").addEventListener("click", function () {
+    const cur = document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light";
+    applyTheme(cur);
+  });
+  applyTheme(localStorage.getItem("bc_theme") || "dark");
+
+  // ---------- State ----------
+  let lastData = null;
+  let currentUser = null;
+
+  function typeColor(key) {
+    const colors = { kino: "#7b5cff", kino_pro: "#f7b500", shop: "#34c759", ai: "#2f7dff", money: "#ff9500", translate: "#00c7be", taxi: "#ffcc00", stars: "#af52de" };
+    return colors[key] || "#8e8e93";
+  }
+
+  function renderHome() {
+    const content = document.getElementById("content");
+    if (!lastData) return;
+    const bots = lastData.bots || [];
+    const activeCount = bots.filter(b => b.active).length;
+    const inactiveCount = bots.length - activeCount;
+
+    let html = '<div class="greet-row"><div class="greet">' +
+      '<h1>Salom, ' + escapeHtml(currentUser ? currentUser.first_name : "") + '!</h1>' +
+      '<p>' + bots.length + ' ta bot sizning nazoratingizda</p></div>' +
+      '<button class="btn-primary" id="btnNewBot">➕ Yangi bot</button></div>';
+
+    html += '<div class="stat-grid">';
+    html += statCard("✅", "#34c759", activeCount, "Faol botlar");
+    html += statCard("🤖", "#2f7dff", bots.length, "Jami botlar");
+    html += statCard("⏸", "#ff453a", inactiveCount, "To'xtagan botlar");
+    html += statCard("💰", "#f7b500", fmt(lastData.balance), "Balans (so'm)");
+    html += '</div>';
+
+    html += '<div class="section-head"><div class="section-label">BOTLARIM</div></div>';
+    if (bots.length === 0) {
+      html += '<div class="bot-list"><div class="empty"><span class="emoji">📭</span>Hali botingiz yo\'q.<br>Bot yaratish uchun bosh menyudan "🤖 Bot yaratish" tugmasini bosing.</div></div>';
+    } else {
+      html += '<div class="bot-list">';
+      for (const b of bots) {
+        html += '<div class="bot-row">' +
+          '<div class="avatar" style="background:' + typeColor(b.type_key) + '">' + initials(b.name) + '</div>' +
+          '<div class="bot-meta"><div class="bot-name">' + escapeHtml(b.name) + '</div>' +
+          '<div class="bot-sub">' + escapeHtml(b.type) + ' · ' + escapeHtml(b.tariff) + '</div></div>' +
+          '<div class="dot ' + (b.active ? "on" : "off") + '"></div>' +
+          '</div>';
+      }
+      html += '</div>';
+    }
+    content.innerHTML = html;
+
+    const btnNewBot = document.getElementById("btnNewBot");
+    if (btnNewBot) btnNewBot.addEventListener("click", function () {
+      const tg = window.Telegram && window.Telegram.WebApp;
+      if (tg) { tg.close(); }
+    });
+  }
+
+  function statCard(icon, color, val, lbl) {
+    return '<div class="stat-card"><div class="ic" style="background:' + color + '22;color:' + color + '">' + icon + '</div>' +
+      '<div class="val">' + val + '</div><div class="lbl">' + lbl + '</div></div>';
+  }
+
+  function renderProfile() {
+    const content = document.getElementById("content");
+    const u = currentUser || {};
+    const quiet = JSON.parse(localStorage.getItem("bc_quiet") || '{"from":"","to":""}');
+    const hours = ["Yo'q"];
+    for (let h = 0; h < 24; h++) hours.push((h < 10 ? "0" : "") + h + ":00");
+
+    let html = '<div class="card">' +
+      '<div class="section-label" style="margin-bottom:12px">👤 SHAXSIY MA\'LUMOTLAR</div>' +
+      '<div class="field"><label>Ism</label><div class="val-box">' + escapeHtml(u.first_name || "-") + '</div></div>' +
+      '<div class="field"><label>Telegram ID</label><div class="val-box">' + (u.id || "-") + '</div></div>' +
+      '<div class="field"><label>Referal kodim</label><div class="val-box">' + (u.id || "-") + '</div></div>' +
+      '</div>';
+
+    html += '<div class="card">' +
+      '<div class="section-label" style="margin-bottom:6px">🔕 BILDIRISHNOMA — TINCH SOATLAR</div>' +
+      '<div class="lbl" style="color:var(--hint);font-size:12.5px;margin-bottom:12px">Shu oraliqda botlardan bildirishnoma kelmaydi (ixtiyoriy).</div>' +
+      '<div class="row2">' +
+      '<div class="field"><label>Boshlanishi</label><select id="quietFrom">' + hours.map(h => '<option' + (h === quiet.from ? ' selected' : '') + '>' + h + '</option>').join("") + '</select></div>' +
+      '<div class="field"><label>Tugashi</label><select id="quietTo">' + hours.map(h => '<option' + (h === quiet.to ? ' selected' : '') + '>' + h + '</option>').join("") + '</select></div>' +
+      '</div>' +
+      '<button class="save-btn" id="btnSaveQuiet">💾 Saqlash</button>' +
+      '</div>';
+
+    html += '<div class="section-label" style="margin:0 2px 8px">YORDAM</div>' +
+      '<div class="card" style="padding:0">' +
+      '<div class="help-item" id="helpContact">💬 Murojaat / Yordam<span class="arrow">›</span></div>' +
+      '<div class="help-item" id="helpGuide">📖 Qo\'llanma<span class="arrow">›</span></div>' +
+      '</div>';
+
+    content.innerHTML = html;
+
+    document.getElementById("btnSaveQuiet").addEventListener("click", function () {
+      const from = document.getElementById("quietFrom").value;
+      const to = document.getElementById("quietTo").value;
+      localStorage.setItem("bc_quiet", JSON.stringify({ from, to }));
+      const tg = window.Telegram && window.Telegram.WebApp;
+      if (tg && tg.showAlert) tg.showAlert("✅ Saqlandi!"); else alert("✅ Saqlandi!");
+    });
+    document.getElementById("helpContact").addEventListener("click", function () {
+      const tg = window.Telegram && window.Telegram.WebApp;
+      if (tg) { tg.close(); }
+    });
+    document.getElementById("helpGuide").addEventListener("click", function () {
+      const tg = window.Telegram && window.Telegram.WebApp;
+      const text = "1) \"Bot yaratish\" tugmasini bosing\n2) @BotFather orqali token oling\n3) Bot turini tanlang\n4) Bepul sinovdan foydalaning\n5) Sinov tugagach hisobni to'ldiring";
+      if (tg && tg.showAlert) tg.showAlert(text); else alert(text);
+    });
+  }
+
+  // ---------- Tabs ----------
+  function showTab(name) {
+    document.getElementById("tabHome").classList.toggle("active", name === "home");
+    document.getElementById("tabProfile").classList.toggle("active", name === "profile");
+    if (name === "home") renderHome(); else renderProfile();
+  }
+  document.getElementById("tabHome").addEventListener("click", () => showTab("home"));
+  document.getElementById("tabProfile").addEventListener("click", () => showTab("profile"));
+  document.getElementById("btnMenu").addEventListener("click", () => showTab("profile"));
+  document.getElementById("avatarMini").addEventListener("click", () => showTab("profile"));
+
+  // ---------- Notifications (derived from real bot state) ----------
+  function renderNotifications() {
+    const list = document.getElementById("notifList");
+    const bots = (lastData && lastData.bots) || [];
+    const inactive = bots.filter(b => !b.active);
+    const badge = document.getElementById("bellBadge");
+    if (inactive.length === 0) {
+      list.innerHTML = '<div class="notif-empty">Hozircha bildirishnoma yo\'q.</div>';
+      badge.style.display = "none";
+    } else {
+      list.innerHTML = inactive.map(b =>
+        '<div class="notif-item"><div class="ti">⛔ Bot faol emas</div>' +
+        '<div class="tx">"' + escapeHtml(b.name) + '" boti faol emas — sinov yoki to\'lov muddati tugagan bo\'lishi mumkin.</div></div>'
+      ).join("");
+      badge.style.display = "flex";
+      badge.textContent = inactive.length;
+    }
+  }
+  document.getElementById("btnBell").addEventListener("click", function () {
+    renderNotifications();
+    document.getElementById("notifModal").classList.add("show");
+  });
+  document.getElementById("btnCloseModal").addEventListener("click", function () {
+    document.getElementById("notifModal").classList.remove("show");
+  });
+  document.getElementById("btnMarkRead").addEventListener("click", function () {
+    document.getElementById("bellBadge").style.display = "none";
+    document.getElementById("notifList").innerHTML = '<div class="notif-empty">Hozircha bildirishnoma yo\'q.</div>';
+  });
+  document.getElementById("btnRefresh").addEventListener("click", function () { load(); });
+
   async function load() {
     const content = document.getElementById("content");
     try {
       await loadTelegramSdk(4000);
       const tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
-      if (tg) {
-        try { tg.ready(); } catch (e) {}
-        try { tg.expand(); } catch (e) {}
-      }
-
-      if (!tg) {
-        content.innerHTML = '<div class="state-msg">Telegram SDK yuklanmadi. Internet aloqasini tekshirib, sahifani qayta oching.</div>';
-        return;
-      }
+      if (tg) { try { tg.ready(); } catch (e) {} try { tg.expand(); } catch (e) {} }
+      if (!tg) { content.innerHTML = '<div class="state-msg">Telegram SDK yuklanmadi. Internet aloqasini tekshirib, sahifani qayta oching.</div>'; return; }
 
       const initData = tg.initData || "";
+      if (!initData) { content.innerHTML = '<div class="state-msg">Bu sahifa faqat Telegram ichida ishlaydi.</div>'; return; }
 
-      if (!initData) {
-        content.innerHTML = '<div class="state-msg">Bu sahifa faqat Telegram ichida ishlaydi.</div>';
-        return;
-      }
+      try {
+        const u = tg.initDataUnsafe && tg.initDataUnsafe.user;
+        if (u) currentUser = u;
+      } catch (e) {}
 
       const res = await fetchWithTimeout("/api/mybots?" + new URLSearchParams({ initData }), 8000);
       if (!res.ok) {
         const errBody = await res.text().catch(() => "");
         throw new Error("Server javobi: " + res.status + " " + errBody.slice(0, 120));
       }
-      const data = await res.json();
-
-      let html = "";
-      html += '<div class="balance-card"><div class="label">Balans</div><div class="amount">' + fmt(data.balance) + " so'm</div></div>";
-      html += '<div class="section-label">Botlarim (' + data.bots.length + ')</div>';
-
-      if (data.bots.length === 0) {
-        html += '<div class="bot-list"><div class="empty"><span class="emoji">📭</span>Hali botingiz yo\'q.<br>Bot yaratish uchun bosh menyudan "🤖 Bot yaratish" tugmasini bosing.</div></div>';
-      } else {
-        html += '<div class="bot-list">';
-        for (const b of data.bots) {
-          const color = TYPE_COLORS[b.type_key] || "#8e8e93";
-          const pillClass = b.active ? "on" : "off";
-          const pillText = b.active ? "Faol" : "To'xtagan";
-          html += '<div class="bot-row">' +
-            '<div class="avatar" style="background:' + color + '">' + initials(b.name) + '</div>' +
-            '<div class="bot-meta">' +
-              '<div class="bot-name">' + escapeHtml(b.name) + '</div>' +
-              '<div class="bot-sub mono">' + escapeHtml(b.type) + ' · ' + escapeHtml(b.tariff) + '</div>' +
-            '</div>' +
-            '<div class="pill ' + pillClass + '">' + pillText + '</div>' +
-          '</div>';
-        }
-        html += '</div>';
-      }
-
-      content.innerHTML = html;
+      lastData = await res.json();
+      const avatarMini = document.getElementById("avatarMini");
+      avatarMini.textContent = initials(currentUser ? currentUser.first_name : "?");
+      showTab("home");
     } catch (e) {
       const reason = e && e.name === "AbortError" ? "Server 8 soniyada javob bermadi (timeout)." : (e.message || String(e));
-      content.innerHTML = '<div class="state-msg">Ma\'lumotlarni yuklab bo\'lmadi.<br><span style="font-size:12px">' + escapeHtmlSafe(reason) + '</span></div>';
+      content.innerHTML = '<div class="state-msg">Ma\'lumotlarni yuklab bo\'lmadi.<br><span style="font-size:12px">' + escapeHtml(reason) + '</span></div>';
     }
-  }
-
-  function escapeHtml(s) {
-    const d = document.createElement("div");
-    d.textContent = s;
-    return d.innerHTML;
   }
 
   load();
