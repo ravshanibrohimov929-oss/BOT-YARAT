@@ -352,6 +352,8 @@ def is_active(info: dict) -> bool:
     paid_until = info.get("paid_until")
     if paid_until and datetime.now() < datetime.fromisoformat(paid_until):
         return True
+    if info.get("skip_trial"):
+        return False  # Bu foydalanuvchining birinchi bepul boti emas — darhol to'lov talab qilinadi
     trial_cfg = get_trial_config(info.get("type"))
     if not trial_cfg.get("enabled", True):
         return False  # Bu bot turi uchun sinov o'chirilgan — darhol to'lov talab qilinadi
@@ -2252,6 +2254,10 @@ def setup_platform_bot(dp: Dispatcher):
         bot_id = data["next_bot_id"]
         data["next_bot_id"] += 1
 
+        already_has_bot = not is_full_admin(uid) and any(
+            uid in b.get("admin_ids", [b["admin_id"]]) for b in data["bots"].values()
+        )
+
         today = datetime.now().strftime("%Y-%m-%d")
         data["bots"][token] = {
             "id": bot_id,
@@ -2261,6 +2267,7 @@ def setup_platform_bot(dp: Dispatcher):
             "admin_ids": [uid],
             "created_at": datetime.now().isoformat(),
             "paid_until": None,
+            "skip_trial": already_has_bot,
             "tariff": tariff_id,
             "daily_usage": {"date": today, "users": []},
             "movies": {},
@@ -2299,7 +2306,9 @@ def setup_platform_bot(dp: Dispatcher):
             tariff = get_bot_tariff(info)
             price_note = f"💰 Oylik narx: {tariff['price']:,} so'm/oy\n"
             trial_cfg = get_trial_config(bot_type)
-            if trial_cfg.get("enabled", True):
+            if info.get("skip_trial"):
+                trial_note = "💰 Bu sizning birinchi bepul botingiz emas — foydalanish uchun darhol to'lov qiling.\n"
+            elif trial_cfg.get("enabled", True):
                 trial_note = f"🎁 {trial_cfg.get('days', TRIAL_DAYS)} kunlik bepul sinov boshlandi!\n"
             else:
                 trial_note = "💰 Bu bot turi uchun sinov yo'q — foydalanish uchun darhol to'lov qiling.\n"
