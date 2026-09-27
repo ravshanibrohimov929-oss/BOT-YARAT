@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Bot Creator</title>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #ffffff);
+    --bg2: var(--tg-theme-secondary-bg-color, #f2f2f7);
+    --text: var(--tg-theme-text-color, #1c1c1e);
+    --hint: var(--tg-theme-hint-color, #8e8e93);
+    --accent: var(--tg-theme-button-color, #2481cc);
+    --accent-text: var(--tg-theme-button-text-color, #ffffff);
+    --line: color-mix(in srgb, var(--hint) 20%, transparent);
+    --card-radius: 18px;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace; }
+  .wrap { max-width: 480px; margin: 0 auto; padding: 18px 16px 32px; }
+
+  .topbar {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 20px;
+    opacity: 0; animation: rise .45s ease forwards;
+  }
+  .topbar .mark {
+    width: 34px; height: 34px; border-radius: 10px;
+    background: linear-gradient(145deg, var(--accent), color-mix(in srgb, var(--accent) 55%, #7b2ff7));
+    display: flex; align-items: center; justify-content: center; font-size: 16px;
+    flex-shrink: 0;
+  }
+  .topbar .name { font-size: 15px; font-weight: 700; flex: 1; }
+  .topbar .refresh {
+    width: 34px; height: 34px; border-radius: 10px;
+    background: var(--bg2); display: flex; align-items: center; justify-content: center;
+    font-size: 15px; color: var(--hint); border: none; cursor: pointer;
+  }
+  .topbar .refresh:active { transform: scale(0.92); }
+  .topbar .avatar {
+    width: 34px; height: 34px; border-radius: 50%;
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+    color: var(--accent);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; font-weight: 700; flex-shrink: 0;
+  }
+
+  .greet {
+    margin-bottom: 18px;
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    opacity: 0; animation: rise .45s ease .05s forwards;
+  }
+  .greet h1 { font-size: 20px; font-weight: 700; margin: 0 0 2px; letter-spacing: -0.01em; }
+  .greet p { font-size: 13px; color: var(--hint); margin: 0; }
+  .newbot-btn {
+    flex-shrink: 0;
+    background: var(--accent); color: var(--accent-text);
+    border: none; border-radius: 12px;
+    padding: 10px 14px; font-size: 13.5px; font-weight: 600;
+    text-decoration: none; white-space: nowrap;
+    display: flex; align-items: center; gap: 5px;
+  }
+  .newbot-btn:active { opacity: .85; }
+
+  .stat-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+    margin-bottom: 22px;
+    opacity: 0; animation: rise .45s ease .1s forwards;
+  }
+  .stat-card {
+    background: var(--bg2); border-radius: var(--card-radius);
+    padding: 14px;
+  }
+  .stat-card .chip {
+    width: 30px; height: 30px; border-radius: 9px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 14px; margin-bottom: 10px;
+  }
+  .stat-card .num { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+  .stat-card .lbl { font-size: 12px; color: var(--hint); margin-top: 2px; line-height: 1.3; }
+
+  .section-head {
+    display: flex; align-items: baseline; justify-content: space-between;
+    margin: 0 2px 8px;
+  }
+  .section-head .t { font-size: 13px; font-weight: 700; color: var(--hint); text-transform: uppercase; letter-spacing: .04em; }
+  .section-head .c { font-size: 13px; color: var(--accent); font-weight: 600; }
+
+  .bot-list {
+    background: var(--bg2); border-radius: var(--card-radius);
+    overflow: hidden; margin-bottom: 22px;
+    opacity: 0; animation: rise .45s ease .16s forwards;
+  }
+  .bot-row {
+    display: flex; align-items: center; gap: 12px;
+    padding: 13px 14px; border-bottom: 1px solid var(--line);
+  }
+  .bot-row:last-child { border-bottom: none; }
+  .avatar-sq {
+    flex-shrink: 0; width: 40px; height: 40px; border-radius: 11px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 17px; color: #fff; font-weight: 700;
+  }
+  .bot-meta { flex: 1; min-width: 0; }
+  .bot-name { font-size: 14.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bot-sub { font-size: 12px; color: var(--hint); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pill { flex-shrink: 0; font-size: 10.5px; font-weight: 700; padding: 4px 9px; border-radius: 999px; white-space: nowrap; }
+  .pill.on { background: color-mix(in srgb, #34c759 18%, transparent); color: #248a3d; }
+  .pill.off { background: color-mix(in srgb, #ff3b30 16%, transparent); color: #d70015; }
+
+  .profile-card {
+    display: flex; align-items: center; gap: 12px;
+    background: var(--bg2); border-radius: var(--card-radius);
+    padding: 14px; margin-bottom: 6px;
+    opacity: 0; animation: rise .45s ease .22s forwards;
+  }
+  .profile-card .av {
+    width: 44px; height: 44px; border-radius: 50%;
+    background: linear-gradient(145deg, var(--accent), color-mix(in srgb, var(--accent) 55%, #7b2ff7));
+    color: #fff; display: flex; align-items: center; justify-content: center;
+    font-size: 17px; font-weight: 700; flex-shrink: 0;
+  }
+  .profile-card .info { min-width: 0; flex: 1; }
+  .profile-card .pname { font-size: 14.5px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .profile-card .puser { font-size: 12px; color: var(--hint); margin-top: 1px; }
+  .profile-card .pid { font-size: 11px; color: var(--hint); margin-top: 3px; }
+
+  .empty { text-align: center; padding: 40px 20px; color: var(--hint); font-size: 14px; line-height: 1.5; }
+  .empty .emoji { font-size: 32px; margin-bottom: 10px; display: block; }
+  .state-msg { text-align: center; padding: 60px 20px; color: var(--hint); font-size: 14px; }
+
+  @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  @media (prefers-reduced-motion: reduce) {
+    .topbar, .greet, .stat-grid, .bot-list, .profile-card { animation: none !important; opacity: 1 !important; }
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <div class="mark">🤖</div>
+      <div class="name">Bot Creator</div>
+      <button class="refresh" id="refreshBtn" title="Yangilash">↻</button>
+    </div>
+    <div id="content">
+      <div class="state-msg">Yuklanmoqda…</div>
+    </div>
+  </div>
+
+<script>
+  window.addEventListener("error", function (e) {
+    const content = document.getElementById("content");
+    if (content) {
+      content.innerHTML = '<div class="state-msg">Sahifada xatolik: ' + escapeHtmlSafe(String(e.message || e)) + '</div>';
+    }
+  });
+
+  window.addEventListener("unhandledrejection", function (e) {
+    const content = document.getElementById("content");
+    if (content) {
+      const msg = (e.reason && (e.reason.message || String(e.reason))) || "noma'lum xato";
+      content.innerHTML = '<div class="state-msg">Sahifada xatolik (async): ' + escapeHtmlSafe(msg) + '</div>';
+    }
+  });
+
+  function escapeHtmlSafe(s) {
+    const d = document.createElement("div");
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  function loadTelegramSdk(timeoutMs) {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = () => { if (!done) { done = true; resolve(); } };
+      const timer = setTimeout(finish, timeoutMs);
+      const el = document.createElement("script");
+      el.src = "https://telegram.org/js/telegram-web-app.js";
+      el.onload = () => { clearTimeout(timer); finish(); };
+      el.onerror = () => { clearTimeout(timer); finish(); };
+      document.head.appendChild(el);
+    });
+  }
+
+  const TYPE_COLORS = {
+    "kino": "#7b5cff",
+    "kino_pro": "#c026d3",
+    "shop": "#0ea5e9",
+    "ai": "#10b981",
+    "money": "#f59e0b",
+    "translate": "#6366f1",
+    "taxi": "#eab308",
+    "stars": "#f97316",
+  };
+
+  function fmt(n) {
+    return Number(n || 0).toLocaleString("ru-RU").replace(/,/g, " ");
+  }
+
+  function initials(name) {
+    return (name || "?").trim().slice(0, 1).toUpperCase();
+  }
+
+  function fetchWithTimeout(url, ms) {
+    return new Promise((resolve, reject) => {
+      const controller = new AbortController();
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        controller.abort();
+        reject(new Error("timeout"));
+      }, ms);
+      fetch(url, { signal: controller.signal })
+        .then((res) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          resolve(res);
+        })
+        .catch((err) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          reject(err);
+        });
+    });
+  }
+
+  // Ba'zi eski Android WebView'larda fetch/AbortController osilib qolishi mumkin —
+  // shu sabab 15 soniyadan keyin "Yuklanmoqda" hali tursa, majburan xatolik ko'rsatamiz.
+  setTimeout(function () {
+    const content = document.getElementById("content");
+    if (content && content.textContent.indexOf("Yuklanmoqda") !== -1) {
+      content.innerHTML = '<div class="state-msg">Yuklashda muammo yuz berdi.<br>Sahifani yopib, qayta urinib ko\'ring.</div>';
+    }
+  }, 15000);
+
+  let cachedInitData = "";
+
+  function renderDashboard(data) {
+    const content = document.getElementById("content");
+    const profile = data.profile || {};
+    const stats = data.stats || {};
+
+    let html = '';
+
+    html += '<div class="greet"><div><h1>Salom, ' + escapeHtml(profile.name || "do\'stim") + '!</h1>' +
+      '<p>' + fmt(stats.total_bots) + ' ta bot sizning nazoratingizda</p></div>' +
+      '<a class="newbot-btn" href="#" onclick="return false;">＋ Yangi bot</a></div>';
+
+    html += '<div class="stat-grid">';
+    html += statCard('🤖', 'color-mix(in srgb, #7b5cff 16%, transparent)', stats.total_bots, 'Jami botlar');
+    html += statCard('🟢', 'color-mix(in srgb, #34c759 16%, transparent)', stats.active_bots, 'Faol botlar');
+    html += statCard('🎁', 'color-mix(in srgb, #f59e0b 16%, transparent)', stats.referrals, 'Takliflarim');
+    html += statCard('💰', 'color-mix(in srgb, #2481cc 16%, transparent)', fmt(data.balance) + " so'm", 'Balans');
+    html += '</div>';
+
+    html += '<div class="section-head"><span class="t">Botlarim</span></div>';
+    if (data.bots.length === 0) {
+      html += '<div class="bot-list"><div class="empty"><span class="emoji">📭</span>Hali botingiz yo\'q.<br>Bot yaratish uchun bosh menyudan "🤖 Bot yaratish" tugmasini bosing.</div></div>';
+    } else {
+      html += '<div class="bot-list">';
+      for (const b of data.bots) {
+        const color = TYPE_COLORS[b.type_key] || "#8e8e93";
+        const pillClass = b.active ? "on" : "off";
+        const pillText = b.active ? "Faol" : "To'xtagan";
+        html += '<div class="bot-row">' +
+          '<div class="avatar-sq" style="background:' + color + '">' + initials(b.name) + '</div>' +
+          '<div class="bot-meta">' +
+            '<div class="bot-name">' + escapeHtml(b.name) + '</div>' +
+            '<div class="bot-sub mono">' + escapeHtml(b.type) + ' · ' + escapeHtml(b.tariff) + '</div>' +
+          '</div>' +
+          '<div class="pill ' + pillClass + '">' + pillText + '</div>' +
+        '</div>';
+      }
+      html += '</div>';
+    }
+
+    html += '<div class="profile-card">' +
+      '<div class="av">' + initials(profile.name) + '</div>' +
+      '<div class="info">' +
+        '<div class="pname">' + escapeHtml(profile.name || "") + '</div>' +
+        (profile.username ? '<div class="puser">' + escapeHtml(profile.username) + '</div>' : '') +
+        '<div class="pid mono">ID: ' + escapeHtml(String(profile.id || "")) + '</div>' +
+      '</div>' +
+    '</div>';
+
+    content.innerHTML = html;
+  }
+
+  function statCard(emoji, chipBg, value, label) {
+    return '<div class="stat-card">' +
+      '<div class="chip" style="background:' + chipBg + '">' + emoji + '</div>' +
+      '<div class="num">' + value + '</div>' +
+      '<div class="lbl">' + label + '</div>' +
+    '</div>';
+  }
+
+  async function fetchAndRender() {
+    const content = document.getElementById("content");
+    try {
+      const res = await fetchWithTimeout("/api/mybots?" + new URLSearchParams({ initData: cachedInitData }), 8000);
+      if (!res.ok) {
+        const errBody = await res.text().catch(() => "");
+        throw new Error("Server javobi: " + res.status + " " + errBody.slice(0, 120));
+      }
+      const data = await res.json();
+      renderDashboard(data);
+    } catch (e) {
+      const reason = e && e.name === "AbortError" ? "Server 8 soniyada javob bermadi (timeout)." : (e.message || String(e));
+      content.innerHTML = '<div class="state-msg">Ma\'lumotlarni yuklab bo\'lmadi.<br><span style="font-size:12px">' + escapeHtmlSafe(reason) + '</span></div>';
+    }
+  }
+
+  async function load() {
+    const content = document.getElementById("content");
+    try {
+      await loadTelegramSdk(4000);
+      const tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
+      if (tg) {
+        try { tg.ready(); } catch (e) {}
+        try { tg.expand(); } catch (e) {}
+      }
+
+      if (!tg) {
+        content.innerHTML = '<div class="state-msg">Telegram SDK yuklanmadi. Internet aloqasini tekshirib, sahifani qayta oching.</div>';
+        return;
+      }
+
+      const initData = tg.initData || "";
+
+      if (!initData) {
+        content.innerHTML = '<div class="state-msg">Bu sahifa faqat Telegram ichida ishlaydi.</div>';
+        return;
+      }
+
+      cachedInitData = initData;
+      await fetchAndRender();
+    } catch (e) {
+      const reason = e.message || String(e);
+      content.innerHTML = '<div class="state-msg">Ma\'lumotlarni yuklab bo\'lmadi.<br><span style="font-size:12px">' + escapeHtmlSafe(reason) + '</span></div>';
+    }
+  }
+
+  function escapeHtml(s) {
+    const d = document.createElement("div");
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  document.getElementById("refreshBtn").addEventListener("click", function () {
+    if (!cachedInitData) return;
+    document.getElementById("content").innerHTML = '<div class="state-msg">Yangilanmoqda…</div>';
+    fetchAndRender();
+  });
+
+  load();
+</script>
+</body>
+</html>
