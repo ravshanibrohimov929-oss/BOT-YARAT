@@ -550,8 +550,8 @@ class SubAdminAdd(StatesGroup):
     waiting_id = State()
 
 
-MIN_TOPUP = 10_000
-MAX_TOPUP = 150_000
+MIN_TOPUP = 1_000
+MAX_TOPUP = 999_000
 
 
 class AddAdmin(StatesGroup):
