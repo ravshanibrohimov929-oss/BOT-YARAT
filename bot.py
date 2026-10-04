@@ -333,17 +333,39 @@ def _btn_seen_add(key: str, seen: list):
             logging.info(f"btn_seen saqlanmadi: {e}")
 
 
-def _btn_style_for(key: str, colors: dict):
-    if not key or not colors:
+# Standart ranglar (admin 🎨 orqali alohida rang bermagan tugmalar uchun):
+#   🔴 qizil  — orqaga / bekor qilish / o'chirish / bosh menyu
+#   🟢 yashil — yaratish / qo'shish / tasdiqlash / to'ldirish / faol (✅)
+#   🔵 ko'k   — qolgan barcha tugmalar
+_BTN_RED = ("orqaga", "⬅", "◀", "⏪", "🔙", "bekor", "bosh menyu", "o'chir", "🗑", "❌", "➖", "bloklash",
+            "tozala", "yopish", "chiqish", "rad etish")
+_BTN_GREEN = ("yaratish", "yaratilsin", "qo'shish", "➕", "✅", "tasdiq", "sotib ol", "to'ldirish", "buyurtma ber",
+              "saqlash", "yoqish", "🟢", "faollashtir", "qabul qil")
+
+
+def _btn_default_style(key: str):
+    t = (key or "").lower().replace("ʻ", "'").replace("’", "'").replace("‘", "'").replace("`", "'")
+    if not t:
         return None
-    style = colors.get(key)
-    if style:
-        return style
-    nk = _btn_norm(key)
-    for ck, cv in colors.items():
-        if _btn_norm(ck) == nk:
-            return cv
-    return None
+    if any(w in t for w in _BTN_RED):
+        return "danger"
+    if any(w in t for w in _BTN_GREEN) or (len(t) <= 14 and re.search(r"(?<![a-z])faol(?![a-z])", t)):
+        return "success"
+    return "primary"
+
+
+def _btn_style_for(key: str, colors: dict):
+    if not key:
+        return None
+    if colors:
+        style = colors.get(key)
+        if style:
+            return style
+        nk = _btn_norm(key)
+        for ck, cv in colors.items():
+            if _btn_norm(ck) == nk:
+                return cv
+    return _btn_default_style(key)
 
 
 def btn_record_and_style(markup):
