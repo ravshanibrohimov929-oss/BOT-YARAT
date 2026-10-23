@@ -7420,7 +7420,9 @@ def setup_shop_bot(dp: Dispatcher, token: str):
 
     # ---------- Klaviaturalar ----------
     def shop_admin_menu_kb():
-        return ReplyKeyboardMarkup(keyboard=[
+        _purl = get_shoppanel_url(info.get("id"))
+        _panel_row = [[KeyboardButton(text="Admin Mini app", web_app=WebAppInfo(url=_purl))]] if _purl else []
+        return ReplyKeyboardMarkup(keyboard=_panel_row + [
             [KeyboardButton(text="📦 Mahsulotlar"), KeyboardButton(text="🏷 Kategoriyalar")],
             [KeyboardButton(text="🎟 Promo-kodlar"), KeyboardButton(text="🧾 Buyurtmalar")],
             [KeyboardButton(text="👥 Foydalanuvchilar"), KeyboardButton(text="📢 Xabar va reklama")],
@@ -19830,6 +19832,23 @@ async def start_web_server():
     app.router.add_get("/api/shop/cart", shop_api_cart)
     app.router.add_post("/api/shop/cart", shop_api_cart)
     app.router.add_post("/api/shop/checkout", shop_api_checkout)
+    app.router.add_get("/shoppanel", shoppanel_page)
+    app.router.add_get("/api/shopadm/overview", shopadm_overview)
+    app.router.add_get("/api/shopadm/products", shopadm_products)
+    app.router.add_post("/api/shopadm/product/save", shopadm_product_save)
+    app.router.add_post("/api/shopadm/product/delete", shopadm_product_delete)
+    app.router.add_get("/api/shopadm/photo", shopadm_photo)
+    app.router.add_get("/api/shopadm/orders", shopadm_orders)
+    app.router.add_post("/api/shopadm/order/status", shopadm_order_status)
+    app.router.add_get("/api/shopadm/categories", shopadm_categories)
+    app.router.add_post("/api/shopadm/category/add", shopadm_category_add)
+    app.router.add_post("/api/shopadm/category/delete", shopadm_category_delete)
+    app.router.add_get("/api/shopadm/promos", shopadm_promos)
+    app.router.add_post("/api/shopadm/promo/save", shopadm_promo_save)
+    app.router.add_post("/api/shopadm/promo/delete", shopadm_promo_delete)
+    app.router.add_get("/api/shopadm/settings", shopadm_settings)
+    app.router.add_post("/api/shopadm/settings", shopadm_settings)
+    app.router.add_post("/api/shopadm/user/block", shopadm_user_block)
     app.router.add_get("/api/kino/users", kino_api_users)
     app.router.add_post("/api/kino/user/block", kino_api_user_block)
     app.router.add_get("/api/kino/payments", kino_api_payments)
@@ -23166,6 +23185,573 @@ setInterval(function () { if (!document.hidden) load(); }, 30000);
 </html>
 """
 # ================= /SAVDO BOT MINI APP =================
+
+
+# ================= SAVDO BOT: ADMIN MINI APP (/shoppanel) =================
+# Savdo bot egasi (va moderatorlari) uchun: statistika, tovarlar, buyurtmalar, kategoriya, promo-kod, sozlamalar.
+# Eslatma: platforma qoidasi bo'yicha botga rasm to'g'ridan-to'g'ri yuklanmaydi — rasm botda "🖼 Rasm qo'shish" (forward) orqali qo'yiladi.
+SHOP_ORDER_STATUSES = ("kutilmoqda", "yetkazilmoqda", "yakunlandi")
+SHOP_STATUS_TEXT = {"yetkazilmoqda": "🚚 Buyurtmangiz yetkazilmoqda!",
+                    "yakunlandi": "✅ Buyurtmangiz yakunlandi. Xaridingiz uchun rahmat!"}
+
+
+def get_shoppanel_url(bot_id) -> str:
+    """Savdo bot admin mini app URL'i: https://<domen>/shoppanel?b=<bot_id>"""
+    purl = get_kinopanel_url(bot_id)
+    return purl.replace("/kinopanel?", "/shoppanel?") if purl else ""
+
+
+def _shopadm_err(code: str, status: int = 400):
+    return web.json_response({"error": code}, status=status, headers=_NO_STORE)
+
+
+def shopadm_auth(request, body=None, admin_only=False):
+    """(token, info, uid, is_admin, xato_javobi). Savdo botning egasi/admini va moderatorlari kira oladi.
+    Moderator: tovarlar va buyurtmalar. admin_only=True — faqat admin (promo, sozlama, foydalanuvchilar)."""
+    token, info = shop_find_bot(request.query.get("b"))
+    if not info:
+        return None, None, None, False, _shopadm_err("bot_not_found", 404)
+    init_data = (body or {}).get("initData", "") if body is not None else request.query.get("initData", "")
+    parsed = validate_webapp_init_data(init_data, token) or validate_platform_init_data(init_data)
+    if not parsed:
+        return None, None, None, False, _shopadm_err("invalid_init_data", 401)
+    try:
+        uid = int(json.loads(parsed.get("user", "{}")).get("id"))
+    except Exception:
+        return None, None, None, False, _shopadm_err("no_user", 400)
+    is_adm = is_admin(info, uid) or is_full_admin(uid)
+    is_mod = uid in info.get("moderators", [])
+    if not (is_adm or is_mod):
+        return None, None, None, False, _shopadm_err("forbidden", 403)
+    if admin_only and not is_adm:
+        return None, None, None, False, _shopadm_err("no_perm", 403)
+    return token, info, uid, is_adm, None
+
+
+async def _shopadm_body(request) -> dict:
+    try:
+        b = await request.json()
+        return b if isinstance(b, dict) else {}
+    except Exception:
+        return {}
+
+
+def _shop_order_date(o: dict):
+    try:
+        return datetime.strptime(o.get("date", ""), "%d.%m.%Y %H:%M").date()
+    except Exception:
+        return None
+
+
+async def shopadm_overview(request):
+    token, info, uid, is_adm, err = shopadm_auth(request)
+    if err:
+        return err
+    orders = info.get("shop_orders", {})
+    today = datetime.now().date()
+    days = [today - timedelta(days=i) for i in range(6, -1, -1)]
+    series = {d: {"orders": 0, "rev": 0} for d in days}
+    for o in orders.values():
+        d = _shop_order_date(o)
+        if d in series:
+            series[d]["orders"] += 1
+            series[d]["rev"] += int(o.get("total", 0) or 0)
+    top = sorted(((pid, p) for pid, p in info.get("products", {}).items() if p.get("sold", 0) > 0),
+                 key=lambda x: x[1]["sold"], reverse=True)[:5]
+    pending = sum(1 for o in orders.values() if o.get("status") == "kutilmoqda")
+    return web.json_response({
+        "role": "admin" if is_adm else "moderator",
+        "bot": {"name": info.get("name", ""), "theme": info.get("theme", "")},
+        "stats": {
+            "orders": info.get("stats", {}).get("orders", 0), "revenue": info.get("stats", {}).get("revenue", 0),
+            "pending": pending, "users": len(info.get("users", [])), "products": len(info.get("products", {})),
+            "categories": len(info.get("categories", {})), "blocked": len(info.get("blocked_users", [])),
+        },
+        "series": [{"d": d.strftime("%d.%m"), "orders": v["orders"], "rev": v["rev"]} for d, v in series.items()],
+        "top": [{"name": p["name"], "sold": p["sold"]} for _, p in top],
+    }, headers=_NO_STORE)
+
+
+def _shopadm_product_json(pid: str, p: dict, cats: dict) -> dict:
+    cid = p.get("category", "")
+    return {"id": pid, "name": p.get("name", ""), "price": p.get("price", 0), "qty": p.get("qty", 0),
+            "sold": p.get("sold", 0), "cat": cid if cid in cats else "", "desc": p.get("desc", ""),
+            "photo": bool(p.get("photo"))}
+
+
+async def shopadm_products(request):
+    token, info, uid, is_adm, err = shopadm_auth(request)
+    if err:
+        return err
+    cats = info.get("categories", {})
+    items = [_shopadm_product_json(pid, p, cats) for pid, p in
+             sorted(info.get("products", {}).items(), key=lambda kv: kv[1].get("name", "").lower())]
+    return web.json_response({"products": items, "categories": [{"id": c, "name": n} for c, n in cats.items()]},
+                             headers=_NO_STORE)
+
+
+async def shopadm_product_save(request):
+    body = await _shopadm_body(request)
+    token, info, uid, is_adm, err = shopadm_auth(request, body)
+    if err:
+        return err
+    name = str(body.get("name", "")).strip()[:120]
+    if not name:
+        return _shopadm_err("bad_name")
+    try:
+        price = int(str(body.get("price", "")).replace(" ", ""))
+    except Exception:
+        return _shopadm_err("bad_price")
+    if price < 0 or price > 1_000_000_000:
+        return _shopadm_err("bad_price")
+    qraw = body.get("qty")
+    if qraw in (None, ""):
+        qty = 999999     # bo'sh qoldirilsa — cheksiz (botdagi odatiy qiymat)
+    else:
+        try:
+            qty = max(0, min(int(qraw), 999999))
+        except Exception:
+            return _shopadm_err("bad_qty")
+    desc = str(body.get("desc", "")).strip()[:600]
+    cid = str(body.get("cat", ""))
+    if cid not in info.get("categories", {}):
+        cid = ""
+    pid = str(body.get("pid", "")).strip()
+    if pid:
+        p = info["products"].get(pid)
+        if not p:
+            return _shopadm_err("not_found", 404)
+    else:
+        pid = str(info["next_id"])
+        info["next_id"] += 1
+        p = info["products"][pid] = {"sold": 0}
+    p.update({"name": name, "price": price, "qty": qty, "desc": desc})
+    if cid:
+        p["category"] = cid
+    else:
+        p.pop("category", None)
+    save_data()
+    return web.json_response({"ok": True, "product": _shopadm_product_json(pid, p, info.get("categories", {}))},
+                             headers=_NO_STORE)
+
+
+async def shopadm_product_delete(request):
+    body = await _shopadm_body(request)
+    token, info, uid, is_adm, err = shopadm_auth(request, body)
+    if err:
+        return err
+    pid = str(body.get("pid", ""))
+    if info["products"].pop(pid, None) is None:
+        return _shopadm_err("not_found", 404)
+    for cart in info.get("carts", {}).values():
+        cart.pop(pid, None)
+    save_data()
+    return web.json_response({"ok": True}, headers=_NO_STORE)
+
+
+async def shopadm_photo(request):
+    """Admin uchun tovar rasmi (ombori tugagan tovarniki ham)."""
+    token, info, uid, is_adm, err = shopadm_auth(request)
+    if err:
+        return web.Response(status=err.status)
+    fid = (info.get("products", {}).get(request.query.get("pid", "")) or {}).get("photo")
+    if not fid:
+        return web.Response(status=404)
+    hit = _SHOP_IMG_CACHE.get(fid)
+    if hit is None:
+        path = await kw_tg_path(token, fid)
+        if not path:
+            return web.Response(status=404)
+        try:
+            async with httpx.AsyncClient(timeout=30) as c:
+                r = await c.get(f"https://api.telegram.org/file/bot{token}/{path}")
+        except Exception:
+            return web.Response(status=502)
+        if r.status_code != 200:
+            return web.Response(status=404)
+        ctype = "image/png" if path.lower().endswith(".png") else "image/webp" if path.lower().endswith(".webp") else "image/jpeg"
+        hit = (r.content, ctype)
+        _SHOP_IMG_CACHE[fid] = hit
+        while len(_SHOP_IMG_CACHE) > 120:
+            _SHOP_IMG_CACHE.popitem(last=False)
+    return web.Response(body=hit[0], content_type=hit[1], headers={"Cache-Control": "private, max-age=600"})
+
+
+async def shopadm_orders(request):
+    token, info, uid, is_adm, err = shopadm_auth(request)
+    if err:
+        return err
+    st = request.query.get("status", "")
+    rows = []
+    for oid, o in reversed(list(info.get("shop_orders", {}).items())):
+        if st in SHOP_ORDER_STATUSES and o.get("status") != st:
+            continue
+        rows.append({"id": oid, "status": o.get("status", ""), "total": o.get("total", 0), "date": o.get("date", ""),
+                     "user_id": o.get("user_id"), "lines": o.get("lines", []), "address": o.get("address", ""),
+                     "phone": o.get("phone", ""), "paid": bool(o.get("paid"))})
+        if len(rows) >= 100:
+            break
+    return web.json_response({"orders": rows}, headers=_NO_STORE)
+
+
+async def shopadm_order_status(request):
+    body = await _shopadm_body(request)
+    token, info, uid, is_adm, err = shopadm_auth(request, body)
+    if err:
+        return err
+    oid, new = str(body.get("oid", "")), str(body.get("status", ""))
+    o = info.get("shop_orders", {}).get(oid)
+    if not o or new not in SHOP_ORDER_STATUSES:
+        return _shopadm_err("not_found", 404)
+    changed = o.get("status") != new
+    o["status"] = new
+    save_data()
+    text = SHOP_STATUS_TEXT.get(new)
+    if changed and text and o.get("user_id"):
+        try:    # xaridorga botning o'zi orqali xabar (botdagi tugmalar bilan bir xil matn)
+            async with httpx.AsyncClient(timeout=15) as c:
+                await c.post(f"https://api.telegram.org/bot{token}/sendMessage", json={"chat_id": o["user_id"], "text": text})
+        except Exception:
+            pass
+    return web.json_response({"ok": True, "status": new}, headers=_NO_STORE)
+
+
+async def shopadm_categories(request):
+    token, info, uid, is_adm, err = shopadm_auth(request)
+    if err:
+        return err
+    counts = {}
+    for p in info.get("products", {}).values():
+        counts[p.get("category", "")] = counts.get(p.get("category", ""), 0) + 1
+    cats = [{"id": c, "name": n, "count": counts.get(c, 0)} for c, n in info.get("categories", {}).items()]
+    return web.json_response({"categories": cats}, headers=_NO_STORE)
+
+
+async def shopadm_category_add(request):
+    body = await _shopadm_body(request)
+    token, info, uid, is_adm, err = shopadm_auth(request, body, admin_only=True)
+    if err:
+        return err
+    name = str(body.get("name", "")).strip()[:60]
+    if not name:
+        return _shopadm_err("bad_name")
+    cid = uuid.uuid4().hex[:6]
+    info["categories"][cid] = name
+    save_data()
+    return web.json_response({"ok": True, "id": cid}, headers=_NO_STORE)
+
+
+async def shopadm_category_delete(request):
+    body = await _shopadm_body(request)
+    token, info, uid, is_adm, err = shopadm_auth(request, body, admin_only=True)
+    if err:
+        return err
+    cid = str(body.get("cid", ""))
+    if info["categories"].pop(cid, None) is None:
+        return _shopadm_err("not_found", 404)
+    for p in info.get("products", {}).values():
+        if p.get("category") == cid:
+            p.pop("category", None)
+    save_data()
+    return web.json_response({"ok": True}, headers=_NO_STORE)
+
+
+async def shopadm_promos(request):
+    token, info, uid, is_adm, err = shopadm_auth(request, admin_only=True)
+    if err:
+        return err
+    rows = [{"code": c, "percent": v.get("percent", 0), "active": bool(v.get("active"))}
+            for c, v in info.get("promo_codes", {}).items()]
+    return web.json_response({"promos": rows}, headers=_NO_STORE)
+
+
+async def shopadm_promo_save(request):
+    body = await _shopadm_body(request)
+    token, info, uid, is_adm, err = shopadm_auth(request, body, admin_only=True)
+    if err:
+        return err
+    code = re.sub(r"[^A-Z0-9_-]", "", str(body.get("code", "")).upper())[:20]
+    try:
+        percent = int(body.get("percent"))
+    except Exception:
+        percent = 0
+    if not code or not (1 <= percent <= 100):
+        return _shopadm_err("bad_promo")
+    info.setdefault("promo_codes", {})[code] = {"percent": percent, "active": bool(body.get("active", True))}
+    save_data()
+    return web.json_response({"ok": True}, headers=_NO_STORE)
+
+
+async def shopadm_promo_delete(request):
+    body = await _shopadm_body(request)
+    token, info, uid, is_adm, err = shopadm_auth(request, body, admin_only=True)
+    if err:
+        return err
+    if info.get("promo_codes", {}).pop(str(body.get("code", "")), None) is None:
+        return _shopadm_err("not_found", 404)
+    save_data()
+    return web.json_response({"ok": True}, headers=_NO_STORE)
+
+
+async def shopadm_settings(request):
+    """GET — sozlamalar; POST {delivery_fee, vip_discount_percent} — saqlash."""
+    body = await _shopadm_body(request) if request.method == "POST" else None
+    token, info, uid, is_adm, err = shopadm_auth(request, body, admin_only=True)
+    if err:
+        return err
+    if request.method == "POST":
+        try:
+            fee = int(body.get("delivery_fee", info.get("delivery_fee", 0)))
+            vip = int(body.get("vip_discount_percent", info.get("vip_discount_percent", 0)))
+        except Exception:
+            return _shopadm_err("bad_value")
+        if fee < 0 or fee > 100_000_000 or not (0 <= vip <= 100):
+            return _shopadm_err("bad_value")
+        info["delivery_fee"], info["vip_discount_percent"] = fee, vip
+        save_data()
+    return web.json_response({"delivery_fee": info.get("delivery_fee", 0),
+                              "vip_discount_percent": info.get("vip_discount_percent", 0),
+                              "blocked": info.get("blocked_users", [])}, headers=_NO_STORE)
+
+
+async def shopadm_user_block(request):
+    body = await _shopadm_body(request)
+    token, info, uid, is_adm, err = shopadm_auth(request, body, admin_only=True)
+    if err:
+        return err
+    try:
+        target = int(str(body.get("uid", "")).strip())
+    except Exception:
+        return _shopadm_err("bad_id")
+    if is_admin(info, target):
+        return _shopadm_err("cant_block_admin")
+    blocked = info.setdefault("blocked_users", [])
+    if body.get("block", True):
+        if target not in blocked:
+            blocked.append(target)
+    elif target in blocked:
+        blocked.remove(target)
+    save_data()
+    return web.json_response({"ok": True, "blocked": blocked}, headers=_NO_STORE)
+
+
+async def shoppanel_page(request):
+    return web.Response(
+        text=SHOPPANEL_HTML.replace("__PALETTES__", theme_palettes_json()),
+        content_type="text/html",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache"},
+    )
+
+
+SHOPPANEL_HTML = r"""<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Admin Mini app</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{--bg:#0f1115;--cd:#181b22;--tx:#f2f4f8;--mu:#8b93a4;--ac:#4f8cff;--acs:rgba(79,140,255,.16);--bd:#262a33;--rd:#ff5c5c;--gn:#2fbf71;--yl:#f0b429}
+@media (prefers-color-scheme:light){:root{--bg:#f3f5f9;--cd:#fff;--tx:#12151c;--mu:#6b7385;--bd:#e3e7ee}}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+.hd{position:sticky;top:0;z-index:5;background:var(--bg);padding:14px 16px 10px;border-bottom:1px solid var(--bd)}
+.hd h1{margin:0;font-size:19px}
+.hd small{color:var(--mu)}
+main{padding:14px 16px 100px}
+nav{position:fixed;left:0;right:0;bottom:0;z-index:6;display:flex;background:var(--cd);border-top:1px solid var(--bd);padding-bottom:env(safe-area-inset-bottom)}
+nav b{flex:1;text-align:center;padding:9px 2px 8px;font-size:11px;font-weight:500;color:var(--mu);cursor:pointer}
+nav b span{display:block;font-size:20px;line-height:1.2}
+nav b.on{color:var(--ac)}
+.cd{background:var(--cd);border:1px solid var(--bd);border-radius:14px;padding:14px;margin-bottom:12px}
+.st{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:12px}
+.st div{background:var(--cd);border:1px solid var(--bd);border-radius:14px;padding:12px}
+.st small{color:var(--mu);display:block;font-size:12px}
+.st b{font-size:20px}
+h3{margin:4px 0 10px;font-size:16px}
+.bars{display:flex;align-items:flex-end;gap:8px;height:130px}
+.bars div{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;font-size:11px;color:var(--mu)}
+.bars i{display:block;width:100%;background:var(--ac);border-radius:6px 6px 0 0;min-height:3px}
+.row{display:flex;gap:12px;align-items:center;padding:10px 0;border-bottom:1px solid var(--bd)}
+.row:last-child{border-bottom:0}
+.th{position:relative;width:54px;height:54px;border-radius:10px;background:var(--acs);flex:none;overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:22px}
+.th img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.nm{flex:1;min-width:0}
+.nm b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nm span{color:var(--mu);font-size:13px}
+input,select,textarea{width:100%;padding:12px 14px;border-radius:12px;border:1px solid var(--bd);background:var(--bg);color:var(--tx);font-size:16px;outline:none;font-family:inherit}
+label{display:block;color:var(--mu);font-size:13px;margin:10px 0 4px}
+.btn{display:block;width:100%;padding:13px;border:0;border-radius:12px;background:var(--ac);color:#fff;font-size:16px;font-weight:600;margin:8px 0;text-align:center}
+.btn.g{background:var(--acs);color:var(--ac)}
+.btn.r{background:rgba(255,92,92,.15);color:var(--rd)}
+.sm{padding:7px 12px;border:0;border-radius:9px;background:var(--acs);color:var(--ac);font-size:13px;font-weight:600}
+.sm.r{background:rgba(255,92,92,.15);color:var(--rd)}
+.sm.on{background:var(--ac);color:#fff}
+.chips{display:flex;gap:8px;overflow-x:auto;padding:2px 0 10px;scrollbar-width:none}
+.chips::-webkit-scrollbar{display:none}
+.chips i{font-style:normal;white-space:nowrap;padding:7px 14px;border-radius:999px;border:1px solid var(--bd);background:var(--cd);font-size:14px;cursor:pointer}
+.chips i.on{background:var(--ac);border-color:var(--ac);color:#fff}
+.tag{display:inline-block;padding:2px 9px;border-radius:8px;font-size:12px;font-weight:600}
+.tag.kutilmoqda{background:rgba(240,180,41,.18);color:var(--yl)}
+.tag.yetkazilmoqda{background:var(--acs);color:var(--ac)}
+.tag.yakunlandi{background:rgba(47,191,113,.16);color:var(--gn)}
+.emp{text-align:center;color:var(--mu);padding:40px 20px}
+.fab{position:fixed;right:16px;bottom:calc(76px + env(safe-area-inset-bottom));z-index:7;width:54px;height:54px;border-radius:50%;border:0;background:var(--ac);color:#fff;font-size:30px;box-shadow:0 6px 20px rgba(0,0,0,.35)}
+.ov{position:fixed;inset:0;background:var(--bg);overflow-y:auto;display:none;z-index:10;padding:16px 16px 60px}
+.ov h2{margin:0 0 6px}
+.hint{color:var(--mu);font-size:13px;margin:6px 0}
+.lines{font-size:14px;margin:6px 0;white-space:pre-wrap}
+.acts{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+a{color:var(--ac)}
+#toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);background:rgba(0,0,0,.82);color:#fff;padding:10px 16px;border-radius:10px;font-size:14px;z-index:30;display:none;max-width:90%}
+</style>
+</head>
+<body>
+<div class="hd"><h1 id="ttl">&#128736; Admin Mini app</h1><small id="sub"></small></div>
+<main id="m"></main>
+<button class="fab" id="fab" style="display:none">+</button>
+<nav id="nav"></nav>
+<div id="ov" class="ov"></div>
+<div id="toast"></div>
+<script>
+var tg = window.Telegram && Telegram.WebApp; if (tg) { try { tg.ready(); tg.expand(); } catch (e) {} }
+var B = new URLSearchParams(location.search).get("b") || "", ID = (tg && tg.initData) || "";
+var PAL = __PALETTES__, TAB = "home", ROLE = "admin", CATS = [], PRODS = [], ORD_F = "";
+var ERR = { forbidden: "Sizda bu botga kirish huquqi yo'q", no_perm: "Bu bo'lim faqat admin uchun", invalid_init_data: "Mini appni botning ichidan oching",
+  bad_name: "Nomni kiriting", bad_price: "Narx noto'g'ri", bad_qty: "Miqdor noto'g'ri", bad_promo: "Kod va foiz (1-100) kerak", bad_value: "Qiymat noto'g'ri",
+  bad_id: "ID noto'g'ri", cant_block_admin: "Adminni bloklab bo'lmaydi", not_found: "Topilmadi" };
+function esc(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+function so(n) { return Number(n || 0).toLocaleString("ru-RU").replace(/ /g, " ") + " so'm"; }
+function q(p, extra) { return p + "?b=" + encodeURIComponent(B) + (extra || ""); }
+function $(id) { return document.getElementById(id); }
+function toast(t) { var e = $("toast"); e.textContent = t; e.style.display = "block"; setTimeout(function () { e.style.display = "none"; }, 2600); }
+function themeHex(k) { try { var p = String(k).split("-"); return PAL[p[0]].shades[Number(p[1]) - 1] || ""; } catch (e) { return ""; } }
+function applyTheme(k) { var c = themeHex(k); if (!c) return; var st = document.documentElement.style; st.setProperty("--ac", c); st.setProperty("--acs", "color-mix(in srgb," + c + " 16%,transparent)"); }
+async function get(p, extra) {
+  var r = await fetch(q(p, "&initData=" + encodeURIComponent(ID) + (extra || ""))); var j = await r.json().catch(function () { return {}; });
+  if (!r.ok) throw new Error(ERR[j.error] || ("Xato " + r.status)); return j;
+}
+async function post(p, body) {
+  var r = await fetch(q(p), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(Object.assign({ initData: ID }, body)) });
+  var j = await r.json().catch(function () { return {}; });
+  if (!r.ok) throw new Error(ERR[j.error] || ("Xato " + r.status)); return j;
+}
+function fail(e) { toast(e && e.message ? e.message : "Xatolik"); }
+function tabs() {
+  var t = [["home", "&#128202;", "Bosh sahifa"], ["prod", "&#128230;", "Tovarlar"], ["ord", "&#129534;", "Buyurtmalar"]];
+  if (ROLE === "admin") { t.push(["cat", "&#127991;", "Katalog"]); t.push(["set", "&#9881;&#65039;", "Sozlama"]); }
+  $("nav").innerHTML = t.map(function (x) { return '<b data-t="' + x[0] + '"' + (TAB === x[0] ? ' class="on"' : "") + "><span>" + x[1] + "</span>" + x[2] + "</b>"; }).join("");
+  $("nav").querySelectorAll("b").forEach(function (el) { el.onclick = function () { TAB = el.getAttribute("data-t"); show(); }; });
+}
+function show() { tabs(); $("fab").style.display = TAB === "prod" ? "block" : "none"; ({ home: vHome, prod: vProd, ord: vOrd, cat: vCat, set: vSet })[TAB](); }
+async function vHome() {
+  var m = $("m"); m.innerHTML = '<div class="emp">Yuklanmoqda...</div>';
+  try {
+    var j = await get("/api/shopadm/overview"); ROLE = j.role; tabs();
+    if (j.bot.theme) applyTheme(j.bot.theme); $("ttl").innerHTML = "&#128736; " + esc(j.bot.name || "Admin Mini app");
+    $("sub").textContent = ROLE === "admin" ? "Admin" : "Moderator";
+    var s = j.stats, mx = Math.max.apply(null, j.series.map(function (x) { return x.rev; }).concat([1]));
+    m.innerHTML = '<div class="st"><div><small>Jami tushum</small><b>' + so(s.revenue) + '</b></div><div><small>Buyurtmalar</small><b>' + s.orders + '</b></div>' +
+      '<div><small>Kutilayotgan</small><b>' + s.pending + '</b></div><div><small>Mijozlar</small><b>' + s.users + '</b></div>' +
+      '<div><small>Tovarlar</small><b>' + s.products + '</b></div><div><small>Kategoriyalar</small><b>' + s.categories + "</b></div></div>" +
+      '<div class="cd"><h3>Oxirgi 7 kun tushumi</h3><div class="bars">' + j.series.map(function (x) {
+        return '<div title="' + esc(so(x.rev)) + '"><i style="height:' + Math.round(x.rev / mx * 100) + '%"></i>' + x.d + "</div>"; }).join("") + "</div></div>" +
+      '<div class="cd"><h3>&#128293; Eng ko\'p sotilgan</h3>' + (j.top.length ? j.top.map(function (p, i) {
+        return '<div class="row"><div class="nm"><b>' + (i + 1) + ". " + esc(p.name) + "</b></div><span>" + p.sold + " dona</span></div>"; }).join("") : '<div class="hint">Hali sotuv yo\'q</div>') + "</div>";
+  } catch (e) { m.innerHTML = '<div class="emp">' + esc(e.message) + "</div>"; }
+}
+async function vProd() {
+  var m = $("m"); m.innerHTML = '<div class="emp">Yuklanmoqda...</div>';
+  try { var j = await get("/api/shopadm/products"); PRODS = j.products; CATS = j.categories; drawProd(); } catch (e) { m.innerHTML = '<div class="emp">' + esc(e.message) + "</div>"; }
+}
+function drawProd() {
+  var m = $("m"), t = ($("ps") && $("ps").value || "").toLowerCase();
+  var rows = PRODS.filter(function (p) { return !t || p.name.toLowerCase().indexOf(t) >= 0; });
+  m.innerHTML = '<input id="ps" placeholder="Tovar qidirish..." value="' + esc(t) + '" style="margin-bottom:12px"><div class="cd">' + (rows.length ? rows.map(function (p) {
+    var unl = p.qty >= 999999;
+    return '<div class="row" data-p="' + esc(p.id) + '"><div class="th">&#128717;' + (p.photo ? '<img loading="lazy" src="' + q("/api/shopadm/photo", "&pid=" + encodeURIComponent(p.id) + "&initData=" + encodeURIComponent(ID)) + '" alt="">' : "") + '</div><div class="nm"><b>' + esc(p.name) + "</b><span>" + so(p.price) + " &middot; " + (unl ? "cheksiz" : p.qty + " dona") + (p.qty <= 0 ? " &middot; <u>tugagan</u>" : "") + "</span></div><span>&rsaquo;</span></div>"; }).join("") : '<div class="emp">Tovar yo\'q. "+" tugmasi bilan qo\'shing</div>') + "</div>";
+  var ps = $("ps"); ps.oninput = function () { var pos = ps.selectionStart; drawProd(); var n = $("ps"); n.focus(); try { n.setSelectionRange(pos, pos); } catch (e) {} };
+  m.querySelectorAll("[data-p]").forEach(function (el) { el.onclick = function () { prodForm(el.getAttribute("data-p")); }; });
+}
+function closeOv() { $("ov").style.display = "none"; if (tg && tg.BackButton) tg.BackButton.hide(); }
+function openOv(html) { var o = $("ov"); o.innerHTML = html; o.style.display = "block"; o.scrollTop = 0; if (tg && tg.BackButton) { tg.BackButton.show(); tg.BackButton.onClick(closeOv); } }
+function prodForm(pid) {
+  var p = PRODS.filter(function (x) { return x.id === pid; })[0] || { name: "", price: "", qty: 999999, cat: "", desc: "", photo: false };
+  var unl = p.qty >= 999999;
+  openOv('<h2>' + (pid ? "Tovarni tahrirlash" : "Yangi tovar") + '</h2>' +
+    (p.photo ? '<div class="th" style="width:100%;height:200px;margin:8px 0"><img src="' + q("/api/shopadm/photo", "&pid=" + encodeURIComponent(p.id) + "&initData=" + encodeURIComponent(ID)) + '" alt=""></div>' : "") +
+    '<label>Nomi</label><input id="f_n" value="' + esc(p.name) + '"><label>Narxi (so\'m)</label><input id="f_p" inputmode="numeric" value="' + esc(p.price) + '">' +
+    '<label>Miqdori (bo\'sh qoldirsangiz — cheksiz)</label><input id="f_q" inputmode="numeric" value="' + (unl ? "" : esc(p.qty)) + '" placeholder="cheksiz">' +
+    '<label>Kategoriya</label><select id="f_c"><option value="">— yo\'q —</option>' + CATS.map(function (c) { return '<option value="' + esc(c.id) + '"' + (c.id === p.cat ? " selected" : "") + ">" + esc(c.name) + "</option>"; }).join("") + "</select>" +
+    '<label>Tavsif (ixtiyoriy)</label><textarea id="f_d" rows="3">' + esc(p.desc) + "</textarea>" +
+    '<div class="hint">&#128247; Rasm botda qo\'yiladi: &#128230; Mahsulotlar &rarr; &#128444; Rasm qo\'shish (rasmni forward qiling).</div>' +
+    '<button class="btn" id="f_s">Saqlash</button>' + (pid ? '<button class="btn r" id="f_x">O\'chirish</button>' : "") + '<button class="btn g" id="f_b">Yopish</button>');
+  $("f_b").onclick = closeOv;
+  $("f_s").onclick = async function () {
+    try { await post("/api/shopadm/product/save", { pid: pid || "", name: $("f_n").value, price: $("f_p").value, qty: $("f_q").value, cat: $("f_c").value, desc: $("f_d").value }); toast("Saqlandi ✅"); closeOv(); vProd(); } catch (e) { fail(e); }
+  };
+  if (pid) $("f_x").onclick = async function () {
+    if (!confirm("Tovar o'chirilsinmi?")) return;
+    try { await post("/api/shopadm/product/delete", { pid: pid }); toast("O'chirildi"); closeOv(); vProd(); } catch (e) { fail(e); }
+  };
+}
+async function vOrd() {
+  var m = $("m"); m.innerHTML = '<div class="emp">Yuklanmoqda...</div>';
+  try {
+    var j = await get("/api/shopadm/orders", ORD_F ? "&status=" + ORD_F : "");
+    var fl = [["", "Hammasi"], ["kutilmoqda", "Kutilmoqda"], ["yetkazilmoqda", "Yetkazilmoqda"], ["yakunlandi", "Yakunlangan"]];
+    m.innerHTML = '<div class="chips">' + fl.map(function (f) { return '<i data-f="' + f[0] + '"' + (ORD_F === f[0] ? ' class="on"' : "") + ">" + f[1] + "</i>"; }).join("") + "</div>" +
+      (j.orders.length ? j.orders.map(function (o) {
+        var adr = /^https?:/.test(o.address) ? '<a href="' + esc(o.address) + '" target="_blank">&#128205; Xaritada ochish</a>' : esc(o.address);
+        var lbl = { kutilmoqda: "Kutilmoqda", yetkazilmoqda: "Yetkazilmoqda", yakunlandi: "Yakunlandi" };
+        return '<div class="cd"><div style="display:flex;justify-content:space-between;align-items:center"><b>#' + esc(o.id.slice(0, 6)) + '</b><span class="tag ' + esc(o.status) + '">' + (lbl[o.status] || esc(o.status)) + "</span></div>" +
+          '<div class="hint">' + esc(o.date) + " &middot; ID: " + esc(o.user_id) + (o.paid ? " &middot; &#9989; to'langan" : "") + '</div><div class="lines">' + o.lines.map(esc).join("\n") + "</div>" +
+          '<div class="hint">&#128205; ' + adr + "<br>&#128222; " + esc(o.phone) + '</div><b>' + so(o.total) + '</b><div class="acts">' +
+          ["kutilmoqda", "yetkazilmoqda", "yakunlandi"].map(function (s) { return '<button class="sm' + (o.status === s ? " on" : "") + '" data-o="' + esc(o.id) + '" data-s="' + s + '">' + lbl[s] + "</button>"; }).join("") + "</div></div>";
+      }).join("") : '<div class="emp">Buyurtma yo\'q</div>');
+    m.querySelectorAll("[data-f]").forEach(function (el) { el.onclick = function () { ORD_F = el.getAttribute("data-f"); vOrd(); }; });
+    m.querySelectorAll("[data-o]").forEach(function (el) { el.onclick = async function () {
+      try { await post("/api/shopadm/order/status", { oid: el.getAttribute("data-o"), status: el.getAttribute("data-s") }); toast("Holat yangilandi"); vOrd(); } catch (e) { fail(e); } }; });
+  } catch (e) { m.innerHTML = '<div class="emp">' + esc(e.message) + "</div>"; }
+}
+async function vCat() {
+  var m = $("m"); m.innerHTML = '<div class="emp">Yuklanmoqda...</div>';
+  try {
+    var c = await get("/api/shopadm/categories"), p = await get("/api/shopadm/promos");
+    m.innerHTML = '<div class="cd"><h3>&#127991; Kategoriyalar</h3>' + (c.categories.length ? c.categories.map(function (x) {
+      return '<div class="row"><div class="nm"><b>' + esc(x.name) + "</b><span>" + x.count + ' ta tovar</span></div><button class="sm r" data-cd="' + esc(x.id) + '">O\'chirish</button></div>'; }).join("") : '<div class="hint">Kategoriya yo\'q</div>') +
+      '<label>Yangi kategoriya</label><input id="c_n" placeholder="Masalan: Kiyimlar"><button class="btn" id="c_a">Qo\'shish</button></div>' +
+      '<div class="cd"><h3>&#127903; Promo-kodlar</h3>' + (p.promos.length ? p.promos.map(function (x) {
+        return '<div class="row"><div class="nm"><b>' + esc(x.code) + "</b><span>" + x.percent + '% chegirma</span></div><button class="sm' + (x.active ? " on" : "") + '" data-pt="' + esc(x.code) + '" data-pp="' + x.percent + '" data-pa="' + (x.active ? 1 : 0) + '">' + (x.active ? "Faol" : "O'chiq") + '</button><button class="sm r" data-pd="' + esc(x.code) + '">&times;</button></div>'; }).join("") : '<div class="hint">Promo-kod yo\'q</div>') +
+      '<label>Kod</label><input id="p_c" placeholder="YANGI10" autocapitalize="characters"><label>Chegirma (%)</label><input id="p_p" inputmode="numeric" placeholder="10"><button class="btn" id="p_a">Qo\'shish</button></div>';
+    $("c_a").onclick = async function () { try { await post("/api/shopadm/category/add", { name: $("c_n").value }); vCat(); } catch (e) { fail(e); } };
+    m.querySelectorAll("[data-cd]").forEach(function (el) { el.onclick = async function () { if (!confirm("Kategoriya o'chirilsinmi?")) return; try { await post("/api/shopadm/category/delete", { cid: el.getAttribute("data-cd") }); vCat(); } catch (e) { fail(e); } }; });
+    $("p_a").onclick = async function () { try { await post("/api/shopadm/promo/save", { code: $("p_c").value, percent: $("p_p").value, active: true }); vCat(); } catch (e) { fail(e); } };
+    m.querySelectorAll("[data-pt]").forEach(function (el) { el.onclick = async function () { try { await post("/api/shopadm/promo/save", { code: el.getAttribute("data-pt"), percent: el.getAttribute("data-pp"), active: el.getAttribute("data-pa") !== "1" }); vCat(); } catch (e) { fail(e); } }; });
+    m.querySelectorAll("[data-pd]").forEach(function (el) { el.onclick = async function () { try { await post("/api/shopadm/promo/delete", { code: el.getAttribute("data-pd") }); vCat(); } catch (e) { fail(e); } }; });
+  } catch (e) { m.innerHTML = '<div class="emp">' + esc(e.message) + "</div>"; }
+}
+async function vSet() {
+  var m = $("m"); m.innerHTML = '<div class="emp">Yuklanmoqda...</div>';
+  try {
+    var j = await get("/api/shopadm/settings");
+    m.innerHTML = '<div class="cd"><h3>&#9881;&#65039; Sozlamalar</h3><label>Yetkazib berish narxi (so\'m)</label><input id="s_f" inputmode="numeric" value="' + esc(j.delivery_fee) + '">' +
+      '<label>VIP chegirma foizi (%)</label><input id="s_v" inputmode="numeric" value="' + esc(j.vip_discount_percent) + '"><button class="btn" id="s_s">Saqlash</button></div>' +
+      '<div class="cd"><h3>&#128683; Bloklangan foydalanuvchilar</h3>' + (j.blocked.length ? j.blocked.map(function (u) {
+        return '<div class="row"><div class="nm"><b>' + esc(u) + '</b></div><button class="sm" data-ub="' + esc(u) + '">Blokdan chiqarish</button></div>'; }).join("") : '<div class="hint">Bloklanganlar yo\'q</div>') +
+      '<label>Foydalanuvchi ID raqami</label><input id="u_i" inputmode="numeric" placeholder="123456789"><button class="btn r" id="u_b">Bloklash</button></div>';
+    $("s_s").onclick = async function () { try { await post("/api/shopadm/settings", { delivery_fee: $("s_f").value, vip_discount_percent: $("s_v").value }); toast("Saqlandi ✅"); } catch (e) { fail(e); } };
+    $("u_b").onclick = async function () { try { await post("/api/shopadm/user/block", { uid: $("u_i").value, block: true }); vSet(); } catch (e) { fail(e); } };
+    m.querySelectorAll("[data-ub]").forEach(function (el) { el.onclick = async function () { try { await post("/api/shopadm/user/block", { uid: el.getAttribute("data-ub"), block: false }); vSet(); } catch (e) { fail(e); } }; });
+  } catch (e) { m.innerHTML = '<div class="emp">' + esc(e.message) + "</div>"; }
+}
+$("fab").onclick = function () { prodForm(""); };
+if (!ID) { $("m").innerHTML = '<div class="emp">Bu sahifani Telegramdagi bot ichidan oching (Admin Mini app tugmasi).</div>'; } else { show(); }
+</script>
+</body>
+</html>
+"""
+# ================= /SAVDO BOT ADMIN MINI APP =================
 
 
 async def botstats_page(request):
