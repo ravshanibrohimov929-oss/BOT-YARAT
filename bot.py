@@ -2692,7 +2692,10 @@ def setup_platform_bot(dp: Dispatcher):
             [KeyboardButton(text="📩 Murojaat"), KeyboardButton(text="📖 Qo'llanma")],
         ]
         if is_full_admin(uid):
-            _aurl = get_adminapp_url()
+            # get_adminapp_url() fayl pastida e'lon qilingan — bu blok esa import paytida ishlaydi (NameError bo'lardi),
+            # shuning uchun bu yerda uni xavfsiz tarzda chaqiramiz (yo'q bo'lsa, o'sha mantiq muhit o'zgaruvchilari bo'yicha).
+            _aurl_fn = globals().get("get_adminapp_url")
+            _aurl = _aurl_fn() if _aurl_fn else (os.getenv("MINIAPP_URL") or os.getenv("RAILWAY_PUBLIC_DOMAIN") or "")
             if _aurl:
                 pass   # Admin panel endi klaviatura yonidagi Menu tugmasida («Admin»)
             else:
@@ -7508,13 +7511,15 @@ def setup_shop_bot(dp: Dispatcher, token: str):
         return InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
 
     def main_menu_kb():
-        return ReplyKeyboardMarkup(
-            keyboard=[
-                [KeyboardButton(text="🛍 Mahsulotlar"), KeyboardButton(text="🛒 Savatim")],
-                [KeyboardButton(text="📜 Buyurtmalarim")],
-            ],
-            resize_keyboard=True,
-        )
+        rows = [
+            [KeyboardButton(text="🛍 Mahsulotlar"), KeyboardButton(text="🛒 Savatim")],
+            [KeyboardButton(text="📜 Buyurtmalarim")],
+        ]
+        # Mini app: tovarlar rasmlari bilan (obunachilar uchun)
+        _surl = get_shopapp_url(info.get("id"))
+        if _surl:
+            rows.insert(0, [KeyboardButton(text="🛍 Do'kon (Mini App)", web_app=WebAppInfo(url=_surl))])
+        return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
     async def send_cart(user_id: int, send_func):
         uid = str(user_id)
@@ -16945,6 +16950,17 @@ async def start_child_bot(token: str, bot_type: str):
                     )
                 except Exception as e:
                     logging.info(f"Kino panel menyu tugmasi ({token[-6:]}, admin {_aid}): {e}")
+    if bot_type == "shop":
+        # Savdo bot: klaviatura yonidagi Menu tugmasi hamma obunachilar uchun — «Do'kon» mini app
+        _sinfo = data["bots"].get(token, {})
+        _surl = get_shopapp_url(_sinfo.get("id"))
+        if _surl:
+            try:
+                await child_bot.set_chat_menu_button(
+                    menu_button=MenuButtonWebApp(text="Do'kon", web_app=WebAppInfo(url=_surl)),
+                )
+            except Exception as e:
+                logging.info(f"Savdo bot menyu tugmasi ({token[-6:]}): {e}")
     task = asyncio.create_task(child_dp.start_polling(child_bot))
     running_bots[token] = task
 
@@ -19808,6 +19824,12 @@ async def start_web_server():
     app.router.add_get("/api/kw/film", kw_api_film)
     app.router.add_get("/api/kw/cover", kw_api_cover)
     app.router.add_get("/api/kw/video", kw_api_video)
+    app.router.add_get("/shop", shop_page)
+    app.router.add_get("/api/shop/list", shop_api_list)
+    app.router.add_get("/api/shop/photo", shop_api_photo)
+    app.router.add_get("/api/shop/cart", shop_api_cart)
+    app.router.add_post("/api/shop/cart", shop_api_cart)
+    app.router.add_post("/api/shop/checkout", shop_api_checkout)
     app.router.add_get("/api/kino/users", kino_api_users)
     app.router.add_post("/api/kino/user/block", kino_api_user_block)
     app.router.add_get("/api/kino/payments", kino_api_payments)
@@ -22746,6 +22768,404 @@ setInterval(function () { if (!document.hidden) load(); }, 20000);
 </body>
 </html>
 """
+
+
+# ================= SAVDO BOT: XALQ UCHUN MINI APP (/shop) =================
+# Obunachi savdo botdagi "🛍 Do'kon" tugmasi orqali ochadi: tovarlar, rasmlar, qidiruv, kategoriyalar, savat.
+_SHOP_IMG_CACHE = OrderedDict()
+
+
+def get_shopapp_url(bot_id) -> str:
+    """Savdo bot mini app URL'i: https://<domen>/shop?b=<bot_id>"""
+    purl = get_kinopanel_url(bot_id)
+    return purl.replace("/kinopanel?", "/shop?") if purl else ""
+
+
+def shop_find_bot(bot_id):
+    try:
+        bid = int(bot_id)
+    except Exception:
+        return None, None
+    for token, info in data["bots"].items():
+        if info.get("id") == bid and info.get("type") == "shop":
+            return token, info
+    return None, None
+
+
+def _shop_h(s) -> str:
+    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def shop_user(request, token: str, init_data: str):
+    """initData imzosi to'g'ri bo'lsa foydalanuvchi ID'sini qaytaradi (savdo botning o'z tokeni bilan)."""
+    parsed = validate_webapp_init_data(init_data, token)
+    if not parsed:
+        return None
+    try:
+        return int(json.loads(parsed.get("user", "{}")).get("id"))
+    except Exception:
+        return None
+
+
+def _shop_visible(p: dict) -> bool:
+    return bool(p) and p.get("qty", 0) > 0
+
+
+def _shop_cart_payload(info: dict, uid: int) -> dict:
+    cart = info.setdefault("carts", {}).get(str(uid), {})
+    lines, total = [], 0
+    for pid, qty in cart.items():
+        p = info["products"].get(pid)
+        if not _shop_visible(p) or qty <= 0:
+            continue
+        sub = p["price"] * qty
+        total += sub
+        lines.append({"pid": pid, "name": p["name"], "price": p["price"], "qty": qty,
+                      "sub": sub, "photo": bool(p.get("photo"))})
+    return {"lines": lines, "total": total, "delivery": info.get("delivery_fee", 0)}
+
+
+async def shop_api_list(request):
+    token, info = shop_find_bot(request.query.get("b"))
+    if not info:
+        return web.json_response({"error": "bot_not_found"}, status=404, headers=_NO_STORE)
+    cats = info.get("categories", {})
+    items, used = [], set()
+    for pid, p in sorted(info.get("products", {}).items(), key=lambda kv: kv[1].get("name", "").lower()):
+        if not _shop_visible(p):
+            continue
+        cid = p.get("category", "")
+        if cid in cats:
+            used.add(cid)
+        items.append({
+            "id": pid, "name": p["name"], "price": p["price"], "qty": p.get("qty", 0),
+            "cat": cid if cid in cats else "", "photo": bool(p.get("photo")),
+            "desc": (p.get("desc") or "").strip(),
+            "sold": p.get("sold", 0),
+        })
+    return web.json_response({
+        "bot": {"name": info.get("name", ""), "username": info.get("username", ""), "theme": info.get("theme", "")},
+        "categories": [{"id": c, "name": n} for c, n in cats.items() if c in used],
+        "delivery": info.get("delivery_fee", 0),
+        "products": items,
+    }, headers=_NO_STORE)
+
+
+async def shop_api_photo(request):
+    token, info = shop_find_bot(request.query.get("b"))
+    if not info:
+        return web.Response(status=404)
+    p = info.get("products", {}).get(request.query.get("pid", ""))
+    fid = (p or {}).get("photo")
+    if not fid or not _shop_visible(p):
+        return web.Response(status=404)
+    hit = _SHOP_IMG_CACHE.get(fid)
+    if hit is None:
+        path = await kw_tg_path(token, fid)
+        if not path:
+            return web.Response(status=404)
+        try:
+            async with httpx.AsyncClient(timeout=30) as c:
+                r = await c.get(f"https://api.telegram.org/file/bot{token}/{path}")
+        except Exception:
+            return web.Response(status=502)
+        if r.status_code != 200:
+            return web.Response(status=404)
+        ctype = "image/png" if path.lower().endswith(".png") else "image/webp" if path.lower().endswith(".webp") else "image/jpeg"
+        hit = (r.content, ctype)
+        _SHOP_IMG_CACHE[fid] = hit
+        while len(_SHOP_IMG_CACHE) > 120:
+            _SHOP_IMG_CACHE.popitem(last=False)
+    return web.Response(body=hit[0], content_type=hit[1], headers={"Cache-Control": "public, max-age=3600"})
+
+
+async def shop_api_cart(request):
+    """GET — savatni o'qish. POST {pid, qty} — tovar sonini o'rnatish (0 = olib tashlash)."""
+    token, info = shop_find_bot(request.query.get("b"))
+    if not info:
+        return web.json_response({"error": "bot_not_found"}, status=404, headers=_NO_STORE)
+    body = {}
+    if request.method == "POST":
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        init_data = body.get("initData", "")
+    else:
+        init_data = request.query.get("initData", "")
+    uid = shop_user(request, token, init_data)
+    if not uid:
+        return web.json_response({"error": "invalid_init_data"}, status=401, headers=_NO_STORE)
+    if uid in info.get("blocked_users", []):
+        return web.json_response({"error": "blocked"}, status=403, headers=_NO_STORE)
+    if request.method == "POST":
+        pid = str(body.get("pid", ""))
+        p = info.get("products", {}).get(pid)
+        if not _shop_visible(p):
+            return web.json_response({"error": "not_found"}, status=404, headers=_NO_STORE)
+        try:
+            qty = int(body.get("qty", 0))
+        except Exception:
+            qty = 0
+        qty = max(0, min(qty, 99, p.get("qty", 0)))
+        cart = info.setdefault("carts", {}).setdefault(str(uid), {})
+        if qty:
+            cart[pid] = qty
+        else:
+            cart.pop(pid, None)
+        if uid not in info.get("users", []):
+            info.setdefault("users", []).append(uid)
+        save_data()
+    return web.json_response(_shop_cart_payload(info, uid), headers=_NO_STORE)
+
+
+async def shop_api_checkout(request):
+    """Savatni foydalanuvchining bot chatiga yuboradi (✅ Buyurtma berish tugmasi bilan) — manzil va telefon botda so'raladi."""
+    token, info = shop_find_bot(request.query.get("b"))
+    if not info:
+        return web.json_response({"error": "bot_not_found"}, status=404, headers=_NO_STORE)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    uid = shop_user(request, token, body.get("initData", ""))
+    if not uid:
+        return web.json_response({"error": "invalid_init_data"}, status=401, headers=_NO_STORE)
+    if uid in info.get("blocked_users", []):
+        return web.json_response({"error": "blocked"}, status=403, headers=_NO_STORE)
+    cart = _shop_cart_payload(info, uid)
+    if not cart["lines"]:
+        return web.json_response({"error": "empty"}, status=400, headers=_NO_STORE)
+    text = ("🛒 <b>Savatingiz:</b>\n\n"
+            + "\n".join(f"{_shop_h(l['name'])} x{l['qty']} = {l['sub']:,} so'm" for l in cart["lines"])
+            + f"\n\n💰 Jami: {cart['total']:,} so'm")
+    markup = {"inline_keyboard": [
+        [{"text": "✅ Buyurtma berish", "callback_data": "checkout"}],
+        [{"text": "🗑 Tozalash", "callback_data": "cart_clear"}],
+    ]}
+    try:
+        async with httpx.AsyncClient(timeout=20) as c:
+            r = await c.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                "chat_id": uid, "text": text, "parse_mode": "HTML", "reply_markup": markup})
+        ok = r.status_code == 200 and r.json().get("ok")
+    except Exception:
+        ok = False
+    if not ok:
+        return web.json_response({"error": "send_failed"}, status=502, headers=_NO_STORE)
+    return web.json_response({"ok": True}, headers=_NO_STORE)
+
+
+async def shop_page(request):
+    return web.Response(
+        text=SHOPWEB_HTML.replace("__PALETTES__", theme_palettes_json()),
+        content_type="text/html",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache"},
+    )
+
+
+SHOPWEB_HTML = r"""<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Do'kon</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{--bg:#0f1115;--cd:#181b22;--tx:#f2f4f8;--mu:#8b93a4;--ac:#4f8cff;--acs:rgba(79,140,255,.16);--bd:#262a33;--rd:#ff5c5c}
+@media (prefers-color-scheme:light){:root{--bg:#f3f5f9;--cd:#fff;--tx:#12151c;--mu:#6b7385;--bd:#e3e7ee}}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+.top{position:sticky;top:0;z-index:5;background:var(--bg);padding:14px 16px 10px;border-bottom:1px solid var(--bd)}
+.top h1{margin:0 0 10px;font-size:20px}
+.top input{width:100%;padding:12px 14px;border-radius:12px;border:1px solid var(--bd);background:var(--cd);color:var(--tx);font-size:16px;outline:none}
+.chips{display:flex;gap:8px;overflow-x:auto;padding:10px 0 2px;scrollbar-width:none}
+.chips::-webkit-scrollbar{display:none}
+.chips i{font-style:normal;white-space:nowrap;padding:7px 14px;border-radius:999px;border:1px solid var(--bd);background:var(--cd);font-size:14px;cursor:pointer}
+.chips i.on{background:var(--ac);border-color:var(--ac);color:#fff}
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;padding:14px 16px 110px}
+@media (min-width:640px){.grid{grid-template-columns:repeat(4,1fr)}}
+.card{background:var(--cd);border:1px solid var(--bd);border-radius:14px;overflow:hidden;display:flex;flex-direction:column}
+.ph{position:relative;aspect-ratio:1/1;background:var(--acs);display:flex;align-items:center;justify-content:center;font-size:42px;cursor:pointer}
+.ph img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
+.ct{padding:10px 11px 12px;display:flex;flex-direction:column;gap:6px;flex:1}
+.ct b{display:block;font-size:15px;line-height:1.3;max-height:2.6em;overflow:hidden}
+.pr{color:var(--ac);font-weight:700;font-size:15px}
+.add{margin-top:auto;display:block;width:100%;padding:10px;border:0;border-radius:10px;background:var(--ac);color:#fff;font-size:15px;font-weight:600}
+.step{margin-top:auto;display:flex;align-items:center;justify-content:space-between;background:var(--acs);border-radius:10px;padding:4px}
+.step button{width:38px;height:34px;border:0;border-radius:8px;background:var(--ac);color:#fff;font-size:20px;font-weight:700}
+.step span{font-weight:700}
+.emp{text-align:center;color:var(--mu);padding:60px 20px}
+#bar{position:fixed;left:12px;right:12px;bottom:calc(12px + env(safe-area-inset-bottom));z-index:6;display:none}
+#bar button{width:100%;display:flex;justify-content:space-between;align-items:center;padding:15px 18px;border:0;border-radius:14px;background:var(--ac);color:#fff;font-size:16px;font-weight:700;box-shadow:0 6px 24px rgba(0,0,0,.35)}
+.ov{position:fixed;inset:0;background:var(--bg);overflow-y:auto;display:none;z-index:10}
+.ov .in{max-width:720px;margin:0 auto;padding:0 0 40px}
+.back{position:fixed;top:12px;left:12px;z-index:11;width:38px;height:38px;border-radius:50%;border:0;background:rgba(0,0,0,.6);color:#fff;font-size:20px}
+#det .cv{width:100%;max-height:60vh;object-fit:cover;display:block;background:var(--acs);min-height:160px}
+#det .bd{padding:16px}
+#det h2{margin:0 0 6px;font-size:22px}
+#det .ds{white-space:pre-wrap;opacity:.9;margin:12px 0 18px}
+.btn{display:block;width:100%;padding:14px;border:0;border-radius:12px;background:var(--ac);color:#fff;font-size:16px;font-weight:600;margin:8px 0;text-align:center}
+.btn.g{background:var(--acs);color:var(--ac)}
+.ln{display:flex;gap:12px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--bd)}
+.ln .im{position:relative;width:56px;height:56px;border-radius:10px;background:var(--acs);flex:none;overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:24px}
+.ln .im img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.pv{position:relative;height:46vh;background:var(--acs);display:flex;align-items:center;justify-content:center;font-size:64px}
+.pv img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.ln .nm{flex:1;min-width:0}
+.ln .nm b{display:block;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ln .nm span{color:var(--mu);font-size:13px}
+.ln .step{margin:0;width:112px}
+.sum{padding:16px}
+.sum div{display:flex;justify-content:space-between;margin:4px 0;color:var(--mu)}
+.sum div.t{color:var(--tx);font-weight:700;font-size:18px;margin-top:10px}
+.cth{padding:62px 16px 8px;font-size:20px;font-weight:700}
+#toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);background:rgba(0,0,0,.8);color:#fff;padding:10px 16px;border-radius:10px;font-size:14px;z-index:30;display:none}
+</style>
+</head>
+<body>
+<div class="top"><h1 id="ttl">🛍 Do'kon</h1><input id="q" placeholder="Tovar nomi bo'yicha qidirish..."><div class="chips" id="chips"></div></div>
+<div id="app" class="grid"></div>
+<div id="bar"><button id="barb"><span id="barn">🛒 Savat</span><span id="bart"></span></button></div>
+<div id="det" class="ov"><button class="back" id="bk">&lsaquo;</button><div class="in" id="din"></div></div>
+<div id="cartv" class="ov"><button class="back" id="bk2">&lsaquo;</button><div class="in" id="cin"></div></div>
+<div id="toast"></div>
+<script>
+var tg = window.Telegram && Telegram.WebApp; if (tg) { try { tg.ready(); tg.expand(); } catch (e) {} }
+var B = new URLSearchParams(location.search).get("b") || "";
+var ID = (tg && tg.initData) || "";
+var PAL = __PALETTES__, ITEMS = [], CATS = [], BOT = {}, DEL = 0, CART = {}, CARTLINES = [], CAT = "";
+function esc(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+function so(n) { return Number(n || 0).toLocaleString("ru-RU").replace(/ /g, " ") + " so'm"; }
+function q2(p, extra) { return p + "?b=" + encodeURIComponent(B) + (extra || ""); }
+function themeHex(k) { try { var p = String(k).split("-"); return PAL[p[0]].shades[Number(p[1]) - 1] || ""; } catch (e) { return ""; } }
+function applyTheme(k) {
+  var c = themeHex(k); if (!c) return; var st = document.documentElement.style;
+  st.setProperty("--ac", c); st.setProperty("--acs", "color-mix(in srgb," + c + " 16%,transparent)");
+}
+function toast(t) { var e = document.getElementById("toast"); e.textContent = t; e.style.display = "block"; setTimeout(function () { e.style.display = "none"; }, 2200); }
+function photo(p, big) {
+  return p.photo ? '<img ' + (big ? "" : 'loading="lazy" ') + 'src="' + q2("/api/shop/photo", "&pid=" + encodeURIComponent(p.id)) + '" alt="" onerror="this.style.display=\'none\'">' : "";
+}
+function ctl(id) {
+  var n = CART[id] || 0;
+  if (!n) return '<button class="add" data-a="1" data-i="' + esc(id) + '">&#128722; Savatga</button>';
+  return '<div class="step"><button data-a="-" data-i="' + esc(id) + '">&minus;</button><span>' + n + '</span><button data-a="+" data-i="' + esc(id) + '">+</button></div>';
+}
+function render() {
+  var t = document.getElementById("q").value.trim().toLowerCase();
+  var rows = ITEMS.filter(function (p) { return (!CAT || p.cat === CAT) && (!t || p.name.toLowerCase().indexOf(t) >= 0); });
+  var app = document.getElementById("app");
+  if (!rows.length) { app.style.display = "block"; app.innerHTML = '<div class="emp">' + (ITEMS.length ? "Hech narsa topilmadi" : "Hozircha mahsulotlar yo'q") + "</div>"; return; }
+  app.style.display = "";
+  app.innerHTML = rows.map(function (p) {
+    return '<div class="card"><div class="ph" data-o="' + esc(p.id) + '">&#128717;' + photo(p) + '</div><div class="ct"><b>' + esc(p.name) + '</b><span class="pr">' + so(p.price) + "</span>" + ctl(p.id) + "</div></div>";
+  }).join("");
+  app.querySelectorAll("[data-o]").forEach(function (el) { el.onclick = function () { openProd(el.getAttribute("data-o")); }; });
+  app.querySelectorAll("[data-a]").forEach(function (el) { el.onclick = function (ev) { ev.stopPropagation(); act(el.getAttribute("data-i"), el.getAttribute("data-a")); }; });
+}
+function renderChips() {
+  var box = document.getElementById("chips");
+  if (!CATS.length) { box.style.display = "none"; return; }
+  box.style.display = "";
+  box.innerHTML = '<i data-c=""' + (!CAT ? ' class="on"' : "") + ">Barchasi</i>" + CATS.map(function (c) {
+    return '<i data-c="' + esc(c.id) + '"' + (CAT === c.id ? ' class="on"' : "") + ">" + esc(c.name) + "</i>";
+  }).join("");
+  box.querySelectorAll("i").forEach(function (el) { el.onclick = function () { CAT = el.getAttribute("data-c"); renderChips(); render(); }; });
+}
+function bar() {
+  var n = 0, tot = 0;
+  CARTLINES.forEach(function (l) { n += l.qty; tot += l.sub; });
+  var b = document.getElementById("bar");
+  if (!n) { b.style.display = "none"; return; }
+  b.style.display = "block";
+  document.getElementById("barn").textContent = "🛒 Savat (" + n + ")";
+  document.getElementById("bart").textContent = so(tot);
+}
+async function api(path, body) {
+  var opt = body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(Object.assign({ initData: ID }, body)) } : {};
+  var url = body ? q2(path) : q2(path, "&initData=" + encodeURIComponent(ID));
+  var r = await fetch(url, opt);
+  var j = await r.json().catch(function () { return {}; });
+  if (!r.ok) throw new Error(j.error || ("Xato " + r.status));
+  return j;
+}
+function setCart(c) {
+  CARTLINES = c.lines || []; DEL = c.delivery != null ? c.delivery : DEL; CART = {};
+  CARTLINES.forEach(function (l) { CART[l.pid] = l.qty; });
+  bar(); render();
+  if (document.getElementById("cartv").style.display === "block") renderCart();
+}
+async function act(id, a) {
+  if (!ID) { toast("Mini appni bot ichidan oching"); return; }
+  var cur = CART[id] || 0, p = ITEMS.filter(function (x) { return x.id === id; })[0];
+  var nx = a === "+" || a === "1" ? cur + 1 : cur - 1;
+  if (p && nx > p.qty) { toast("Omborda boshqa qolmagan"); return; }
+  try { setCart(await api("/api/shop/cart", { pid: id, qty: nx })); } catch (e) { toast(e.message === "blocked" ? "Siz bloklangansiz" : "Xatolik, qayta urinib ko'ring"); }
+}
+function openProd(id) {
+  var p = ITEMS.filter(function (x) { return x.id === id; })[0]; if (!p) return;
+  var det = document.getElementById("det");
+  document.getElementById("din").innerHTML = '<div class="pv">&#128717;' + photo(p, true) + '</div><div class="bd"><h2>' + esc(p.name) + '</h2><div class="pr" style="font-size:20px">' + so(p.price) + "</div>" +
+    (p.desc ? '<div class="ds">' + esc(p.desc) + "</div>" : "") + '<div id="pc" style="margin-top:14px">' + ctl(p.id) + "</div></div>";
+  det.style.display = "block"; det.scrollTop = 0;
+  document.getElementById("din").querySelectorAll("[data-a]").forEach(function (el) { el.onclick = async function () { await act(el.getAttribute("data-i"), el.getAttribute("data-a")); refreshProd(id); }; });
+  if (tg && tg.BackButton) { tg.BackButton.show(); tg.BackButton.onClick(closeAll); }
+}
+function refreshProd(id) {
+  var pc = document.getElementById("pc"); if (!pc) return; pc.innerHTML = ctl(id);
+  pc.querySelectorAll("[data-a]").forEach(function (el) { el.onclick = async function () { await act(el.getAttribute("data-i"), el.getAttribute("data-a")); refreshProd(id); }; });
+}
+function closeAll() {
+  document.getElementById("det").style.display = "none"; document.getElementById("cartv").style.display = "none";
+  if (tg && tg.BackButton) { tg.BackButton.hide(); }
+}
+function renderCart() {
+  var cin = document.getElementById("cin");
+  if (!CARTLINES.length) { cin.innerHTML = '<div class="cth">🛒 Savat</div><div class="emp">Savat bo\'sh</div>'; return; }
+  var tot = 0; CARTLINES.forEach(function (l) { tot += l.sub; });
+  cin.innerHTML = '<div class="cth">🛒 Savat</div>' + CARTLINES.map(function (l) {
+    return '<div class="ln"><div class="im">&#128717;' + (l.photo ? '<img src="' + q2("/api/shop/photo", "&pid=" + encodeURIComponent(l.pid)) + '" alt="">' : "") + '</div><div class="nm"><b>' + esc(l.name) + "</b><span>" + so(l.price) + '</span></div><div class="step"><button data-a="-" data-i="' + esc(l.pid) + '">&minus;</button><span>' + l.qty + '</span><button data-a="+" data-i="' + esc(l.pid) + '">+</button></div></div>';
+  }).join("") + '<div class="sum"><div><span>Mahsulotlar</span><span>' + so(tot) + "</span></div>" +
+    (DEL ? "<div><span>Yetkazib berish</span><span>" + so(DEL) + "</span></div>" : "") +
+    '<div class="t"><span>Jami</span><span>' + so(tot + (DEL || 0)) + '</span></div></div><div style="padding:0 16px"><button class="btn" id="go">&#9989; Buyurtma berish</button><button class="btn g" id="more">Xaridni davom ettirish</button></div>';
+  cin.querySelectorAll("[data-a]").forEach(function (el) { el.onclick = function () { act(el.getAttribute("data-i"), el.getAttribute("data-a")); }; });
+  document.getElementById("more").onclick = closeAll;
+  document.getElementById("go").onclick = async function () {
+    var b = this; b.disabled = true; b.textContent = "Yuborilmoqda...";
+    try {
+      await api("/api/shop/checkout", {});
+      toast("Savat botga yuborildi ✅");
+      setTimeout(function () { if (tg && tg.close) tg.close(); }, 700);
+    } catch (e) { b.disabled = false; b.textContent = "✅ Buyurtma berish"; toast("Yuborib bo'lmadi. Botga /start yuboring."); }
+  };
+}
+function openCart() {
+  var v = document.getElementById("cartv"); renderCart(); v.style.display = "block"; v.scrollTop = 0;
+  if (tg && tg.BackButton) { tg.BackButton.show(); tg.BackButton.onClick(closeAll); }
+}
+async function load() {
+  try {
+    var r = await fetch(q2("/api/shop/list")); var j = await r.json();
+    if (!r.ok) throw 0;
+    BOT = j.bot || {}; ITEMS = j.products || []; CATS = j.categories || []; DEL = j.delivery || 0;
+    document.getElementById("ttl").textContent = "🛒 " + (BOT.name || "Do'kon");
+    if (BOT.theme) applyTheme(BOT.theme);
+    if (CAT && !CATS.some(function (c) { return c.id === CAT; })) CAT = "";
+    renderChips(); render();
+  } catch (e) { document.getElementById("app").innerHTML = '<div class="emp">Yuklab bo\'lmadi</div>'; }
+}
+async function loadCart() { if (!ID) return; try { setCart(await api("/api/shop/cart")); } catch (e) {} }
+document.getElementById("q").oninput = render;
+document.getElementById("bk").onclick = closeAll;
+document.getElementById("bk2").onclick = closeAll;
+document.getElementById("barb").onclick = openCart;
+load().then(loadCart);
+setInterval(function () { if (!document.hidden) load(); }, 30000);
+</script>
+</body>
+</html>
+"""
+# ================= /SAVDO BOT MINI APP =================
 
 
 async def botstats_page(request):
