@@ -7420,8 +7420,8 @@ def setup_shop_bot(dp: Dispatcher, token: str):
 
     # ---------- Klaviaturalar ----------
     def shop_admin_menu_kb():
-        _purl = get_shoppanel_url(info.get("id"))
-        _panel_row = [[KeyboardButton(text="Admin Mini app", web_app=WebAppInfo(url=_purl))]] if _purl else []
+        # Eslatma: klaviatura tugmasidagi web_app initData BERMAYDI — shuning uchun oddiy tugma, bosilganda inline tugma chiqadi
+        _panel_row = [[KeyboardButton(text="Admin Mini app")]] if get_shoppanel_url(info.get("id")) else []
         return ReplyKeyboardMarkup(keyboard=_panel_row + [
             [KeyboardButton(text="📦 Mahsulotlar"), KeyboardButton(text="🏷 Kategoriyalar")],
             [KeyboardButton(text="🎟 Promo-kodlar"), KeyboardButton(text="🧾 Buyurtmalar")],
@@ -7512,6 +7512,36 @@ def setup_shop_bot(dp: Dispatcher, token: str):
                 buttons.append([InlineKeyboardButton(text=f"{p['name']} — {p['price']:,} so'm", callback_data=f"buy_{pid}")])
         return InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
 
+    async def _set_panel_menu(bot, chat_id):
+        """Admin chatida klaviatura yonidagi Menu tugmasi — «Admin Mini app» (initData shu yo'l bilan keladi)."""
+        _purl = get_shoppanel_url(info.get("id"))
+        if not _purl:
+            return
+        try:
+            await bot.set_chat_menu_button(chat_id=chat_id, menu_button=MenuButtonWebApp(text="Admin Mini app", web_app=WebAppInfo(url=_purl)))
+        except Exception as _e:
+            logging.info(f"Savdo admin menyu tugmasi ({chat_id}): {_e}")
+
+    @dp.message(F.text == "Admin Mini app")
+    async def shop_admin_app_btn(message: Message):
+        if not is_moderator(message.from_user.id):
+            return
+        _purl = get_shoppanel_url(info.get("id"))
+        if not _purl:
+            await message.answer("⚠️ Mini app manzili sozlanmagan (Railway'da domen yoki MINIAPP_URL kerak).")
+            return
+        await _set_panel_menu(message.bot, message.from_user.id)
+        await message.answer("🛠 <b>Admin panel</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🛠 Admin Mini app", web_app=WebAppInfo(url=_purl))]]))
+
+    @dp.message(F.text == "🛍 Do'kon (Mini App)")
+    async def shop_customer_app_btn(message: Message):
+        _surl = get_shopapp_url(info.get("id"))
+        if not _surl:
+            return
+        await message.answer("🛍 <b>Do'kon</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🛍 Do'konni ochish", web_app=WebAppInfo(url=_surl))]]))
+
     def main_menu_kb():
         rows = [
             [KeyboardButton(text="🛍 Mahsulotlar"), KeyboardButton(text="🛒 Savatim")],
@@ -7520,7 +7550,7 @@ def setup_shop_bot(dp: Dispatcher, token: str):
         # Mini app: tovarlar rasmlari bilan (obunachilar uchun)
         _surl = get_shopapp_url(info.get("id"))
         if _surl:
-            rows.insert(0, [KeyboardButton(text="🛍 Do'kon (Mini App)", web_app=WebAppInfo(url=_surl))])
+            rows.insert(0, [KeyboardButton(text="🛍 Do'kon (Mini App)")])
         return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
     async def send_cart(user_id: int, send_func):
@@ -7555,6 +7585,7 @@ def setup_shop_bot(dp: Dispatcher, token: str):
         if not await check_active(message, info, admin_id):
             return
         if is_admin(info, uid):
+            await _set_panel_menu(message.bot, uid)
             await message.answer("🛒 <b>Savdo bot boshqaruvi</b>", reply_markup=shop_admin_menu_kb())
             return
         if is_blocked(uid):
@@ -8523,9 +8554,10 @@ def setup_ai_bot(dp: Dispatcher, token: str):
     setup_admin_management(dp, token)
     setup_premium_system(dp, token, admin_id)
     setup_global_buttons_handler(dp, lambda m, s: astart(m))
+    setup_generic_panel(dp, token)
 
     def ai_admin_kb():
-        return ReplyKeyboardMarkup(keyboard=[
+        return ReplyKeyboardMarkup(keyboard=bp_panel_row(info) + [
             [KeyboardButton(text="🔄 Yangi suhbat"), KeyboardButton(text="📊 Statistika")],
             [KeyboardButton(text="📢 Xabar yuborish")],
             [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
@@ -8649,9 +8681,10 @@ def setup_money_bot(dp: Dispatcher, token: str):
     setup_admin_management(dp, token)
     setup_premium_system(dp, token, admin_id)
     setup_global_buttons_handler(dp, lambda m, s: mstart(m))
+    setup_generic_panel(dp, token)
 
     def admin_kb():
-        return ReplyKeyboardMarkup(keyboard=[
+        return ReplyKeyboardMarkup(keyboard=bp_panel_row(info) + [
             [KeyboardButton(text="➕ Valyuta qo'shish"), KeyboardButton(text="✏️ Kursni yangilash")],
             [KeyboardButton(text="🗑 Valyutani o'chirish"), KeyboardButton(text="📊 Statistika")],
             [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
@@ -8813,6 +8846,7 @@ def setup_translate_bot(dp: Dispatcher, token: str):
     setup_admin_management(dp, token)
     setup_premium_system(dp, token, admin_id)
     setup_global_buttons_handler(dp, lambda m, s: tstart(m))
+    setup_generic_panel(dp, token)
 
     LANGS = {"uz": "🇺🇿 O'zbek", "en": "🇬🇧 English", "ru": "🇷🇺 Русский", "tr": "🇹🇷 Türkçe", "ar": "🇸🇦 العربية"}
 
@@ -8824,7 +8858,7 @@ def setup_translate_bot(dp: Dispatcher, token: str):
         return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🔄 Tilni o'zgartirish")]] + get_global_button_rows(), resize_keyboard=True)
 
     def admin_kb():
-        return ReplyKeyboardMarkup(keyboard=[
+        return ReplyKeyboardMarkup(keyboard=bp_panel_row(info) + [
             [KeyboardButton(text="📊 Statistika"), KeyboardButton(text="📢 Xabar yuborish")],
             [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
             [KeyboardButton(text="💳 To'lov tizimlar"), KeyboardButton(text="💎 Premium")],
@@ -8941,14 +8975,15 @@ def setup_taxi_bot(dp: Dispatcher, token: str):
     info.setdefault("orders", {})
     setup_subscription_handlers(dp, token, admin_id)
     setup_admin_management(dp, token)
-    setup_premium_system(dp, token, admin_id)
+    # Taksi botda Premium/VIP va to'lov tizimlari yo'q. Avval yoqilgan bo'lsa ham, mijozlardan Premium talab qilinmasligi uchun o'chiriladi.
+    info["premium_enabled"] = False
     setup_global_buttons_handler(dp, lambda m, s: tstart(m))
+    setup_generic_panel(dp, token)
 
     def taxi_admin_kb():
-        return ReplyKeyboardMarkup(keyboard=[
+        return ReplyKeyboardMarkup(keyboard=bp_panel_row(info) + [
             [KeyboardButton(text="📊 Statistika")],
             [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
-            [KeyboardButton(text="💳 To'lov tizimlar"), KeyboardButton(text="💎 Premium")],
         ] + get_global_button_rows(), resize_keyboard=True)
 
     def taxi_order_kb():
@@ -14058,6 +14093,7 @@ def setup_openbudget_bot(dp: Dispatcher, token: str):
         "4️⃣ Ovoz bergach, shu yerda «✅ Ovoz berdim» ni bosing."))
     setup_subscription_handlers(dp, token, admin_id)
     setup_admin_management(dp, token)
+    setup_generic_panel(dp, token)
 
     def esc(x):
         return html_escape(str(x))
@@ -14096,7 +14132,7 @@ def setup_openbudget_bot(dp: Dispatcher, token: str):
         ] + get_global_button_rows(), resize_keyboard=True)
 
     def admin_kb():
-        return ReplyKeyboardMarkup(keyboard=[
+        return ReplyKeyboardMarkup(keyboard=bp_panel_row(info) + [
             [KeyboardButton(text="➕ Loyiha qo'shish"), KeyboardButton(text="📝 Loyihalarni boshqarish")],
             [KeyboardButton(text="📣 Xabar yuborish"), KeyboardButton(text="📊 Statistika")],
             [KeyboardButton(text="📅 Muddat belgilash"), KeyboardButton(text="🔗 Rasmiy havola")],
@@ -16963,6 +16999,19 @@ async def start_child_bot(token: str, bot_type: str):
                 )
             except Exception as e:
                 logging.info(f"Savdo bot menyu tugmasi ({token[-6:]}): {e}")
+            _purl2 = get_shoppanel_url(_sinfo.get("id"))
+            for _aid in set(_sinfo.get("admin_ids", [_sinfo.get("admin_id")])) | set(_sinfo.get("moderators", [])):
+                try:
+                    await child_bot.set_chat_menu_button(
+                        chat_id=_aid,
+                        menu_button=MenuButtonWebApp(text="Admin Mini app", web_app=WebAppInfo(url=_purl2)),
+                    )
+                except Exception as e:
+                    logging.info(f"Savdo admin menyu tugmasi ({token[-6:]}, {_aid}): {e}")
+    if bot_type in BP_TYPES:
+        _binfo = data["bots"].get(token, {})
+        for _aid in set(_binfo.get("admin_ids", [_binfo.get("admin_id")])):
+            await bp_set_menu(child_bot, _binfo, _aid)
     task = asyncio.create_task(child_dp.start_polling(child_bot))
     running_bots[token] = task
 
@@ -19849,6 +19898,18 @@ async def start_web_server():
     app.router.add_get("/api/shopadm/settings", shopadm_settings)
     app.router.add_post("/api/shopadm/settings", shopadm_settings)
     app.router.add_post("/api/shopadm/user/block", shopadm_user_block)
+    app.router.add_get("/botpanel", botpanel_page)
+    app.router.add_get("/api/bp/overview", bp_overview)
+    app.router.add_get("/api/bp/broadcast", bp_broadcast)
+    app.router.add_post("/api/bp/broadcast", bp_broadcast)
+    app.router.add_get("/api/bp/users", bp_users)
+    app.router.add_get("/api/bp/channels", bp_channels)
+    app.router.add_post("/api/bp/channel/delete", bp_channel_delete)
+    app.router.add_get("/api/bp/admins", bp_admins)
+    app.router.add_get("/api/bp/rates", bp_rates)
+    app.router.add_post("/api/bp/rate/save", bp_rate_save)
+    app.router.add_post("/api/bp/rate/delete", bp_rate_delete)
+    app.router.add_get("/api/bp/taxi/orders", bp_taxi_orders)
     app.router.add_get("/api/kino/users", kino_api_users)
     app.router.add_post("/api/kino/user/block", kino_api_user_block)
     app.router.add_get("/api/kino/payments", kino_api_payments)
@@ -23752,6 +23813,423 @@ if (!ID) { $("m").innerHTML = '<div class="emp">Bu sahifani Telegramdagi bot ich
 </html>
 """
 # ================= /SAVDO BOT ADMIN MINI APP =================
+
+
+# ================= UMUMIY ADMIN MINI APP (/botpanel) =================
+# Kino va Savdo botda o'z panellari bor. Qolgan bot turlari (AI, Pul, Tarjimon, Taksi, Open Budget) uchun —
+# bitta umumiy panel: statistika, xabar yuborish, majburiy obuna, adminlar + tur bo'yicha bo'lim (Pul: kurslar, Taksi: buyurtmalar).
+BP_TYPES = ("ai", "money", "translate", "taxi", "openbudget")
+BP_STAT_LABELS = {"questions": "Savollar", "conversions": "Konvertatsiyalar", "translations": "Tarjimalar",
+                  "orders": "Buyurtmalar", "requests": "So'rovlar"}
+BP_JOBS = {}     # token -> {"running": bool, "total": int, "sent": int, "failed": int}
+
+
+def get_botpanel_url(bot_id) -> str:
+    """Umumiy admin mini app URL'i: https://<domen>/botpanel?b=<bot_id>"""
+    purl = get_kinopanel_url(bot_id)
+    return purl.replace("/kinopanel?", "/botpanel?") if purl else ""
+
+
+def bp_panel_row(info: dict) -> list:
+    """Bot admin menyusi uchun «Admin Mini app» tugmasi qatori (URL sozlanmagan bo'lsa — bo'sh)."""
+    return [[KeyboardButton(text="Admin Mini app")]] if get_botpanel_url(info.get("id")) else []
+
+
+async def bp_set_menu(bot, info: dict, chat_id):
+    """Admin chatida Menu tugmasi — «Admin Mini app». (Klaviatura tugmasi initData bermaydi, Menu/inline tugma beradi.)"""
+    _u = get_botpanel_url(info.get("id"))
+    if not _u:
+        return
+    try:
+        await bot.set_chat_menu_button(chat_id=chat_id, menu_button=MenuButtonWebApp(text="Admin Mini app", web_app=WebAppInfo(url=_u)))
+    except Exception as _e:
+        logging.info(f"Admin Mini app menyu tugmasi ({chat_id}): {_e}")
+
+
+def setup_generic_panel(dp: Dispatcher, token: str):
+    info = data["bots"][token]
+
+    @dp.message(F.text == "Admin Mini app")
+    async def bp_open_btn(message: Message):
+        if not (is_admin(info, message.from_user.id) or is_full_admin(message.from_user.id)):
+            return
+        _u = get_botpanel_url(info.get("id"))
+        if not _u:
+            await message.answer("⚠️ Mini app manzili sozlanmagan (Railway'da domen yoki MINIAPP_URL kerak).")
+            return
+        await bp_set_menu(message.bot, info, message.from_user.id)
+        await message.answer("🛠 <b>Admin panel</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🛠 Admin Mini app", web_app=WebAppInfo(url=_u))]]))
+
+
+def bp_find_bot(bot_id):
+    try:
+        bid = int(bot_id)
+    except Exception:
+        return None, None
+    for token, info in data["bots"].items():
+        if info.get("id") == bid and info.get("type") in BP_TYPES:
+            return token, info
+    return None, None
+
+
+def _bp_err(code: str, status: int = 400):
+    return web.json_response({"error": code}, status=status, headers=_NO_STORE)
+
+
+async def _bp_body(request) -> dict:
+    try:
+        b = await request.json()
+        return b if isinstance(b, dict) else {}
+    except Exception:
+        return {}
+
+
+def bp_auth(request, body=None):
+    """(token, info, uid, xato). Faqat shu botning adminlari (va platforma adminlari)."""
+    token, info = bp_find_bot(request.query.get("b"))
+    if not info:
+        return None, None, None, _bp_err("bot_not_found", 404)
+    init_data = body.get("initData", "") if body is not None else request.query.get("initData", "")
+    parsed = validate_webapp_init_data(init_data, token) or validate_platform_init_data(init_data)
+    if not parsed:
+        return None, None, None, _bp_err("invalid_init_data", 401)
+    try:
+        uid = int(json.loads(parsed.get("user", "{}")).get("id"))
+    except Exception:
+        return None, None, None, _bp_err("no_user", 400)
+    if not (is_admin(info, uid) or is_full_admin(uid)):
+        return None, None, None, _bp_err("forbidden", 403)
+    return token, info, uid, None
+
+
+def _bp_until(info: dict) -> str:
+    try:
+        if is_full_admin(info.get("admin_id")):
+            return "Umrbod"
+        pu = info.get("paid_until")
+        if pu:
+            return datetime.fromisoformat(pu).strftime("%d.%m.%Y")
+        days = get_trial_config(info.get("type")).get("days", TRIAL_DAYS)
+        return (datetime.fromisoformat(info["created_at"]) + timedelta(days=days)).strftime("%d.%m.%Y")
+    except Exception:
+        return ""
+
+
+async def bp_overview(request):
+    token, info, uid, err = bp_auth(request)
+    if err:
+        return err
+    metrics = info.get("metrics", {})
+    today = datetime.now().date()
+    series = []
+    for i in range(6, -1, -1):
+        d = today - timedelta(days=i)
+        m = metrics.get(d.strftime("%Y-%m-%d")) or {}
+        series.append({"d": d.strftime("%d.%m"), "users": sum(m.get("users", [])) if m else 0,
+                       "msgs": sum(m.get("msgs", [])) if m else 0})
+    task = running_bots.get(token)
+    alive = bool(task) and not task.done()
+    return web.json_response({
+        "bot": {"name": info.get("name", ""), "type": info.get("type", ""),
+                "type_label": BOT_TYPES.get(info.get("type"), info.get("type", "")),
+                "active": bool(is_active(info) and alive), "until": _bp_until(info),
+                "theme": info.get("theme", "")},
+        "users": len(info.get("users", [])),
+        "stats": [{"label": BP_STAT_LABELS.get(k, k), "value": v} for k, v in (info.get("stats") or {}).items()
+                  if isinstance(v, (int, float))],
+        "series": series,
+        "extra": info.get("type") if info.get("type") in ("money", "taxi") else "",
+    }, headers=_NO_STORE)
+
+
+async def _bp_broadcast_job(token: str, info: dict, text: str, notify_uid: int):
+    job = BP_JOBS[token]
+    try:
+        async with httpx.AsyncClient(timeout=20) as c:
+            for u in list(info.get("users", [])):
+                for attempt in (1, 2):
+                    try:
+                        r = await c.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                                         json={"chat_id": u, "text": text, "disable_web_page_preview": True})
+                        if r.status_code == 429 and attempt == 1:
+                            await asyncio.sleep(min(int(r.json().get("parameters", {}).get("retry_after", 1)), 30) + 1)
+                            continue
+                        if r.status_code == 200:
+                            job["sent"] += 1
+                        else:
+                            job["failed"] += 1
+                    except Exception:
+                        job["failed"] += 1
+                    break
+                await asyncio.sleep(0.05)
+    finally:
+        job["running"] = False
+        try:
+            async with httpx.AsyncClient(timeout=15) as c:
+                await c.post(f"https://api.telegram.org/bot{token}/sendMessage", json={
+                    "chat_id": notify_uid, "text": f"📢 Xabar yuborildi\n✅ Yetkazildi: {job['sent']} ta\n❌ Yetmadi: {job['failed']} ta"})
+        except Exception:
+            pass
+
+
+async def bp_broadcast(request):
+    """GET — oxirgi yuborish holati. POST {text} — barcha foydalanuvchilarga yuborishni boshlash (fonda)."""
+    body = await _bp_body(request) if request.method == "POST" else None
+    token, info, uid, err = bp_auth(request, body)
+    if err:
+        return err
+    job = BP_JOBS.get(token) or {"running": False, "total": 0, "sent": 0, "failed": 0}
+    if request.method == "POST":
+        text = str(body.get("text", "")).strip()
+        if not text or len(text) > 4000:
+            return _bp_err("bad_text")
+        if job.get("running"):
+            return _bp_err("busy", 409)
+        users = info.get("users", [])
+        if not users:
+            return _bp_err("no_users")
+        job = BP_JOBS[token] = {"running": True, "total": len(users), "sent": 0, "failed": 0}
+        asyncio.create_task(_bp_broadcast_job(token, info, text, uid))
+    return web.json_response(job, headers=_NO_STORE)
+
+
+async def bp_channels(request):
+    token, info, uid, err = bp_auth(request)
+    if err:
+        return err
+    rows = [{"id": cid, "title": c.get("title") or c.get("username") or cid, "type": c.get("type", "telegram"),
+             "url": c.get("url") or (("https://t.me/" + c["username"].lstrip("@")) if c.get("username") else "")}
+            for cid, c in (info.get("channels") or {}).items()]
+    return web.json_response({"channels": rows}, headers=_NO_STORE)
+
+
+async def bp_channel_delete(request):
+    body = await _bp_body(request)
+    token, info, uid, err = bp_auth(request, body)
+    if err:
+        return err
+    if (info.get("channels") or {}).pop(str(body.get("cid", "")), None) is None:
+        return _bp_err("not_found", 404)
+    save_data()
+    return web.json_response({"ok": True}, headers=_NO_STORE)
+
+
+async def bp_admins(request):
+    token, info, uid, err = bp_auth(request)
+    if err:
+        return err
+    ids = info.get("admin_ids", [info.get("admin_id")])
+    return web.json_response({"admins": [{"id": a, "owner": a == info.get("admin_id")} for a in ids],
+                              "me": uid}, headers=_NO_STORE)
+
+
+async def bp_users(request):
+    token, info, uid, err = bp_auth(request)
+    if err:
+        return err
+    users = info.get("users", [])
+    return web.json_response({"total": len(users), "recent": list(reversed(users[-30:]))}, headers=_NO_STORE)
+
+
+async def bp_rates(request):
+    token, info, uid, err = bp_auth(request)
+    if err:
+        return err
+    if info.get("type") != "money":
+        return _bp_err("not_found", 404)
+    return web.json_response({"rates": [{"code": c, "rate": r} for c, r in (info.get("rates") or {}).items()]},
+                             headers=_NO_STORE)
+
+
+async def bp_rate_save(request):
+    body = await _bp_body(request)
+    token, info, uid, err = bp_auth(request, body)
+    if err:
+        return err
+    if info.get("type") != "money":
+        return _bp_err("not_found", 404)
+    code = re.sub(r"[^A-Z0-9]", "", str(body.get("code", "")).upper())[:8]
+    try:
+        rate = float(str(body.get("rate", "")).replace(" ", "").replace(",", "."))
+    except Exception:
+        rate = 0
+    if not code or not (0 < rate < 1e12):
+        return _bp_err("bad_rate")
+    info.setdefault("rates", {})[code] = int(rate) if rate == int(rate) else rate
+    save_data()
+    return web.json_response({"ok": True}, headers=_NO_STORE)
+
+
+async def bp_rate_delete(request):
+    body = await _bp_body(request)
+    token, info, uid, err = bp_auth(request, body)
+    if err:
+        return err
+    if info.get("type") != "money" or (info.get("rates") or {}).pop(str(body.get("code", "")), None) is None:
+        return _bp_err("not_found", 404)
+    save_data()
+    return web.json_response({"ok": True}, headers=_NO_STORE)
+
+
+async def bp_taxi_orders(request):
+    token, info, uid, err = bp_auth(request)
+    if err:
+        return err
+    if info.get("type") != "taxi":
+        return _bp_err("not_found", 404)
+    rows = []
+    for oid, o in reversed(list((info.get("orders") or {}).items())):
+        rows.append({"id": oid, "from": o.get("from", ""), "to": o.get("to", ""), "phone": o.get("phone", ""),
+                     "status": o.get("status", ""), "user_id": o.get("user_id"),
+                     "at": (o.get("created_at") or "")[:16].replace("T", " ")})
+        if len(rows) >= 50:
+            break
+    return web.json_response({"orders": rows}, headers=_NO_STORE)
+
+
+async def botpanel_page(request):
+    return web.Response(
+        text=BOTPANEL_HTML.replace("__PALETTES__", theme_palettes_json()),
+        content_type="text/html",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache"},
+    )
+
+
+BOTPANEL_HTML = r"""<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Admin Mini app</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{--bg:#0f1115;--cd:#181b22;--tx:#f2f4f8;--mu:#8b93a4;--ac:#4f8cff;--acs:rgba(79,140,255,.16);--bd:#262a33;--rd:#ff5c5c;--gn:#2fbf71}
+@media (prefers-color-scheme:light){:root{--bg:#f3f5f9;--cd:#fff;--tx:#12151c;--mu:#6b7385;--bd:#e3e7ee}}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+.hd{position:sticky;top:0;z-index:5;background:var(--bg);padding:14px 16px 10px;border-bottom:1px solid var(--bd)}
+.hd h1{margin:0;font-size:19px}.hd small{color:var(--mu)}
+main{padding:14px 16px 100px}
+nav{position:fixed;left:0;right:0;bottom:0;z-index:6;display:flex;background:var(--cd);border-top:1px solid var(--bd);padding-bottom:env(safe-area-inset-bottom)}
+nav b{flex:1;text-align:center;padding:9px 2px 8px;font-size:11px;font-weight:500;color:var(--mu);cursor:pointer}
+nav b span{display:block;font-size:20px;line-height:1.2}
+nav b.on{color:var(--ac)}
+.cd{background:var(--cd);border:1px solid var(--bd);border-radius:14px;padding:14px;margin-bottom:12px}
+.st{display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:12px}
+.st div{background:var(--cd);border:1px solid var(--bd);border-radius:14px;padding:12px}
+.st small{color:var(--mu);display:block;font-size:12px}.st b{font-size:20px}
+h3{margin:4px 0 10px;font-size:16px}
+.bars{display:flex;align-items:flex-end;gap:8px;height:130px}
+.bars div{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;font-size:11px;color:var(--mu)}
+.bars i{display:block;width:100%;background:var(--ac);border-radius:6px 6px 0 0;min-height:3px}
+.row{display:flex;gap:12px;align-items:center;padding:10px 0;border-bottom:1px solid var(--bd)}
+.row:last-child{border-bottom:0}
+.nm{flex:1;min-width:0}.nm b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.nm span{color:var(--mu);font-size:13px}
+input,textarea{width:100%;padding:12px 14px;border-radius:12px;border:1px solid var(--bd);background:var(--bg);color:var(--tx);font-size:16px;outline:none;font-family:inherit}
+label{display:block;color:var(--mu);font-size:13px;margin:10px 0 4px}
+.btn{display:block;width:100%;padding:13px;border:0;border-radius:12px;background:var(--ac);color:#fff;font-size:16px;font-weight:600;margin:8px 0}
+.btn:disabled{opacity:.5}
+.sm{padding:7px 12px;border:0;border-radius:9px;background:var(--acs);color:var(--ac);font-size:13px;font-weight:600}
+.sm.r{background:rgba(255,92,92,.15);color:var(--rd)}
+.tag{display:inline-block;padding:2px 9px;border-radius:8px;font-size:12px;font-weight:600;background:var(--acs);color:var(--ac)}
+.tag.ok{background:rgba(47,191,113,.16);color:var(--gn)}.tag.no{background:rgba(255,92,92,.15);color:var(--rd)}
+.emp{text-align:center;color:var(--mu);padding:40px 20px}.hint{color:var(--mu);font-size:13px;margin:6px 0}
+a{color:var(--ac)}
+#toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);background:rgba(0,0,0,.82);color:#fff;padding:10px 16px;border-radius:10px;font-size:14px;z-index:30;display:none;max-width:90%}
+</style>
+</head>
+<body>
+<div class="hd"><h1 id="ttl">&#128736; Admin Mini app</h1><small id="sub"></small></div>
+<main id="m"></main>
+<nav id="nav"></nav>
+<div id="toast"></div>
+<script>
+var tg = window.Telegram && Telegram.WebApp; if (tg) { try { tg.ready(); tg.expand(); } catch (e) {} }
+var B = new URLSearchParams(location.search).get("b") || "", ID = (tg && tg.initData) || "";
+var PAL = __PALETTES__, TAB = "home", EXTRA = "", POLL = null;
+var ERR = { forbidden: "Sizda bu botga kirish huquqi yo'q", invalid_init_data: "Mini appni botning ichidan oching", bad_text: "Xabar matnini kiriting (4000 belgigacha)",
+  busy: "Oldingi yuborish hali tugamadi", no_users: "Foydalanuvchilar yo'q", bad_rate: "Valyuta kodi va kurs (musbat son) kerak", not_found: "Topilmadi" };
+function esc(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+function nf(n) { return Number(n || 0).toLocaleString("ru-RU").replace(/ /g, " "); }
+function q(p, extra) { return p + "?b=" + encodeURIComponent(B) + (extra || ""); }
+function $(id) { return document.getElementById(id); }
+function toast(t) { var e = $("toast"); e.textContent = t; e.style.display = "block"; setTimeout(function () { e.style.display = "none"; }, 2600); }
+function themeHex(k) { try { var p = String(k).split("-"); return PAL[p[0]].shades[Number(p[1]) - 1] || ""; } catch (e) { return ""; } }
+function applyTheme(k) { var c = themeHex(k); if (!c) return; var st = document.documentElement.style; st.setProperty("--ac", c); st.setProperty("--acs", "color-mix(in srgb," + c + " 16%,transparent)"); }
+async function get(p) { var r = await fetch(q(p, "&initData=" + encodeURIComponent(ID))); var j = await r.json().catch(function () { return {}; }); if (!r.ok) throw new Error(ERR[j.error] || ("Xato " + r.status)); return j; }
+async function post(p, b) { var r = await fetch(q(p), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(Object.assign({ initData: ID }, b)) }); var j = await r.json().catch(function () { return {}; }); if (!r.ok) throw new Error(ERR[j.error] || ("Xato " + r.status)); return j; }
+function fail(e) { toast(e && e.message ? e.message : "Xatolik"); }
+function tabs() {
+  var t = [["home", "&#128202;", "Bosh sahifa"], ["bc", "&#128226;", "Xabar"]];
+  if (EXTRA === "money") t.push(["rates", "&#128177;", "Kurslar"]);
+  if (EXTRA === "taxi") t.push(["taxi", "&#128661;", "Buyurtmalar"]);
+  t.push(["ch", "&#128225;", "Obuna"]); t.push(["adm", "&#128100;", "Adminlar"]);
+  $("nav").innerHTML = t.map(function (x) { return '<b data-t="' + x[0] + '"' + (TAB === x[0] ? ' class="on"' : "") + "><span>" + x[1] + "</span>" + x[2] + "</b>"; }).join("");
+  $("nav").querySelectorAll("b").forEach(function (el) { el.onclick = function () { TAB = el.getAttribute("data-t"); show(); }; });
+}
+function show() { if (POLL) { clearInterval(POLL); POLL = null; } tabs(); ({ home: vHome, bc: vBc, rates: vRates, taxi: vTaxi, ch: vCh, adm: vAdm })[TAB](); }
+async function vHome() {
+  var m = $("m"); m.innerHTML = '<div class="emp">Yuklanmoqda...</div>';
+  try {
+    var j = await get("/api/bp/overview"); EXTRA = j.extra; tabs();
+    if (j.bot.theme) applyTheme(j.bot.theme);
+    $("ttl").innerHTML = "&#128736; " + esc(j.bot.name || "Admin Mini app"); $("sub").textContent = j.bot.type_label;
+    var mx = Math.max.apply(null, j.series.map(function (x) { return x.msgs; }).concat([1]));
+    m.innerHTML = '<div class="st"><div><small>Holat</small><b>' + (j.bot.active ? '<span class="tag ok">Faol</span>' : '<span class="tag no">To\'xtagan</span>') + '</b></div><div><small>Amal qilish muddati</small><b style="font-size:16px">' + esc(j.bot.until || "—") + "</b></div>" +
+      '<div><small>Foydalanuvchilar</small><b>' + nf(j.users) + "</b></div>" + j.stats.map(function (s) { return "<div><small>" + esc(s.label) + "</small><b>" + nf(s.value) + "</b></div>"; }).join("") + "</div>" +
+      '<div class="cd"><h3>Oxirgi 7 kun faolligi</h3><div class="bars">' + j.series.map(function (x) { return '<div title="' + x.msgs + ' xabar, ' + x.users + ' foydalanuvchi"><i style="height:' + Math.round(x.msgs / mx * 100) + '%"></i>' + x.d + "</div>"; }).join("") + '</div><div class="hint">Ustun balandligi — kunlik xabarlar soni</div></div>';
+  } catch (e) { m.innerHTML = '<div class="emp">' + esc(e.message) + "</div>"; }
+}
+async function vBc() {
+  var m = $("m");
+  try {
+    var u = await get("/api/bp/users"), j = await get("/api/bp/broadcast");
+    m.innerHTML = '<div class="cd"><h3>&#128226; Xabar yuborish</h3><div class="hint">Xabar botning barcha ' + nf(u.total) + ' ta foydalanuvchisiga yuboriladi (oddiy matn).</div><label>Xabar matni</label><textarea id="b_t" rows="6" maxlength="4000"></textarea><button class="btn" id="b_s">Yuborish</button><div id="b_st" class="hint"></div></div>' +
+      '<div class="cd"><h3>&#128101; Oxirgi qo\'shilganlar</h3>' + (u.recent.length ? u.recent.map(function (x) { return '<div class="row"><div class="nm"><b>' + esc(x) + "</b></div></div>"; }).join("") : '<div class="hint">Hali yo\'q</div>') + "</div>";
+    function paint(s) { var el = $("b_st"); if (!el) return; el.textContent = s.total ? ((s.running ? "Yuborilmoqda: " : "Oxirgi yuborish: ") + (s.sent + s.failed) + " / " + s.total + " (yetdi: " + s.sent + ", yetmadi: " + s.failed + ")") : ""; $("b_s").disabled = !!s.running; }
+    paint(j); if (j.running) POLL = setInterval(async function () { try { var s = await get("/api/bp/broadcast"); paint(s); if (!s.running) { clearInterval(POLL); POLL = null; toast("Yuborish tugadi ✅"); } } catch (e) {} }, 2000);
+    $("b_s").onclick = async function () {
+      if (!confirm("Xabar " + u.total + " ta foydalanuvchiga yuborilsinmi?")) return;
+      try { var s = await post("/api/bp/broadcast", { text: $("b_t").value }); toast("Yuborish boshlandi"); $("b_t").value = ""; vBc(); } catch (e) { fail(e); }
+    };
+  } catch (e) { m.innerHTML = '<div class="emp">' + esc(e.message) + "</div>"; }
+}
+async function vRates() {
+  var m = $("m"); try {
+    var j = await get("/api/bp/rates");
+    m.innerHTML = '<div class="cd"><h3>&#128177; Valyuta kurslari</h3>' + (j.rates.length ? j.rates.map(function (r) { return '<div class="row"><div class="nm"><b>' + esc(r.code) + "</b><span>1 " + esc(r.code) + " = " + nf(r.rate) + ' so\'m</span></div><button class="sm" data-e="' + esc(r.code) + '" data-r="' + esc(r.rate) + '">O\'zgartirish</button><button class="sm r" data-d="' + esc(r.code) + '">&times;</button></div>'; }).join("") : '<div class="hint">Valyuta yo\'q</div>') +
+      '<label>Valyuta kodi</label><input id="r_c" placeholder="USD" autocapitalize="characters"><label>Kurs (so\'m)</label><input id="r_r" inputmode="decimal" placeholder="12650"><button class="btn" id="r_s">Saqlash</button></div>';
+    $("r_s").onclick = async function () { try { await post("/api/bp/rate/save", { code: $("r_c").value, rate: $("r_r").value }); toast("Saqlandi ✅"); vRates(); } catch (e) { fail(e); } };
+    m.querySelectorAll("[data-e]").forEach(function (el) { el.onclick = function () { $("r_c").value = el.getAttribute("data-e"); $("r_r").value = el.getAttribute("data-r"); $("r_r").focus(); }; });
+    m.querySelectorAll("[data-d]").forEach(function (el) { el.onclick = async function () { if (!confirm("Valyuta o'chirilsinmi?")) return; try { await post("/api/bp/rate/delete", { code: el.getAttribute("data-d") }); vRates(); } catch (e) { fail(e); } }; });
+  } catch (e) { m.innerHTML = '<div class="emp">' + esc(e.message) + "</div>"; }
+}
+async function vTaxi() {
+  var m = $("m"); try {
+    var j = await get("/api/bp/taxi/orders");
+    m.innerHTML = j.orders.length ? j.orders.map(function (o) { return '<div class="cd"><div style="display:flex;justify-content:space-between"><b>#' + esc(o.id.slice(0, 6)) + '</b><span class="tag">' + esc(o.status) + '</span></div><div class="hint">' + esc(o.at) + " &middot; ID: " + esc(o.user_id) + "</div><div>&#128205; " + esc(o.from) + "<br>&#127937; " + esc(o.to) + "<br>&#128222; " + esc(o.phone) + "</div></div>"; }).join("") : '<div class="emp">Buyurtma yo\'q</div>';
+  } catch (e) { m.innerHTML = '<div class="emp">' + esc(e.message) + "</div>"; }
+}
+async function vCh() {
+  var m = $("m"); try {
+    var j = await get("/api/bp/channels");
+    m.innerHTML = '<div class="cd"><h3>&#128225; Majburiy obuna kanallari</h3>' + (j.channels.length ? j.channels.map(function (c) { return '<div class="row"><div class="nm"><b>' + esc(c.title) + "</b><span>" + (c.url ? '<a href="' + esc(c.url) + '" target="_blank">' + esc(c.url) + "</a>" : esc(c.type)) + '</span></div><button class="sm r" data-c="' + esc(c.id) + '">O\'chirish</button></div>'; }).join("") : '<div class="hint">Kanal ulanmagan</div>') + '<div class="hint">Yangi kanal qo\'shish botning o\'zida: &#128225; Majburiy obuna. Bot kanalga admin bo\'lishi kerak.</div></div>';
+    m.querySelectorAll("[data-c]").forEach(function (el) { el.onclick = async function () { if (!confirm("Kanal olib tashlansinmi?")) return; try { await post("/api/bp/channel/delete", { cid: el.getAttribute("data-c") }); vCh(); } catch (e) { fail(e); } }; });
+  } catch (e) { m.innerHTML = '<div class="emp">' + esc(e.message) + "</div>"; }
+}
+async function vAdm() {
+  var m = $("m"); try {
+    var j = await get("/api/bp/admins");
+    m.innerHTML = '<div class="cd"><h3>&#128100; Adminlar</h3>' + j.admins.map(function (a) { return '<div class="row"><div class="nm"><b>' + esc(a.id) + (a.id === j.me ? " (siz)" : "") + "</b></div>" + (a.owner ? '<span class="tag ok">Egasi</span>' : '<span class="tag">Admin</span>') + "</div>"; }).join("") + '<div class="hint">Admin qo\'shish/olib tashlash botning o\'zida: &#128100; Adminlar.</div></div>';
+  } catch (e) { m.innerHTML = '<div class="emp">' + esc(e.message) + "</div>"; }
+}
+if (!ID) { $("m").innerHTML = '<div class="emp">Bu sahifani Telegramdagi bot ichidan oching (Admin Mini app tugmasi).</div>'; } else { show(); }
+</script>
+</body>
+</html>
+"""
+# ================= /UMUMIY ADMIN MINI APP =================
 
 
 async def botstats_page(request):
