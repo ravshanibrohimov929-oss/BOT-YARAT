@@ -8565,7 +8565,7 @@ def setup_ai_bot(dp: Dispatcher, token: str):
         ] + get_global_button_rows(), resize_keyboard=True)
 
     def ai_user_kb():
-        return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🔄 Yangi suhbat")]] + get_global_button_rows(), resize_keyboard=True)
+        return ReplyKeyboardMarkup(keyboard=bp_pub_row(info) + [[KeyboardButton(text="🔄 Yangi suhbat")]] + get_global_button_rows(), resize_keyboard=True)
 
     @dp.message(Command("start"))
     async def astart(message: Message):
@@ -8855,7 +8855,7 @@ def setup_translate_bot(dp: Dispatcher, token: str):
         return InlineKeyboardMarkup(inline_keyboard=buttons)
 
     def lang_chosen_kb():
-        return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🔄 Tilni o'zgartirish")]] + get_global_button_rows(), resize_keyboard=True)
+        return ReplyKeyboardMarkup(keyboard=bp_pub_row(info) + [[KeyboardButton(text="🔄 Tilni o'zgartirish")]] + get_global_button_rows(), resize_keyboard=True)
 
     def admin_kb():
         return ReplyKeyboardMarkup(keyboard=bp_panel_row(info) + [
@@ -8987,7 +8987,7 @@ def setup_taxi_bot(dp: Dispatcher, token: str):
         ] + get_global_button_rows(), resize_keyboard=True)
 
     def taxi_order_kb():
-        return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🚕 Taksi chaqirish")]], resize_keyboard=True)
+        return ReplyKeyboardMarkup(keyboard=bp_pub_row(info) + [[KeyboardButton(text="🚕 Taksi chaqirish")]], resize_keyboard=True)
 
     def phone_kb():
         return ReplyKeyboardMarkup(
@@ -13253,6 +13253,32 @@ def setup_kino_bot(dp: Dispatcher, token: str):
     # ================= KINO PLUS (obunachi + admin) =================
     KINO_POST_DELIVER[token] = post_deliver
 
+    async def web_watch(uid: int, code: str) -> str:
+        """Veb mini appdagi «Filmni ko'rish» — filmni (yoki VIP/pullik taklifini) foydalanuvchining bot chatiga yuboradi."""
+        if not is_active(info) and not is_admin(info, uid):
+            return "inactive"
+        if is_blocked(uid):
+            return "blocked"
+        if info.get("maintenance_mode") and not is_admin(info, uid):
+            return "maintenance"
+        chans = info.get("channels") or {}
+        b = _new_bot(token)
+        try:
+            if chans and not is_admin(info, uid) and not is_premium_user(uid):
+                if await get_missing_channels(b, chans, uid):
+                    return "channels"
+            from aiogram.types import Chat
+            msg = Message(message_id=0, date=datetime.now(), chat=Chat(id=uid, type="private")).as_(b)
+            await open_movie(msg, uid, code)
+            return "ok"
+        except Exception as ex:
+            logging.warning(f"Veb kino: film yuborilmadi ({uid}, {code}): {ex}")
+            return "send_failed"
+        finally:
+            await _close_bot(b)
+
+    KINO_WATCH[token] = web_watch
+
     # ---------- 🎲 Tasodifiy kino ----------
     def random_pick_text_kb(uid: int):
         import random
@@ -14121,7 +14147,7 @@ def setup_openbudget_bot(dp: Dispatcher, token: str):
         return info.get("admin_ids", [admin_id])
 
     def user_kb():
-        return ReplyKeyboardMarkup(keyboard=[
+        return ReplyKeyboardMarkup(keyboard=bp_pub_row(info) + [
             [KeyboardButton(text="🗳 Ovoz berish"), KeyboardButton(text="📋 Loyihalar")],
             [KeyboardButton(text="🔎 Qidirish"), KeyboardButton(text="🏷 Kategoriyalar")],
             [KeyboardButton(text="⭐ Sevimlilar"), KeyboardButton(text="🏆 Reyting")],
@@ -17010,6 +17036,13 @@ async def start_child_bot(token: str, bot_type: str):
                     logging.info(f"Savdo admin menyu tugmasi ({token[-6:]}, {_aid}): {e}")
     if bot_type in BP_TYPES:
         _binfo = data["bots"].get(token, {})
+        _pub_u = get_botapp_url(_binfo.get("id"))
+        if _pub_u:
+            try:
+                await child_bot.set_chat_menu_button(menu_button=MenuButtonWebApp(
+                    text=PUB_MENU_TEXT.get(bot_type, "Mini app"), web_app=WebAppInfo(url=_pub_u)))
+            except Exception as _e:
+                logging.info(f"Mini app menyu tugmasi ({token[-6:]}): {_e}")
         for _aid in set(_binfo.get("admin_ids", [_binfo.get("admin_id")])):
             await bp_set_menu(child_bot, _binfo, _aid)
     task = asyncio.create_task(child_dp.start_polling(child_bot))
@@ -19875,6 +19908,18 @@ async def start_web_server():
     app.router.add_get("/api/kw/film", kw_api_film)
     app.router.add_get("/api/kw/cover", kw_api_cover)
     app.router.add_get("/api/kw/video", kw_api_video)
+    app.router.add_post("/api/kw/watch", kw_api_watch)
+    app.router.add_get("/botapp", botapp_page)
+    app.router.add_get("/api/pub/info", pub_info)
+    app.router.add_post("/api/pub/money/convert", pub_money_convert)
+    app.router.add_post("/api/pub/translate", pub_translate)
+    app.router.add_post("/api/pub/ai/ask", pub_ai_ask)
+    app.router.add_post("/api/pub/ai/reset", pub_ai_reset)
+    app.router.add_post("/api/pub/taxi/order", pub_taxi_order)
+    app.router.add_get("/api/pub/ob/list", pub_ob_list)
+    app.router.add_get("/api/pub/ob/project", pub_ob_project)
+    app.router.add_post("/api/pub/ob/toggle", pub_ob_toggle)
+    app.router.add_get("/api/pub/ob/photo", pub_ob_photo)
     app.router.add_get("/shop", shop_page)
     app.router.add_get("/api/shop/list", shop_api_list)
     app.router.add_get("/api/shop/photo", shop_api_photo)
@@ -20376,6 +20421,7 @@ def _kino_count_view(info: dict):
 
 # ================= KINO PLUS: ko'rishlar jurnali, reyting, promokod, rejalashtirilgan postlar =================
 KINO_POST_DELIVER = {}      # {token: post_deliver} — setup_kino_bot ro'yxatga oladi
+KINO_WATCH = {}             # {token: async fn(uid, code) -> natija} — mini appdagi «Filmni ko'rish» tugmasi
 
 
 def kino_now() -> datetime:
@@ -20901,6 +20947,34 @@ async def kw_api_video(request):
         await r.aclose()
         await client.aclose()
     return resp
+
+
+async def kw_api_watch(request):
+    token, info, err = kw_find(request)
+    if err:
+        return err
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            body = {}
+    except Exception:
+        body = {}
+    parsed = validate_webapp_init_data(str(body.get("initData", "")), token)
+    if not parsed:
+        return web.json_response({"error": "invalid_init_data"}, status=401, headers=_NO_STORE)
+    try:
+        uid = int(json.loads(parsed.get("user", "{}")).get("id"))
+    except Exception:
+        return web.json_response({"error": "no_user"}, status=400, headers=_NO_STORE)
+    code = str(body.get("code", ""))
+    if not kw_visible(info.get("movies", {}).get(code)):
+        return web.json_response({"error": "not_found"}, status=404, headers=_NO_STORE)
+    fn = KINO_WATCH.get(token)
+    if not fn:
+        return web.json_response({"error": "unavailable"}, status=503, headers=_NO_STORE)
+    if not _pub_rate(token, uid, "watch", 5, 30):
+        return web.json_response({"result": "slow"}, headers=_NO_STORE)
+    return web.json_response({"result": await fn(uid, code)}, headers=_NO_STORE)
 
 
 async def kw_page(request):
@@ -22558,7 +22632,7 @@ html,body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.45 -apple-sy
 .emp{text-align:center;color:var(--mu);padding:60px 20px}
 #det{position:fixed;inset:0;background:var(--bg);overflow-y:auto;display:none;z-index:10}
 #det .in{max-width:720px;margin:0 auto;padding:0 0 40px}
-#det .cv{width:100%;max-height:56vh;object-fit:cover;display:block;background:var(--acs)}
+#det .cv{width:100%;height:auto;max-height:72vh;object-fit:contain;display:block;background:var(--acs)}
 #det .bd{padding:16px}
 #det h2{margin:0 0 6px;font-size:22px}
 #det .ds{white-space:pre-wrap;color:var(--tx);opacity:.9;margin:12px 0 18px}
@@ -22617,18 +22691,35 @@ async function openFilm(code) {
   var f = CUR, b = badge(f.access, f.series);
   var h = '<img class="cv" src="' + q2("/api/kw/cover", "&code=" + encodeURIComponent(f.code)) + '" alt=""><div class="bd"><h2>' + esc(f.title) + "</h2>" + (b ? '<span class="nt">' + b + "</span>" : "") +
     '<div class="ds">' + esc(f.desc) + '</div><div id="pl"></div>';
-  if (f.access === "free") {
-    if (f.series && f.episodes.length) h += '<div class="eps" id="eps">' + f.episodes.map(function (e, i) { return '<i data-e="' + esc(e) + '"' + (i ? "" : ' class="on"') + ">" + esc(e) + "-qism</i>"; }).join("") + "</div>";
-    h += '<button class="btn" id="play">&#9654;&#65039; Ko\'rish</button>';
-  } else {
+  h += '<button class="btn" id="watch">&#127916; Filmni ko\'rish</button><div class="nt" id="wmsg"></div>';
+  if (f.access !== "free") {
     h += '<div class="nt">' + (f.access === "vip" ? "🔒 Bu film faqat Premium foydalanuvchilar uchun." : "💰 Bu film pullik" + (f.price ? " (" + f.price + " so'm)" : "") + ".") + "</div>";
+  } else {
+    if (f.series && f.episodes.length) h += '<div class="eps" id="eps">' + f.episodes.map(function (e, i) { return '<i data-e="' + esc(e) + '"' + (i ? "" : ' class="on"') + ">" + esc(e) + "-qism</i>"; }).join("") + "</div>";
+    h += '<button class="btn g" id="play">&#9654;&#65039; Shu yerda ko\'rish</button>';
   }
-  if (botLink(f.code)) h += '<button class="btn g" id="inbot">🤖 Botda ko\'rish</button>';
   din.innerHTML = h + "</div>";
   var ep = f.series && f.episodes.length ? f.episodes[0] : "1";
   document.querySelectorAll("#eps i").forEach(function (el) { el.onclick = function () { ep = el.getAttribute("data-e"); document.querySelectorAll("#eps i").forEach(function (x) { x.classList.remove("on"); }); el.classList.add("on"); if (document.querySelector("#pl video")) play(f, ep); }; });
   var pb = document.getElementById("play"); if (pb) pb.onclick = function () { play(f, ep); };
-  var ib = document.getElementById("inbot"); if (ib) ib.onclick = function () { openBot(f.code); };
+  document.getElementById("watch").onclick = function () { watchInBot(f, this); };
+}
+async function watchInBot(f, btn) {
+  var wm = document.getElementById("wmsg"), old = btn.innerHTML; wm.textContent = "";
+  var id = (tg && tg.initData) || "";
+  if (!id) { openBot(f.code); return; }
+  btn.disabled = true; btn.textContent = "Yuborilmoqda...";
+  var res = "", err = "";
+  try {
+    var r = await fetch(q2("/api/kw/watch"), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ initData: id, code: f.code }) });
+    var j = await r.json().catch(function () { return {}; }); res = r.ok ? (j.result || "") : ""; err = j.error || "";
+  } catch (e) { err = "net"; }
+  btn.disabled = false;
+  if (res === "ok") { btn.innerHTML = "&#9989; Botga yuborildi"; if (tg && tg.close) setTimeout(function () { tg.close(); }, 350); return; }
+  btn.innerHTML = old;
+  var M = { blocked: "&#128683; Sizga bu botdan foydalanish taqiqlangan.", maintenance: "&#128736; Bot hozircha texnik tanaffusda.", inactive: "&#128679; Bot vaqtincha ishlamayapti.", channels: "Avval botdagi majburiy kanallarga obuna bo'ling, so'ng qayta urinib ko'ring.", slow: "Juda tez, biroz kuting.", send_failed: "Film yuborilmadi. Botga kirib /start bosing, so'ng qayta urinib ko'ring." };
+  wm.innerHTML = M[res] || M[err] || "Xatolik yuz berdi, qayta urinib ko'ring.";
+  if (res === "channels" || res === "send_failed") { wm.innerHTML += '<button class="btn g" id="wb">&#129302; Botni ochish</button>'; document.getElementById("wb").onclick = function () { openBot(f.code); }; }
 }
 async function play(f, ep) {
   var pl = document.getElementById("pl"), u = q2("/api/kw/video", "&code=" + encodeURIComponent(f.code) + "&ep=" + encodeURIComponent(ep));
@@ -23080,7 +23171,7 @@ html,body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.45 -apple-sy
 .ov{position:fixed;inset:0;background:var(--bg);overflow-y:auto;display:none;z-index:10}
 .ov .in{max-width:720px;margin:0 auto;padding:0 0 40px}
 .back{position:fixed;top:12px;left:12px;z-index:11;width:38px;height:38px;border-radius:50%;border:0;background:rgba(0,0,0,.6);color:#fff;font-size:20px}
-#det .cv{width:100%;max-height:60vh;object-fit:cover;display:block;background:var(--acs);min-height:160px}
+#det .cv{width:100%;height:auto;max-height:72vh;object-fit:contain;display:block;background:var(--acs);min-height:160px}
 #det .bd{padding:16px}
 #det h2{margin:0 0 6px;font-size:22px}
 #det .ds{white-space:pre-wrap;opacity:.9;margin:12px 0 18px}
@@ -23846,8 +23937,23 @@ async def bp_set_menu(bot, info: dict, chat_id):
         logging.info(f"Admin Mini app menyu tugmasi ({chat_id}): {_e}")
 
 
+def bp_pub_row(info: dict) -> list:
+    """Obunachi menyusi uchun «🌐 Mini app» tugmasi qatori (URL sozlanmagan bo'lsa — bo'sh)."""
+    return [[KeyboardButton(text="🌐 Mini app")]] if get_botapp_url(info.get("id")) else []
+
+
 def setup_generic_panel(dp: Dispatcher, token: str):
     info = data["bots"][token]
+
+    @dp.message(F.text == "🌐 Mini app")
+    async def bp_pub_open_btn(message: Message):
+        # Klaviatura tugmasi initData bermaydi — shuning uchun inline web_app tugma yuboriladi
+        _u = get_botapp_url(info.get("id"))
+        if not _u:
+            await message.answer("⚠️ Mini app manzili sozlanmagan.")
+            return
+        await message.answer("🌐 <b>Mini app</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🌐 Mini appni ochish", web_app=WebAppInfo(url=_u))]]))
 
     @dp.message(F.text == "Admin Mini app")
     async def bp_open_btn(message: Message):
@@ -24230,6 +24336,558 @@ if (!ID) { $("m").innerHTML = '<div class="emp">Bu sahifani Telegramdagi bot ich
 </html>
 """
 # ================= /UMUMIY ADMIN MINI APP =================
+
+
+# ================= XALQ UCHUN MINI APP (/botapp): AI, Pul, Tarjimon, Taksi, Open Budget =================
+# Kino va Savdo botda xalq uchun o'z sahifalari bor (/kino, /shop). Qolgan 5 tur uchun — bitta sahifa, tur bo'yicha ko'rinish.
+# MUHIM: bot ichidagi qoidalar (faol/to'xtagan bot, majburiy obuna, Premium, bloklash) mini appda ham AYNAN shunday ishlaydi.
+PUB_LANGS = {"uz": "🇺🇿 O'zbek", "en": "🇬🇧 English", "ru": "🇷🇺 Русский", "tr": "🇹🇷 Türkçe", "ar": "🇸🇦 العربية"}
+PUB_MENU_TEXT = {"ai": "AI chat", "money": "Konvertor", "translate": "Tarjimon", "taxi": "Taksi", "openbudget": "Loyihalar"}
+PUB_GATE_CACHE = {}     # (token, uid) -> (vaqt, natija)
+PUB_RL = {}             # (token, uid, kalit) -> [vaqtlar]
+PUB_TAXI_MAX_PENDING = 3
+
+
+def get_botapp_url(bot_id) -> str:
+    """Xalq uchun mini app URL'i: https://<domen>/botapp?b=<bot_id>"""
+    purl = get_kinopanel_url(bot_id)
+    return purl.replace("/kinopanel?", "/botapp?") if purl else ""
+
+
+def _pub_err(code: str, status: int = 400, **extra):
+    return web.json_response({"error": code, **extra}, status=status, headers=_NO_STORE)
+
+
+def _pub_rate(token: str, uid: int, key: str, limit: int, window: int) -> bool:
+    """True — ruxsat. Bir foydalanuvchi `window` soniyada `limit` martadan ko'p murojaat qila olmaydi (Gemini kvotasini asrash uchun)."""
+    now = datetime.now().timestamp()
+    k = (token, uid, key)
+    arr = [t for t in PUB_RL.get(k, []) if now - t < window]
+    if len(arr) >= limit:
+        PUB_RL[k] = arr
+        return False
+    arr.append(now)
+    PUB_RL[k] = arr
+    if len(PUB_RL) > 5000:
+        for kk in [kk for kk, v in PUB_RL.items() if not v or now - v[-1] > 600]:
+            PUB_RL.pop(kk, None)
+    return True
+
+
+async def pub_gate(token: str, info: dict, uid: int) -> dict:
+    """Botdagi qoidalarning aynan o'zi: faol bot -> bloklash -> Premium -> majburiy obuna. {"ok": bool, "reason": ..., ...}"""
+    if is_admin(info, uid) or is_full_admin(uid):
+        return {"ok": True}
+    if not is_active(info):
+        return {"ok": False, "reason": "inactive"}
+    if uid in info.get("blocked_users", []):
+        return {"ok": False, "reason": "blocked"}
+    if is_premium_active(info, uid):
+        return {"ok": True}
+    if info.get("premium_enabled", False) and info.get("premium_tariffs"):
+        return {"ok": False, "reason": "premium"}
+    channels = info.get("channels") or {}
+    if not channels:
+        return {"ok": True}
+    hit = PUB_GATE_CACHE.get((token, uid))
+    now = datetime.now().timestamp()
+    if hit and now - hit[0] < 30 and hit[1].get("ok"):
+        return hit[1]
+    b = _new_bot(token)
+    try:
+        missing = await get_missing_channels(b, channels, uid)
+    finally:
+        await _close_bot(b)
+    if missing:
+        res = {"ok": False, "reason": "channels", "channels": [
+            {"title": c.get("title") or c.get("username") or "Kanal",
+             "url": c.get("url") or (("https://t.me/" + c["username"].lstrip("@")) if c.get("username") else "")} for c in missing]}
+    else:
+        res = {"ok": True}
+    PUB_GATE_CACHE[(token, uid)] = (now, res)
+    if len(PUB_GATE_CACHE) > 5000:
+        PUB_GATE_CACHE.clear()
+    return res
+
+
+async def pub_auth(request, body=None, gate=True):
+    """(token, info, uid, user_dict, xato). initData imzosi + bot qoidalari."""
+    token, info = bp_find_bot(request.query.get("b"))
+    if not info:
+        return None, None, None, None, _pub_err("bot_not_found", 404)
+    init_data = body.get("initData", "") if body is not None else request.query.get("initData", "")
+    parsed = validate_webapp_init_data(init_data, token)
+    if not parsed:
+        return None, None, None, None, _pub_err("invalid_init_data", 401)
+    try:
+        user = json.loads(parsed.get("user", "{}"))
+        uid = int(user.get("id"))
+    except Exception:
+        return None, None, None, None, _pub_err("no_user", 400)
+    if uid not in info.setdefault("users", []):
+        info["users"].append(uid)
+        save_data()
+    if gate:
+        g = await pub_gate(token, info, uid)
+        if not g["ok"]:
+            return None, None, None, None, _pub_err("gate", 403, gate=g)
+    return token, info, uid, user, None
+
+
+async def pub_info(request):
+    token, info, uid, user, err = await pub_auth(request)
+    if err:
+        return err
+    t = info.get("type")
+    out = {"type": t, "name": info.get("name", ""), "theme": info.get("theme", ""), "username": info.get("username", "")}
+    if t == "money":
+        out["rates"] = [{"code": c, "rate": r} for c, r in (info.get("rates") or {}).items()]
+    elif t == "translate":
+        out["langs"] = [{"code": c, "name": n} for c, n in PUB_LANGS.items()]
+        out["lang"] = (info.get("user_lang") or {}).get(str(uid), "")
+    elif t == "ai":
+        hist = (info.get("ai_history") or {}).get(str(uid), [])
+        out["history"] = [{"role": "user" if h.get("role") == "user" else "ai",
+                           "text": (h.get("parts") or [{}])[0].get("text", "")} for h in hist][-12:]
+    elif t == "taxi":
+        mine = [o for o in (info.get("orders") or {}).values() if o.get("user_id") == uid]
+        mine.sort(key=lambda o: o.get("created_at", ""), reverse=True)
+        out["orders"] = [{"from": o.get("from", ""), "to": o.get("to", ""), "status": o.get("status", ""),
+                          "at": (o.get("created_at") or "")[:16].replace("T", " ")} for o in mine[:10]]
+    return web.json_response(out, headers=_NO_STORE)
+
+
+async def _pub_body(request) -> dict:
+    try:
+        b = await request.json()
+        return b if isinstance(b, dict) else {}
+    except Exception:
+        return {}
+
+
+# ---------- Pul bot ----------
+async def pub_money_convert(request):
+    body = await _pub_body(request)
+    token, info, uid, user, err = await pub_auth(request, body)
+    if err:
+        return err
+    if info.get("type") != "money":
+        return _pub_err("not_found", 404)
+    code = str(body.get("code", ""))
+    rate = (info.get("rates") or {}).get(code)
+    try:
+        amount = float(str(body.get("amount", "")).replace(" ", "").replace(",", "."))
+    except Exception:
+        amount = -1
+    if not rate or not (0 < amount < 1e15):
+        return _pub_err("bad_value")
+    if not _pub_rate(token, uid, "money", 30, 60):
+        return _pub_err("slow_down", 429)
+    to_som = body.get("dir", "to_som") != "from_som"
+    result = amount * rate if to_som else amount / rate
+    info["stats"]["conversions"] = info["stats"].get("conversions", 0) + 1
+    save_data()
+    return web.json_response({"result": result}, headers=_NO_STORE)
+
+
+# ---------- Tarjimon bot ----------
+async def pub_translate(request):
+    body = await _pub_body(request)
+    token, info, uid, user, err = await pub_auth(request, body)
+    if err:
+        return err
+    if info.get("type") != "translate":
+        return _pub_err("not_found", 404)
+    text = str(body.get("text", "")).strip()
+    lang = str(body.get("lang", ""))
+    if not text or len(text) > 2000 or lang not in PUB_LANGS:
+        return _pub_err("bad_value")
+    if not _pub_rate(token, uid, "ai", 6, 30):
+        return _pub_err("slow_down", 429)
+    try:
+        result = await ask_gemini(f"Translate the following text to {PUB_LANGS[lang]}. Respond with ONLY the translation, nothing else:\n\n{text}")
+    except Exception as e:
+        logging.error(f"Mini app tarjima xatosi: {e}")
+        return _pub_err("ai_error", 502)
+    info.setdefault("user_lang", {})[str(uid)] = lang
+    info["stats"]["translations"] = info["stats"].get("translations", 0) + 1
+    save_data()
+    return web.json_response({"result": result}, headers=_NO_STORE)
+
+
+# ---------- AI bot ----------
+async def pub_ai_ask(request):
+    body = await _pub_body(request)
+    token, info, uid, user, err = await pub_auth(request, body)
+    if err:
+        return err
+    if info.get("type") != "ai":
+        return _pub_err("not_found", 404)
+    text = str(body.get("text", "")).strip()
+    if not text or len(text) > 1500:
+        return _pub_err("bad_value")
+    if not _pub_rate(token, uid, "ai", 6, 30):
+        return _pub_err("slow_down", 429)
+    hist = info.setdefault("ai_history", {}).setdefault(str(uid), [])
+    contents = list(hist) + [{"role": "user", "parts": [{"text": text}]}]
+    try:
+        answer = await ask_gemini_chat(contents)
+    except Exception as e:
+        logging.error(f"Mini app AI xatosi: {e}")
+        return _pub_err("ai_error", 502)
+    hist.append({"role": "user", "parts": [{"text": text}]})
+    hist.append({"role": "model", "parts": [{"text": answer}]})
+    info["ai_history"][str(uid)] = hist[-12:]
+    info["stats"]["questions"] = info["stats"].get("questions", 0) + 1
+    save_data()
+    return web.json_response({"answer": answer}, headers=_NO_STORE)
+
+
+async def pub_ai_reset(request):
+    body = await _pub_body(request)
+    token, info, uid, user, err = await pub_auth(request, body)
+    if err:
+        return err
+    if info.get("type") != "ai":
+        return _pub_err("not_found", 404)
+    info.setdefault("ai_history", {})[str(uid)] = []
+    save_data()
+    return web.json_response({"ok": True}, headers=_NO_STORE)
+
+
+# ---------- Taksi bot ----------
+async def pub_taxi_order(request):
+    body = await _pub_body(request)
+    token, info, uid, user, err = await pub_auth(request, body)
+    if err:
+        return err
+    if info.get("type") != "taxi":
+        return _pub_err("not_found", 404)
+    frm, to = str(body.get("from", "")).strip()[:200], str(body.get("to", "")).strip()[:200]
+    phone = re.sub(r"[^\d+ ()-]", "", str(body.get("phone", ""))).strip()[:20]
+    if len(frm) < 2 or len(to) < 2 or len(re.sub(r"\D", "", phone)) < 7:
+        return _pub_err("bad_value")
+    orders = info.setdefault("orders", {})
+    if sum(1 for o in orders.values() if o.get("user_id") == uid and o.get("status") == "kutilmoqda") >= PUB_TAXI_MAX_PENDING:
+        return _pub_err("too_many", 429)
+    oid = uuid.uuid4().hex[:8]
+    orders[oid] = {"user_id": uid, "from": frm, "to": to, "phone": phone, "status": "kutilmoqda",
+                   "created_at": datetime.now().isoformat()}
+    info["stats"]["orders"] = info["stats"].get("orders", 0) + 1
+    save_data()
+    uname = ("@" + user["username"]) if user.get("username") else (user.get("first_name") or str(uid))
+    text = ("🚕 <b>Yangi taksi buyurtmasi</b>\n\n"
+            f"📍 Qayerdan: {html_escape(frm)}\n📍 Qayerga: {html_escape(to)}\n📱 Telefon: {html_escape(phone)}\n"
+            f"👤 Mijoz: {html_escape(str(uname))} (ID: <code>{uid}</code>)")
+    markup = {"inline_keyboard": [[{"text": "✅ Qabul qilindi", "callback_data": f"taxiaccept_{uid}_{oid}"},
+                                   {"text": "❌ Bekor qilish", "callback_data": f"taxicancel_{uid}_{oid}"}]]}
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            for aid in info.get("admin_ids", [info.get("admin_id")]):
+                try:
+                    await c.post(f"https://api.telegram.org/bot{token}/sendMessage",
+                                 json={"chat_id": aid, "text": text, "parse_mode": "HTML", "reply_markup": markup})
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return web.json_response({"ok": True}, headers=_NO_STORE)
+
+
+# ---------- Open Budget bot ----------
+def _pub_ob_card(p: dict, uid: int) -> dict:
+    return {"id": p["id"], "title": p.get("title", ""), "category": p.get("category", ""), "region": p.get("region", ""),
+            "budget": p.get("budget", 0), "votes": len(p.get("voted", [])), "photo": bool(p.get("photo")),
+            "fav": uid in p.get("favs", []), "voted": uid in p.get("voted", []), "created": p.get("created", "")}
+
+
+async def pub_ob_list(request):
+    token, info, uid, user, err = await pub_auth(request)
+    if err:
+        return err
+    if info.get("type") != "openbudget":
+        return _pub_err("not_found", 404)
+    projects = [_pub_ob_card(p, uid) for p in (info.get("ob_projects") or {}).values()]
+    return web.json_response({
+        "projects": projects, "categories": info.get("ob_cats", []),
+        "deadline": info.get("ob_deadline", ""), "site": info.get("ob_url", ""),
+        "welcome": re.sub(r"<[^>]+>", "", info.get("ob_welcome", "")),
+    }, headers=_NO_STORE)
+
+
+async def pub_ob_project(request):
+    token, info, uid, user, err = await pub_auth(request)
+    if err:
+        return err
+    p = (info.get("ob_projects") or {}).get(request.query.get("id", ""))
+    if info.get("type") != "openbudget" or not p:
+        return _pub_err("not_found", 404)
+    p["views"] = p.get("views", 0) + 1
+    save_data()
+    out = _pub_ob_card(p, uid)
+    link = str(p.get("link", ""))
+    out["desc"] = p.get("desc", "")
+    out["link"] = link if link.startswith("https://") or link.startswith("http://") else ""
+    return web.json_response(out, headers=_NO_STORE)
+
+
+async def pub_ob_toggle(request):
+    """POST {id, what: "fav" | "voted"} — sevimli / «Ovoz berdim» belgisini almashtiradi (botdagi tugmalar bilan bir xil)."""
+    body = await _pub_body(request)
+    token, info, uid, user, err = await pub_auth(request, body)
+    if err:
+        return err
+    p = (info.get("ob_projects") or {}).get(str(body.get("id", "")))
+    what = {"fav": "favs", "voted": "voted"}.get(str(body.get("what", "")))
+    if info.get("type") != "openbudget" or not p or not what:
+        return _pub_err("not_found", 404)
+    lst = p.setdefault(what, [])
+    if uid in lst:
+        lst.remove(uid)
+    else:
+        lst.append(uid)
+    save_data()
+    return web.json_response(_pub_ob_card(p, uid), headers=_NO_STORE)
+
+
+async def pub_ob_photo(request):
+    token, info = bp_find_bot(request.query.get("b"))
+    p = (info or {}).get("ob_projects", {}).get(request.query.get("id", ""))
+    fid = (p or {}).get("photo")
+    if not info or info.get("type") != "openbudget" or not fid:
+        return web.Response(status=404)
+    hit = _SHOP_IMG_CACHE.get(fid)
+    if hit is None:
+        path = await kw_tg_path(token, fid)
+        if not path:
+            return web.Response(status=404)
+        try:
+            async with httpx.AsyncClient(timeout=30) as c:
+                r = await c.get(f"https://api.telegram.org/file/bot{token}/{path}")
+        except Exception:
+            return web.Response(status=502)
+        if r.status_code != 200:
+            return web.Response(status=404)
+        ctype = "image/png" if path.lower().endswith(".png") else "image/webp" if path.lower().endswith(".webp") else "image/jpeg"
+        hit = (r.content, ctype)
+        _SHOP_IMG_CACHE[fid] = hit
+        while len(_SHOP_IMG_CACHE) > 120:
+            _SHOP_IMG_CACHE.popitem(last=False)
+    return web.Response(body=hit[0], content_type=hit[1], headers={"Cache-Control": "public, max-age=3600"})
+
+
+async def botapp_page(request):
+    return web.Response(
+        text=BOTAPP_HTML.replace("__PALETTES__", theme_palettes_json()),
+        content_type="text/html",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache"},
+    )
+
+
+BOTAPP_HTML = r"""<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Mini app</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{--bg:#0f1115;--cd:#181b22;--tx:#f2f4f8;--mu:#8b93a4;--ac:#4f8cff;--acs:rgba(79,140,255,.16);--bd:#262a33;--rd:#ff5c5c;--gn:#2fbf71;--yl:#f0b429}
+@media (prefers-color-scheme:light){:root{--bg:#f3f5f9;--cd:#fff;--tx:#12151c;--mu:#6b7385;--bd:#e3e7ee}}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+.hd{position:sticky;top:0;z-index:5;background:var(--bg);padding:14px 16px 10px;border-bottom:1px solid var(--bd)}
+.hd h1{margin:0;font-size:20px}.hd small{color:var(--mu)}
+main{padding:14px 16px 40px;max-width:760px;margin:0 auto}
+.cd{background:var(--cd);border:1px solid var(--bd);border-radius:14px;padding:14px;margin-bottom:12px}
+input,textarea,select{width:100%;padding:12px 14px;border-radius:12px;border:1px solid var(--bd);background:var(--bg);color:var(--tx);font-size:16px;outline:none;font-family:inherit}
+label{display:block;color:var(--mu);font-size:13px;margin:10px 0 4px}
+.btn{display:block;width:100%;padding:13px;border:0;border-radius:12px;background:var(--ac);color:#fff;font-size:16px;font-weight:600;margin:10px 0 0;text-align:center}
+.btn.g{background:var(--acs);color:var(--ac)}.btn:disabled{opacity:.5}
+.chips{display:flex;gap:8px;overflow-x:auto;padding:2px 0 10px;scrollbar-width:none}.chips::-webkit-scrollbar{display:none}
+.chips i{font-style:normal;white-space:nowrap;padding:7px 14px;border-radius:999px;border:1px solid var(--bd);background:var(--cd);font-size:14px;cursor:pointer}
+.chips i.on{background:var(--ac);border-color:var(--ac);color:#fff}
+.emp{text-align:center;color:var(--mu);padding:40px 20px}.hint{color:var(--mu);font-size:13px;margin:6px 0}
+.big{font-size:30px;font-weight:800;margin:8px 0;word-break:break-all}
+.row{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--bd)}.row:last-child{border-bottom:0}
+.msgs{display:flex;flex-direction:column;gap:8px;padding-bottom:90px}
+.m{max-width:86%;padding:10px 13px;border-radius:14px;white-space:pre-wrap;word-wrap:break-word}
+.m.u{align-self:flex-end;background:var(--ac);color:#fff;border-bottom-right-radius:4px}.m.a{align-self:flex-start;background:var(--cd);border:1px solid var(--bd);border-bottom-left-radius:4px}
+.bar{position:fixed;left:0;right:0;bottom:0;background:var(--bg);border-top:1px solid var(--bd);padding:10px 12px calc(10px + env(safe-area-inset-bottom));display:flex;gap:8px;z-index:6}
+.bar textarea{flex:1;min-height:44px;max-height:120px;resize:none}.bar button{width:56px;border:0;border-radius:12px;background:var(--ac);color:#fff;font-size:20px}
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px}@media (min-width:640px){.grid{grid-template-columns:repeat(3,1fr)}}
+.pc{background:var(--cd);border:1px solid var(--bd);border-radius:14px;overflow:hidden;cursor:pointer}
+.ph{position:relative;aspect-ratio:4/3;background:var(--acs);display:flex;align-items:center;justify-content:center;font-size:36px}
+.ph img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.pt{padding:10px 11px 12px}.pt b{display:block;font-size:15px;line-height:1.3;max-height:2.6em;overflow:hidden}.pt span{color:var(--mu);font-size:13px}
+.ov{position:fixed;inset:0;background:var(--bg);overflow-y:auto;display:none;z-index:10}.ov .in{max-width:760px;margin:0 auto;padding-bottom:40px}
+.back{position:fixed;top:12px;left:12px;z-index:11;width:38px;height:38px;border-radius:50%;border:0;background:rgba(0,0,0,.6);color:#fff;font-size:20px}
+.pv{position:relative;height:38vh;background:var(--acs);display:flex;align-items:center;justify-content:center;font-size:60px}.pv img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.bd{padding:16px}.ds{white-space:pre-wrap;opacity:.92;margin:12px 0}
+.cnt{background:linear-gradient(90deg,var(--ac),#7048e8);color:#fff;border-radius:14px;padding:12px 16px;margin-bottom:12px;font-weight:600}
+.tag{display:inline-block;padding:2px 9px;border-radius:8px;font-size:12px;font-weight:600;background:var(--acs);color:var(--ac)}
+.warn{background:rgba(240,180,41,.14);color:var(--yl);border-radius:12px;padding:10px 12px;font-size:13px;margin:10px 0}
+#toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);background:rgba(0,0,0,.82);color:#fff;padding:10px 16px;border-radius:10px;font-size:14px;z-index:30;display:none;max-width:90%}
+</style>
+</head>
+<body>
+<div class="hd"><h1 id="ttl">Mini app</h1><small id="sub"></small></div>
+<main id="m"><div class="emp">Yuklanmoqda...</div></main>
+<div id="ov" class="ov"><button class="back" id="bk">&lsaquo;</button><div class="in" id="oin"></div></div>
+<div id="toast"></div>
+<script>
+var tg = window.Telegram && Telegram.WebApp; if (tg) { try { tg.ready(); tg.expand(); } catch (e) {} }
+var B = new URLSearchParams(location.search).get("b") || "", ID = (tg && tg.initData) || "";
+var PAL = __PALETTES__, INFO = null, T = "";
+var ERR = { bad_value: "Ma'lumot noto'g'ri", slow_down: "Juda tez, biroz kuting", ai_error: "Xatolik yuz berdi, birozdan keyin urinib ko'ring", too_many: "Sizda kutilayotgan buyurtmalar ko'p, haydovchi javobini kuting", invalid_init_data: "Mini appni botning ichidan oching", not_found: "Topilmadi" };
+function esc(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+function nf(n, d) { return Number(n || 0).toLocaleString("ru-RU", { maximumFractionDigits: d == null ? 2 : d }).replace(/ /g, " "); }
+function q(p, extra) { return p + "?b=" + encodeURIComponent(B) + (extra || ""); }
+function $(id) { return document.getElementById(id); }
+function toast(t) { var e = $("toast"); e.textContent = t; e.style.display = "block"; setTimeout(function () { e.style.display = "none"; }, 2600); }
+function themeHex(k) { try { var p = String(k).split("-"); return PAL[p[0]].shades[Number(p[1]) - 1] || ""; } catch (e) { return ""; } }
+function applyTheme(k) { var c = themeHex(k); if (!c) return; var st = document.documentElement.style; st.setProperty("--ac", c); st.setProperty("--acs", "color-mix(in srgb," + c + " 16%,transparent)"); }
+function GATE(g) { var e = new Error("gate"); e.gate = g; return e; }
+async function get(p, extra) { var r = await fetch(q(p, "&initData=" + encodeURIComponent(ID) + (extra || ""))); var j = await r.json().catch(function () { return {}; }); if (r.status === 403 && j.error === "gate") throw GATE(j.gate); if (!r.ok) throw new Error(ERR[j.error] || ("Xato " + r.status)); return j; }
+async function post(p, b) { var r = await fetch(q(p), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(Object.assign({ initData: ID }, b)) }); var j = await r.json().catch(function () { return {}; }); if (r.status === 403 && j.error === "gate") throw GATE(j.gate); if (!r.ok) throw new Error(ERR[j.error] || ("Xato " + r.status)); return j; }
+function fail(e) { if (e && e.gate) { showGate(e.gate); return; } toast(e && e.message ? e.message : "Xatolik"); }
+function openLink(u) { if (!u) return; if (tg && /^https:\/\/t\.me\//.test(u) && tg.openTelegramLink) tg.openTelegramLink(u); else if (tg && tg.openLink) tg.openLink(u); else window.open(u, "_blank"); }
+function closeOv() { $("ov").style.display = "none"; if (tg && tg.BackButton) tg.BackButton.hide(); }
+function openOv(html) { var o = $("ov"); $("oin").innerHTML = html; o.style.display = "block"; o.scrollTop = 0; if (tg && tg.BackButton) { tg.BackButton.show(); tg.BackButton.onClick(closeOv); } }
+$("bk").onclick = closeOv;
+function showGate(g) {
+  var m = $("m"); closeOv();
+  if (g.reason === "channels") {
+    m.innerHTML = '<div class="cd"><h3 style="margin:0 0 8px">Botdan foydalanish uchun obuna bo\'ling</h3>' + g.channels.map(function (c, i) { return '<div class="row"><b>' + esc(c.title) + '</b>' + (c.url ? '<button class="tag" data-u="' + esc(c.url) + '" style="border:0">Ochish</button>' : "") + "</div>"; }).join("") + '<button class="btn" id="g_r">&#9989; Obuna bo\'ldim, tekshirish</button></div>';
+    m.querySelectorAll("[data-u]").forEach(function (el) { el.onclick = function () { openLink(el.getAttribute("data-u")); }; });
+    $("g_r").onclick = function () { start(); };
+  } else {
+    var t = { premium: "&#128142; Bu botdan foydalanish uchun Premium kerak. Premiumni botning ichida sotib olishingiz mumkin.", blocked: "&#128683; Sizga bu botdan foydalanish taqiqlangan.", inactive: "&#128679; Bot vaqtincha ishlamayapti." }[g.reason] || "Kirish mumkin emas";
+    m.innerHTML = '<div class="cd"><div class="emp" style="padding:20px">' + t + '</div>' + (g.reason === "premium" ? '<button class="btn" id="g_c">Botga qaytish</button>' : "") + "</div>";
+    if ($("g_c")) $("g_c").onclick = function () { if (tg && tg.close) tg.close(); };
+  }
+}
+/* ---------- Pul ---------- */
+function vMoney() {
+  var rates = INFO.rates, cur = rates.length ? rates[0].code : "", dir = "to_som", tmr = null;
+  var m = $("m");
+  if (!rates.length) { m.innerHTML = '<div class="emp">Hozircha valyutalar qo\'shilmagan</div>'; return; }
+  function rateOf(c) { return rates.filter(function (r) { return r.code === c; })[0].rate; }
+  function calc() {
+    var a = parseFloat(String($("a").value).replace(/\s/g, "").replace(",", ".")), r = rateOf(cur);
+    if (!(a > 0)) { $("res").textContent = "—"; return; }
+    var res = dir === "to_som" ? a * r : a / r;
+    $("res").textContent = dir === "to_som" ? nf(res, 0) + " so'm" : nf(res, 2) + " " + cur;
+    clearTimeout(tmr); tmr = setTimeout(function () { post("/api/pub/money/convert", { code: cur, amount: a, dir: dir }).catch(function () {}); }, 1200);
+  }
+  function draw() {
+    $("chips").innerHTML = rates.map(function (r) { return '<i data-c="' + esc(r.code) + '"' + (r.code === cur ? ' class="on"' : "") + ">" + esc(r.code) + "</i>"; }).join("");
+    $("chips").querySelectorAll("i").forEach(function (el) { el.onclick = function () { cur = el.getAttribute("data-c"); draw(); calc(); }; });
+    $("lbl").textContent = dir === "to_som" ? cur + " miqdori" : "So'm miqdori";
+    $("one").textContent = "1 " + cur + " = " + nf(rateOf(cur), 2) + " so'm";
+  }
+  m.innerHTML = '<div class="cd"><div class="chips" id="chips"></div><label id="lbl"></label><input id="a" inputmode="decimal" placeholder="0"><div class="big" id="res">—</div><div class="hint" id="one"></div><button class="btn g" id="sw">&#8645; Yo\'nalishni almashtirish</button></div>' +
+    '<div class="cd"><b>Kurslar</b>' + rates.map(function (r) { return '<div class="row"><span>1 ' + esc(r.code) + "</span><b>" + nf(r.rate, 2) + " so'm</b></div>"; }).join("") + "</div>";
+  $("a").oninput = calc; $("sw").onclick = function () { dir = dir === "to_som" ? "from_som" : "to_som"; draw(); calc(); };
+  draw();
+}
+/* ---------- Tarjimon ---------- */
+function vTr() {
+  var lang = INFO.lang || INFO.langs[0].code, m = $("m");
+  m.innerHTML = '<div class="cd"><div class="chips" id="chips"></div><label>Matn</label><textarea id="t" rows="5" maxlength="2000" placeholder="Tarjima qilinadigan matn..."></textarea><button class="btn" id="go">Tarjima qilish</button></div><div id="out"></div>';
+  function draw() { $("chips").innerHTML = INFO.langs.map(function (l) { return '<i data-c="' + l.code + '"' + (l.code === lang ? ' class="on"' : "") + ">" + esc(l.name) + "</i>"; }).join(""); $("chips").querySelectorAll("i").forEach(function (el) { el.onclick = function () { lang = el.getAttribute("data-c"); draw(); }; }); }
+  draw();
+  $("go").onclick = async function () {
+    var b = this, t = $("t").value.trim(); if (!t) return;
+    b.disabled = true; b.textContent = "Tarjima qilinmoqda...";
+    try { var j = await post("/api/pub/translate", { text: t, lang: lang }); $("out").innerHTML = '<div class="cd"><div class="ds" id="rt" style="margin:0">' + esc(j.result) + '</div><button class="btn g" id="cp">Nusxalash</button></div>';
+      $("cp").onclick = function () { try { navigator.clipboard.writeText(j.result); toast("Nusxalandi"); } catch (e) { toast("Nusxalab bo'lmadi"); } }; } catch (e) { fail(e); }
+    b.disabled = false; b.textContent = "Tarjima qilish";
+  };
+}
+/* ---------- AI ---------- */
+function vAi() {
+  var m = $("m"); m.innerHTML = '<div class="msgs" id="ms"></div><div class="bar"><textarea id="t" rows="1" maxlength="1500" placeholder="Savol yozing..."></textarea><button id="go">&#10148;</button></div>';
+  var ms = $("ms");
+  function add(role, text) { var d = document.createElement("div"); d.className = "m " + (role === "user" ? "u" : "a"); d.textContent = text; ms.appendChild(d); window.scrollTo(0, document.body.scrollHeight); return d; }
+  if (!INFO.history.length) add("ai", "Salom! Menga istalgan savolni yozing.");
+  INFO.history.forEach(function (h) { add(h.role, h.text); });
+  var busy = false;
+  async function send() {
+    var t = $("t").value.trim(); if (!t || busy) return; busy = true; $("t").value = ""; add("user", t); var w = add("ai", "💭 O'ylayapman...");
+    try { var j = await post("/api/pub/ai/ask", { text: t }); w.textContent = j.answer; } catch (e) { w.textContent = "Javob olib bo'lmadi."; fail(e); }
+    busy = false; window.scrollTo(0, document.body.scrollHeight);
+  }
+  $("go").onclick = send; $("t").onkeydown = function (e) { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } };
+  $("sub").innerHTML = '<a href="#" id="rs" style="color:var(--ac)">🔄 Yangi suhbat</a>';
+  $("rs").onclick = async function (e) { e.preventDefault(); try { await post("/api/pub/ai/reset", {}); ms.innerHTML = ""; add("ai", "Suhbat tozalandi. Yangi savol yozing."); } catch (x) { fail(x); } };
+}
+/* ---------- Taksi ---------- */
+function vTaxi() {
+  var m = $("m");
+  function ords() { return INFO.orders.length ? INFO.orders.map(function (o) { return '<div class="row"><div><b>' + esc(o.from) + " &rarr; " + esc(o.to) + '</b><div class="hint">' + esc(o.at) + '</div></div><span class="tag">' + esc(o.status) + "</span></div>"; }).join("") : '<div class="hint">Buyurtmalar yo\'q</div>'; }
+  m.innerHTML = '<div class="cd"><label>Qayerdan</label><input id="f" maxlength="200" placeholder="Manzil"><label>Qayerga</label><input id="t" maxlength="200" placeholder="Manzil"><label>Telefon raqam</label><input id="p" inputmode="tel" maxlength="20" placeholder="+998 90 123 45 67"><button class="btn" id="go">&#128661; Taksi chaqirish</button></div><div class="cd"><b>Buyurtmalarim</b><div id="ol">' + ords() + "</div></div>";
+  $("go").onclick = async function () {
+    var b = this; b.disabled = true;
+    try { await post("/api/pub/taxi/order", { from: $("f").value, to: $("t").value, phone: $("p").value }); toast("Buyurtma qabul qilindi ✅"); $("f").value = $("t").value = ""; INFO = await get("/api/pub/info"); $("ol").innerHTML = ords(); } catch (e) { fail(e); }
+    b.disabled = false;
+  };
+}
+/* ---------- Open Budget ---------- */
+var OB = { all: [], cat: "", sort: "votes", q: "", fav: false };
+function obCount(dl) {
+  if (!dl) return ""; var d = new Date(dl); if (isNaN(d)) return ""; var ms = d - Date.now();
+  if (ms <= 0) return "⏰ Ovoz berish muddati tugagan";
+  var dd = Math.floor(ms / 864e5), hh = Math.floor(ms % 864e5 / 36e5); return "⏳ Ovoz berishga " + dd + " kun " + hh + " soat qoldi";
+}
+async function vOb() {
+  var j = await get("/api/pub/ob/list"); OB.all = j.projects; OB.cats = j.categories; OB.dl = j.deadline; OB.site = j.site;
+  var m = $("m");
+  m.innerHTML = (obCount(j.deadline) ? '<div class="cnt">' + obCount(j.deadline) + "</div>" : "") + '<input id="s" placeholder="Qidirish..." style="margin-bottom:10px"><div class="chips" id="cc"></div><div class="chips" id="so"></div><div class="grid" id="g"></div>' +
+    '<div class="warn">&#128274; Telefon raqam va SMS kodni <b>faqat rasmiy saytda</b> kiriting. Bu mini app hech qachon ularni so\'ramaydi.</div>';
+  $("s").oninput = function () { OB.q = this.value.trim().toLowerCase(); obDraw(); }; obDraw();
+}
+function obDraw() {
+  var cats = [["", "Barchasi"]].concat((OB.cats || []).map(function (c) { return [c, c]; })).concat([["__fav", "⭐ Sevimlilar"]]);
+  $("cc").innerHTML = cats.map(function (c) { var on = c[0] === "__fav" ? OB.fav : (!OB.fav && OB.cat === c[0]); return '<i data-c="' + esc(c[0]) + '"' + (on ? ' class="on"' : "") + ">" + esc(c[1]) + "</i>"; }).join("");
+  $("cc").querySelectorAll("i").forEach(function (el) { el.onclick = function () { var c = el.getAttribute("data-c"); OB.fav = c === "__fav"; OB.cat = OB.fav ? "" : c; obDraw(); }; });
+  $("so").innerHTML = [["votes", "Ko'p ovozli"], ["new", "Yangi"]].map(function (s) { return '<i data-s="' + s[0] + '"' + (OB.sort === s[0] ? ' class="on"' : "") + ">" + s[1] + "</i>"; }).join("");
+  $("so").querySelectorAll("i").forEach(function (el) { el.onclick = function () { OB.sort = el.getAttribute("data-s"); obDraw(); }; });
+  var rows = OB.all.filter(function (p) { return (!OB.fav || p.fav) && (!OB.cat || p.category === OB.cat) && (!OB.q || (p.title + " " + p.region).toLowerCase().indexOf(OB.q) >= 0); });
+  rows.sort(function (a, b) { return OB.sort === "votes" ? b.votes - a.votes : String(b.created).localeCompare(String(a.created)); });
+  $("g").innerHTML = rows.length ? rows.map(function (p) { return '<div class="pc" data-i="' + esc(p.id) + '"><div class="ph">&#127963;' + (p.photo ? '<img loading="lazy" src="' + q("/api/pub/ob/photo", "&id=" + encodeURIComponent(p.id)) + '" alt="">' : "") + '</div><div class="pt"><b>' + esc(p.title) + "</b><span>" + esc(p.region || p.category) + " &middot; &#9989; " + p.votes + (p.fav ? " &middot; ⭐" : "") + "</span></div></div>"; }).join("") : '<div class="emp" style="grid-column:1/-1">Loyiha topilmadi</div>';
+  $("g").querySelectorAll(".pc").forEach(function (el) { el.onclick = function () { obOpen(el.getAttribute("data-i")); }; });
+}
+async function obOpen(id) {
+  try {
+    var p = await get("/api/pub/ob/project", "&id=" + encodeURIComponent(id));
+    function html() { return '<div class="pv">&#127963;' + (p.photo ? '<img src="' + q("/api/pub/ob/photo", "&id=" + encodeURIComponent(p.id)) + '" alt="">' : "") + '</div><div class="bd"><h2 style="margin:0 0 6px">' + esc(p.title) + '</h2><div class="hint">' + esc(p.category) + (p.region ? " &middot; " + esc(p.region) : "") + '</div><div style="margin:8px 0"><span class="tag">&#9989; ' + p.votes + ' ta ovoz belgilangan</span></div>' + (p.budget ? "<div><b>Byudjet:</b> " + nf(p.budget, 0) + " so'm</div>" : "") + (p.desc ? '<div class="ds">' + esc(p.desc) + "</div>" : "") +
+      (p.link ? '<button class="btn" id="lk">&#128499; Rasmiy saytda ovoz berish</button>' : "") + '<button class="btn g" id="vt">' + (p.voted ? "↩️ Belgini olish" : "✅ Ovoz berdim") + '</button><button class="btn g" id="fv">' + (p.fav ? "💔 Sevimlidan olish" : "⭐ Sevimlilarga") + '</button><div class="warn">&#128274; Telefon va SMS kodni faqat rasmiy saytda kiriting.</div></div>'; }
+    function bind() {
+      openOv(html());
+      if ($("lk")) $("lk").onclick = function () { openLink(p.link); };
+      ["vt", "fv"].forEach(function (k) { $(k).onclick = async function () { try { var u = await post("/api/pub/ob/toggle", { id: p.id, what: k === "vt" ? "voted" : "fav" }); p.voted = u.voted; p.fav = u.fav; p.votes = u.votes; OB.all.forEach(function (x) { if (x.id === p.id) { x.voted = u.voted; x.fav = u.fav; x.votes = u.votes; } }); bind(); obDraw(); } catch (e) { fail(e); } }; });
+    }
+    bind();
+  } catch (e) { fail(e); }
+}
+/* ---------- Boshlash ---------- */
+async function start() {
+  if (!ID) { $("m").innerHTML = '<div class="emp">Bu sahifani Telegramdagi bot ichidan oching.</div>'; return; }
+  try {
+    INFO = await get("/api/pub/info"); T = INFO.type;
+    if (INFO.theme) applyTheme(INFO.theme);
+    var emo = { ai: "🤖", money: "💱", translate: "🌐", taxi: "🚕", openbudget: "🗳" }[T] || "";
+    $("ttl").textContent = emo + " " + (INFO.name || "Mini app"); $("sub").textContent = "";
+    await ({ money: vMoney, translate: vTr, ai: vAi, taxi: vTaxi, openbudget: vOb })[T]();
+  } catch (e) { if (e.gate) showGate(e.gate); else $("m").innerHTML = '<div class="emp">' + esc(e.message) + "</div>"; }
+}
+start();
+</script>
+</body>
+</html>
+"""
+# ================= /XALQ UCHUN MINI APP =================
 
 
 async def botstats_page(request):
