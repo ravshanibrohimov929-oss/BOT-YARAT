@@ -9800,7 +9800,8 @@ def setup_kino_bot(dp: Dispatcher, token: str):
         # Veb kino: faqat veb panelga film qo'yilgan bo'lsa ko'rinadi
         _wurl = get_kinoweb_url(info.get("id"))
         if _wurl and any(kw_visible(_m) for _m in (info.get("movies") or {}).values()):
-            rows.append([KeyboardButton(text="🌐 Veb kino", web_app=WebAppInfo(url=_wurl))])
+            # Klaviatura tugmasidagi web_app initData BERMAYDI (film yuborish ishlamaydi) — oddiy tugma, bosilganda inline web_app tugma chiqadi
+            rows.append([KeyboardButton(text="🌐 Veb kino")])
         return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
     def ultra_admin_kb():
@@ -10078,6 +10079,18 @@ def setup_kino_bot(dp: Dispatcher, token: str):
             await message.answer("⭐ <b>Boshqaruv paneli</b>", reply_markup=ultra_admin_kb())
         else:
             await message.answer("🎬 <b>Kinolar bo'limidasiz:</b>", reply_markup=content_menu_kb())
+
+    @dp.message(F.text == "🌐 Veb kino")
+    async def kino_webapp_btn(message: Message, state: FSMContext):
+        await state.clear()
+        if not await kino_guard(message):
+            return
+        _wurl = get_kinoweb_url(info.get("id"))
+        if not _wurl:
+            await message.answer("⚠️ Veb kino manzili sozlanmagan.")
+            return
+        await message.answer("🌐 <b>Veb kino</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🌐 Veb kinoni ochish", web_app=WebAppInfo(url=_wurl))]]))
 
     # ---------- /start ----------
     @dp.message(Command("start"))
