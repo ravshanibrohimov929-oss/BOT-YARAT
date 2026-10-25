@@ -5,3 +5,5 @@ numpy==1.26.4
 pymongo==4.9.2
 dnspython==2.6.1
 aiohttp==3.10.10
+yt-dlp
+imageio-ffmpeg
