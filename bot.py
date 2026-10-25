@@ -615,7 +615,7 @@ creator_style_request_middleware = _make_style_middleware(True)
 auto_style_request_middleware = _make_style_middleware(False)
 
 BOT_TYPES = {
-    "kino_pro": "🎬 Kino BOT",
+    "kino_pro": "🎬 Media bot",
     "shop": "🛒 Savdo bot",
     "ai": "🤖 AI-yordamchi bot",
     "money": "💱 Pul (valyuta) bot",
@@ -625,6 +625,59 @@ BOT_TYPES = {
     "openbudget": "🗳 Open Budget bot",
     "nakrutka": "🚀 Nakrutka bot",
 }
+
+# 🎬 MEDIA BOT turlari (ichki bot turi o'zgarmaydi: "kino_pro" — barcha kino funksiyalari saqlanadi).
+# Bot yaratishda 8 turdan biri tanlanadi; tanlangan tur info["media_kind"] ga yoziladi va botning
+# tugma nomlari, salomlashuvi, janrlari shu turga moslashadi.
+MEDIA_KINDS = {
+    "kino": {"emoji": "🎬", "name": "Kino", "root": "kino",
+             "short": "Kinolar katalogi: kod yuboring — film keladi.",
+             "welcome": "🎬 Film kodini yuboring, men uni topib beraman.",
+             "cats": ["Jangari", "Komediya", "Drama", "Fantastika", "Qo'rqinchli", "Romantik", "Triller", "Tarixiy"]},
+    "serial": {"emoji": "📺", "name": "Serial", "root": "serial",
+               "short": "Seriallar: qismma-qism, keyingi qism tugmasi bilan.",
+               "welcome": "📺 Serial kodini yuboring, men uni topib beraman.",
+               "cats": ["Jangari", "Komediya", "Drama", "Detektiv", "Fantastika", "Romantik", "Tarixiy"]},
+    "anime": {"emoji": "🎌", "name": "Anime", "root": "anime",
+              "short": "Anime filmlar va seriallar.",
+              "welcome": "🎌 Anime kodini yuboring, men uni topib beraman.",
+              "cats": ["Shonen", "Romantika", "Fantastika", "Komediya", "Sarguzasht", "Drama", "Sport", "Maktab"]},
+    "multfilm": {"emoji": "🧸", "name": "Multfilm", "root": "multfilm",
+                 "short": "Bolalar uchun multfilmlar.",
+                 "welcome": "🧸 Multfilm kodini yuboring, men uni topib beraman.",
+                 "cats": ["Sarguzasht", "Komediya", "Oilaviy", "Fantastika", "Ertaklar", "Hayvonlar haqida"]},
+    "drama": {"emoji": "🎭", "name": "Drama", "root": "drama",
+              "short": "Dramalar (Koreys, Xitoy va boshqalar).",
+              "welcome": "🎭 Drama kodini yuboring, men uni topib beraman.",
+              "cats": ["Melodrama", "Oilaviy", "Tarixiy", "Psixologik", "Romantik", "Koreys dramalari"]},
+    "hind": {"emoji": "🇮🇳", "name": "Hind kinolari", "root": "hind kino",
+             "short": "Hind kinolari katalogi.",
+             "welcome": "🇮🇳 Hind kino kodini yuboring, men uni topib beraman.",
+             "cats": ["Romantik", "Jangari", "Komediya", "Drama", "Musiqiy", "Oilaviy"]},
+    "turk": {"emoji": "🇹🇷", "name": "Turk seriallari", "root": "turk serial",
+             "short": "Turk seriallari, qismma-qism.",
+             "welcome": "🇹🇷 Turk serial kodini yuboring, men uni topib beraman.",
+             "cats": ["Romantik", "Tarixiy", "Drama", "Jangari", "Oilaviy", "Komediya"]},
+    "aralash": {"emoji": "🍿", "name": "Aralash", "root": "kontent",
+                "short": "Hammasi bir joyda: kino, serial, anime va boshqalar.",
+                "welcome": "🍿 Kod yuboring, men uni topib beraman.",
+                "cats": ["Kino", "Serial", "Anime", "Multfilm", "Drama", "Hind kinolari", "Turk seriallari"]},
+}
+
+
+def media_kind_of(info: dict) -> str:
+    k = (info or {}).get("media_kind")
+    return k if k in MEDIA_KINDS else "kino"
+
+
+def type_label_of(info: dict) -> str:
+    """Bot turi yorlig'i: Media bot uchun tanlangan tur bilan (masalan «🎌 Anime bot»)."""
+    t = (info or {}).get("type")
+    if t == "kino_pro":
+        k = MEDIA_KINDS[media_kind_of(info)]
+        return f"{k['emoji']} {k['name']} bot"
+    return BOT_TYPES.get(t, t or "")
+
 
 DEFAULT_PRICES = {
     "kino_pro": 120_000,
@@ -797,6 +850,16 @@ for _k in ("type_prices", "bot_type_trial", "bot_menu"):
                 _purged = True
 if _purged:
     save_data()
+
+
+# Menyuda eski «Kino BOT» nomi bazaga muhrlangan bo'lsa — yangi «Media bot» nomiga almashtiramiz
+try:
+    _km = data["bot_menu"].get("kino_pro")
+    if _km and _km.get("name") in ("🎬 Kino BOT", "Kino BOT", "🎬 Kino bot"):
+        _km["name"] = BOT_TYPES["kino_pro"]
+        save_data()
+except Exception:
+    pass
 
 
 def available_bot_types() -> dict:
@@ -1393,7 +1456,8 @@ def tariff_card_text(tid: str, t: dict) -> str:
 # Har bir bot turi uchun tavsif (bot yaratish oynasida ko'rsatiladi)
 BOT_DESCRIPTIONS = {
     "kino_pro": (
-        "<i>Kino botning barcha imkoniyatlari + VIP tizimi bilan.</i>\n\n"
+        "<i>Media bot: 🎬 Kino · 📺 Serial · 🎌 Anime · 🧸 Multfilm · 🎭 Drama · 🇮🇳 Hind kinolari · 🇹🇷 Turk seriallari · 🍿 Aralash — "
+        "yaratishda o'zingizga kerakli turni tanlaysiz, bot shu nomga moslashadi.</i>\n\n"
         "🔒 VIP-maxsus kino qo'shish, faqat Premium foydalanuvchilarga ko'rinadigan yopiq "
         "kontent, 💎 VIP kinolar katalogi — bularning barchasi faqat Kino BOTda mavjud.\n\n"
         "🏷 Kategoriyalar, ⭐ tavsiyalar, 📈 TOP reyting, baholash, 🗓 rejalashtirilgan "
@@ -3188,7 +3252,7 @@ def setup_platform_bot(dp: Dispatcher):
         own_bots = [b for b in data["bots"].values() if found_uid in b.get("admin_ids", [b["admin_id"]])]
         refcount = len(data["platform_referrals"].get(str(found_uid), []))
         blocked = "🚫 Ha" if found_uid in data["blocked_users"] else "✅ Yo'q"
-        bots_lines = "\n".join(f"   • {b['name']} ({BOT_TYPES.get(b['type'], b['type'])})" for b in own_bots) or "   • yo'q"
+        bots_lines = "\n".join(f"   • {b['name']} ({type_label_of(b)})" for b in own_bots) or "   • yo'q"
         await message.answer(
             f"👤 <b>{uinfo.get('username') or '—'}</b>\n"
             f"🆔 ID: <code>{found_uid}</code>\n"
@@ -4027,13 +4091,40 @@ def setup_platform_bot(dp: Dispatcher):
         await callback.message.edit_text(T("choose_type"), reply_markup=types_kb())
         await callback.answer()
 
+    def media_kinds_kb():
+        items = [InlineKeyboardButton(text=f"{k['emoji']} {k['name']}", callback_data=f"mkind_{key}")
+                 for key, k in MEDIA_KINDS.items()]
+        rows = [items[i:i + 2] for i in range(0, len(items), 2)]
+        rows.append([InlineKeyboardButton(text="◀️ Orqaga", callback_data="backtotypes")])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
     @dp.callback_query(F.data.startswith("type_"))
-    async def newbot_type(callback: CallbackQuery):
+    async def newbot_type(callback: CallbackQuery, state: FSMContext):
         bot_type = callback.data.split("_", 1)[1]
         if not is_type_available(bot_type):
             await callback.answer("⛔ Bu bot turi hozircha mavjud emas.", show_alert=True)
             return
+        if bot_type == "kino_pro":
+            # Media bot: avval 8 turdan birini tanlaydi
+            await callback.message.edit_text(
+                "🎬 <b>Media bot</b>\n\nQaysi turdagi bot yaratmoqchisiz?", reply_markup=media_kinds_kb())
+            await callback.answer()
+            return
+        await state.update_data(media_kind=None)
         await callback.message.edit_text(type_detail_text(bot_type), reply_markup=type_detail_kb(bot_type))
+        await callback.answer()
+
+    @dp.callback_query(F.data.startswith("mkind_"))
+    async def newbot_media_kind(callback: CallbackQuery, state: FSMContext):
+        key = callback.data.split("_", 1)[1]
+        if key not in MEDIA_KINDS or not is_type_available("kino_pro"):
+            await callback.answer("⛔ Bu tur mavjud emas.", show_alert=True)
+            return
+        await state.update_data(media_kind=key)
+        k = MEDIA_KINDS[key]
+        text = type_detail_text("kino_pro").replace(BOT_TYPES["kino_pro"], f"{k['emoji']} {k['name']} bot", 1)
+        text += f"\n\n{k['short']}"
+        await callback.message.edit_text(text, reply_markup=type_detail_kb("kino_pro"))
         await callback.answer()
 
     @dp.callback_query(F.data.startswith("backtotype_"))
@@ -4099,8 +4190,8 @@ def setup_platform_bot(dp: Dispatcher):
         await callback.message.edit_text(T("token_prompt", bot_type=BOT_TYPES[bot_type]))
         await callback.answer()
 
-    async def finalize_bot_creation(token: str, bot_name: str, bot_type: str, uid: int, tariff_id):
-        return await create_bot_record(token, bot_name, bot_type, uid, tariff_id)
+    async def finalize_bot_creation(token: str, bot_name: str, bot_type: str, uid: int, tariff_id, media_kind=None):
+        return await create_bot_record(token, bot_name, bot_type, uid, tariff_id, media_kind)
 
     @dp.message(NewBotFlow.waiting_token)
     async def newbot_token(message: Message, state: FSMContext):
@@ -4178,7 +4269,8 @@ def setup_platform_bot(dp: Dispatcher):
             data["user_balances"][str(callback.from_user.id)] = balance - creation_charge
             log_balance(callback.from_user.id, -creation_charge, f"Bot yaratish ({BOT_TYPES.get(bot_type, bot_type)})")
 
-        info = await finalize_bot_creation(token, bot_name, bot_type, callback.from_user.id, tariff_id)
+        info = await finalize_bot_creation(token, bot_name, bot_type, callback.from_user.id, tariff_id,
+                                           state_data.get("media_kind"))
 
         tariff = get_tariff(tariff_id, bot_type)
         trial_cfg = get_trial_config(bot_type)
@@ -4235,7 +4327,7 @@ def setup_platform_bot(dp: Dispatcher):
             return
         pool = callback.data.split("_", 1)[1]
         await state.update_data(tariff_pool=pool)
-        pool_label = "🎬 Kino BOT"
+        pool_label = "🎬 Media bot"
         await callback.message.answer(f"{pool_label} uchun yangi tarif nomini kiriting (masalan: 🚀 Mega):")
         await state.set_state(NewTariffAdd.waiting_name)
         await callback.answer()
@@ -9980,6 +10072,20 @@ def setup_kino_bot(dp: Dispatcher, token: str):
                 pass
             return await handler(event, payload)
 
+    class _KindRevMW(BaseMiddleware):
+        """Media bot turiga moslangan tugma matni bosilganda — uni asl (ichki) matnga qaytaradi."""
+        async def __call__(self, handler, event, payload):
+            try:
+                if media_kind_of(info) != "kino":
+                    txt = getattr(event, "text", None)
+                    orig = (info.get("kind_rev") or {}).get(txt) if txt else None
+                    if orig:
+                        event = event.model_copy(update={"text": orig})
+            except Exception as e:
+                logging.warning(f"Media tur middleware (kiruvchi) xatosi: {e}")
+            return await handler(event, payload)
+
+    dp.message.outer_middleware(_KindRevMW())
     dp.message.outer_middleware(_KinoLangMW())
     dp.update.outer_middleware(_KinoTrackMW())
 
@@ -17004,6 +17110,7 @@ async def start_child_bot(token: str, bot_type: str):
         # Tartib muhim: avval rang (asl o'zbekcha matn bo'yicha), keyin tarjima
         child_bot.session.middleware(kino_cover_middleware)
         child_bot.session.middleware(kino_btn_style_middleware)
+        child_bot.session.middleware(media_kind_request_middleware)
         child_bot.session.middleware(kino_i18n_request_middleware)
     else:
         child_bot.session.middleware(auto_style_request_middleware)
@@ -18029,6 +18136,7 @@ MINIAPP_HTML = """<!DOCTYPE html>
     st.type = key;
     const t = findType(st, key);
     st.tariff = needsTariff(t) ? cheapestTariffId(t) : null;
+    st.kind = (t && t.kinds && t.kinds.length) ? "kino" : null;
   }
 
   function computeCanSubmit(st) {
@@ -18119,6 +18227,14 @@ MINIAPP_HTML = """<!DOCTYPE html>
         '<div class="td">' + escapeHtml(it.short) + '</div></button>';
     }
     html += '</div>';
+    if (t && t.kinds && t.kinds.length) {
+      html += '<div class="step-label">Media turi</div><div class="type-grid">';
+      for (const k of t.kinds) {
+        html += '<button type="button" class="type-card' + (k.key === st.kind ? " sel" : "") + '" data-kind="' + escapeAttr(k.key) + '">' +
+          '<div class="tn">' + escapeHtml(k.name) + '</div><div class="td">' + escapeHtml(k.short) + '</div></button>';
+      }
+      html += '</div>';
+    }
     html += '<div class="step-label">2. Bot nomi <span style="text-transform:none;font-weight:500">(ixtiyoriy)</span></div>';
     html += '<input class="text-input" id="botNameInput" type="text" maxlength="60" placeholder="Masalan: Mening Kino Botim" value="' + escapeAttr(st.name) + '">';
     html += '<div class="step-label">3. @BotFather tokeni</div>';
@@ -18210,6 +18326,7 @@ MINIAPP_HTML = """<!DOCTYPE html>
           token: st.token.trim(),
           bot_name: st.name.trim(),
           tariff_id: st.tariff,
+          media_kind: st.kind,
         }),
       });
       let payload = null;
@@ -18235,6 +18352,8 @@ MINIAPP_HTML = """<!DOCTYPE html>
     if (!createState || createState.done) return;
     const typeEl = e.target.closest("[data-type]");
     if (typeEl) { selectType(createState, typeEl.getAttribute("data-type")); createState.error = ""; renderSheet(); return; }
+    const kindEl = e.target.closest("[data-kind]");
+    if (kindEl) { createState.kind = kindEl.getAttribute("data-kind"); renderSheet(); return; }
     const tfEl = e.target.closest("[data-tariff]");
     if (tfEl) { createState.tariff = tfEl.getAttribute("data-tariff"); renderSheet(); return; }
     if (e.target.closest("#openBotFatherBtn")) { openTelegramUrl("https://t.me/BotFather"); }
@@ -18874,7 +18993,7 @@ async def miniapp_page(request):
     )
 
 
-async def create_bot_record(token: str, bot_name: str, bot_type: str, uid: int, tariff_id):
+async def create_bot_record(token: str, bot_name: str, bot_type: str, uid: int, tariff_id, media_kind=None):
     """Yangi bot yozuvini yaratadi va ishga tushiradi (chat va Mini App uchun umumiy)."""
     bot_id = data["next_bot_id"]
     data["next_bot_id"] += 1
@@ -18903,6 +19022,12 @@ async def create_bot_record(token: str, bot_name: str, bot_type: str, uid: int, 
         "users": [],
         "stats": {},
     }
+    if bot_type == "kino_pro" and media_kind in MEDIA_KINDS:
+        _mk = MEDIA_KINDS[media_kind]
+        _rec = data["bots"][token]
+        _rec["media_kind"] = media_kind
+        _rec["welcome_text"] = _mk["welcome"]
+        _rec["categories"] = {uuid.uuid4().hex[:6]: c for c in _mk["cats"]}
     save_data()
     await start_child_bot(token, bot_type)
     return data["bots"][token]
@@ -18953,6 +19078,7 @@ async def api_create_info(request):
             "creation_price": cheapest_tariff_price("kino_pro") if (key == "kino_pro" and not full_admin) else 0,
         }
         if key in ("kino_pro",):
+            item["kinds"] = [{"key": kk, "name": f"{kv['emoji']} {kv['name']}", "short": kv["short"]} for kk, kv in MEDIA_KINDS.items()]
             item["monthly_price"] = None
             item["tariffs"] = [
                 {"id": tid, "name": t["name"], "price": t["price"], "limit": tariff_limit_text(t), "speed": t.get("speed", "")}
@@ -19032,7 +19158,9 @@ async def api_create_bot(request):
     bot_name = custom_name or me.first_name
 
     try:
-        info = await create_bot_record(token, bot_name, bot_type, uid, tariff_id)
+        _mk = str(body.get("media_kind") or "kino")
+        info = await create_bot_record(token, bot_name, bot_type, uid, tariff_id,
+                                       _mk if _mk in MEDIA_KINDS else "kino")
     except Exception as e:
         logging.error(f"Mini App orqali bot yaratishda xato: {e}")
         data["bots"].pop(token, None)
@@ -19050,7 +19178,7 @@ async def api_create_bot(request):
         "bot": {
             "name": info["name"],
             "username": me.username or "",
-            "type": BOT_TYPES.get(bot_type, bot_type),
+            "type": type_label_of(info),
             "skip_trial": bool(info.get("skip_trial")),
             "trial_enabled": bool(trial.get("enabled", True)),
             "trial_days": trial.get("days", TRIAL_DAYS),
@@ -19079,7 +19207,7 @@ async def api_mybots(request):
             tariff = get_bot_tariff(info)
             bots_list.append({
                 "name": info["name"],
-                "type": BOT_TYPES.get(info["type"], info["type"]),
+                "type": type_label_of(info),
                 "type_key": info["type"],
                 "active": is_active(info),
                 "tariff": tariff["name"],
@@ -20282,6 +20410,97 @@ async def kino_i18n_request_middleware(make_request, bot, method):
 # ================= /KINO TILI =================
 
 
+# ================= 🎬 MEDIA BOT TURI: tugma va matnlarni turga moslash =================
+# Ichki kod bir xil («kino» so'zlari bilan) qoladi; bot YUBORAYOTGAN tugma/matnlar tanlangan turga qarab o'zgaradi
+# (masalan Anime botda «🆕 Yangi kinolar» -> «🆕 Yangi animelar»). Bosilgan tugma matni qabul qilinganda asliga qaytariladi.
+_KIND_WORD_RE = re.compile(r"\b(kino|film)", re.I)
+
+
+def kind_label(text, kind: str):
+    k = MEDIA_KINDS.get(kind)
+    if not k or kind == "kino" or not isinstance(text, str) or not text:
+        return text
+    root = k["root"]
+
+    def rp(m):
+        w = m.group(0)
+        if len(w) > 1 and w.isupper():
+            return root.upper()
+        return root[0].upper() + root[1:] if w[0].isupper() else root
+    return _KIND_WORD_RE.sub(rp, text).replace("🎬", k["emoji"])
+
+
+def kind_text(text, kind: str):
+    """Faqat ma'lum tayyor matnlar almashtiriladi (admin yozgan tavsif/sarlavhalarga tegilmaydi)."""
+    k = MEDIA_KINDS.get(kind)
+    if not k or kind == "kino" or not isinstance(text, str):
+        return text
+    return text.replace("Film kodini yuboring, men uni topib beraman.",
+                        k["welcome"].split(" ", 1)[-1])
+
+
+def _kind_markup(info: dict, mk, kind: str):
+    try:
+        if isinstance(mk, ReplyKeyboardMarkup):
+            rev = info.setdefault("kind_rev", {})
+            rows, changed, dirty = [], False, False
+            for row in mk.keyboard:
+                nr = []
+                for b in row:
+                    nt = kind_label(b.text, kind)
+                    if nt != b.text:
+                        if rev.get(nt) != b.text and len(rev) < 400:
+                            rev[nt] = b.text
+                            dirty = True
+                        b = b.model_copy(update={"text": nt})
+                        changed = True
+                    nr.append(b)
+                rows.append(nr)
+            if dirty:
+                save_data()
+            return mk.model_copy(update={"keyboard": rows}) if changed else mk
+        if isinstance(mk, InlineKeyboardMarkup):
+            rows, changed = [], False
+            for row in mk.inline_keyboard:
+                nr = []
+                for b in row:
+                    nt = kind_label(b.text, kind)
+                    if nt != b.text:
+                        b = b.model_copy(update={"text": nt})
+                        changed = True
+                    nr.append(b)
+                rows.append(nr)
+            return InlineKeyboardMarkup(inline_keyboard=rows) if changed else mk
+    except Exception as e:
+        logging.info(f"Media tur tugmalari xatosi (e'tiborsiz): {e}")
+    return mk
+
+
+async def media_kind_request_middleware(make_request, bot, method):
+    try:
+        info = data["bots"].get(bot.token)
+        kind = media_kind_of(info) if info else "kino"
+        if info and kind != "kino" and info.get("language", "uz") == "uz":
+            upd = {}
+            mk = getattr(method, "reply_markup", None)
+            if mk is not None:
+                nm = _kind_markup(info, mk, kind)
+                if nm is not mk:
+                    upd["reply_markup"] = nm
+            for f in ("text", "caption"):
+                v = getattr(method, f, None)
+                if isinstance(v, str):
+                    nv = kind_text(v, kind)
+                    if nv != v:
+                        upd[f] = nv
+            if upd:
+                method = method.model_copy(update=upd)
+    except Exception as e:
+        logging.info(f"Media tur middleware xatosi (e'tiborsiz): {e}")
+    return await make_request(bot, method)
+# ================= /MEDIA BOT TURI =================
+
+
 # ================= 🎨 KINO BOT TUGMA RANGLARI =================
 # Har bir kino botning o'z sozlamasi: info["btn_colors"] (tugma matni -> rang), info["btn_default_color"]
 # (hamma tugmalar uchun umumiy rang) va info["btn_seen"] (bot yuborgan tugmalar ro'yxati).
@@ -20847,7 +21066,8 @@ async def kw_api_list(request):
             "views": counts.get(code, 0),
         })
     return web.json_response({
-        "bot": {"name": info.get("name", ""), "username": info.get("username", ""), "theme": info.get("theme", "")},
+        "bot": {"name": info.get("name", ""), "username": info.get("username", ""), "theme": info.get("theme", ""),
+                "emoji": MEDIA_KINDS[media_kind_of(info)]["emoji"], "root": MEDIA_KINDS[media_kind_of(info)]["root"]},
         "films": films,
     }, headers=_NO_STORE)
 
@@ -21737,8 +21957,8 @@ async def api_botstats(request):
     return web.json_response({
         "name": info.get("name", ""),
         "username": uname,
-        "emoji": _BOT_EMOJI.get(info.get("type"), "🤖"),
-        "type_label": BOT_TYPES.get(info.get("type"), info.get("type", "")),
+        "emoji": (MEDIA_KINDS[media_kind_of(info)]["emoji"] if info.get("type") == "kino_pro" else _BOT_EMOJI.get(info.get("type"), "🤖")),
+        "type_label": type_label_of(info),
         "tariff": get_bot_tariff(info).get("name", ""),
         "active": bool(is_active(info) and alive),
         "period": period,
@@ -22704,7 +22924,8 @@ async function openFilm(code) {
   var f = CUR, b = badge(f.access, f.series);
   var h = '<img class="cv" src="' + q2("/api/kw/cover", "&code=" + encodeURIComponent(f.code)) + '" alt=""><div class="bd"><h2>' + esc(f.title) + "</h2>" + (b ? '<span class="nt">' + b + "</span>" : "") +
     '<div class="ds">' + esc(f.desc) + '</div><div id="pl"></div>';
-  h += '<button class="btn" id="watch">&#127916; Filmni ko\'rish</button><div class="nt" id="wmsg"></div>';
+  var NOUN = (BOT.root && BOT.root !== "kino") ? (BOT.root.charAt(0).toUpperCase() + BOT.root.slice(1)) : "Film";
+  h += '<button class="btn" id="watch">' + (BOT.emoji || "&#127916;") + " " + esc(NOUN) + 'ni ko\'rish</button><div class="nt" id="wmsg"></div>';
   if (f.access !== "free") {
     h += '<div class="nt">' + (f.access === "vip" ? "🔒 Bu film faqat Premium foydalanuvchilar uchun." : "💰 Bu film pullik" + (f.price ? " (" + f.price + " so'm)" : "") + ".") + "</div>";
   } else {
@@ -22754,7 +22975,8 @@ document.getElementById("q").oninput = render;
   try {
     var r = await fetch(q2("/api/kw/list")); if (!r.ok) throw 0;
     var j = await r.json(); FILMS = j.films || []; BOT = j.bot || {};
-    if (BOT.name) { document.getElementById("ttl").textContent = "🎬 " + BOT.name; document.title = BOT.name; }
+    if (BOT.name) { document.getElementById("ttl").textContent = (BOT.emoji || "🎬") + " " + BOT.name; document.title = BOT.name; }
+    if (BOT.root) { var cr = BOT.root.charAt(0).toUpperCase() + BOT.root.slice(1); document.getElementById("q").placeholder = cr + " nomi bo'yicha qidirish..."; }
     applyTheme(BOT.theme);
   } catch (e) { document.getElementById("app").style.display = "block"; document.getElementById("app").innerHTML = '<div class="emp">Sahifani ochib bo\'lmadi</div>'; return; }
   render();
@@ -24051,7 +24273,7 @@ async def bp_overview(request):
     alive = bool(task) and not task.done()
     return web.json_response({
         "bot": {"name": info.get("name", ""), "type": info.get("type", ""),
-                "type_label": BOT_TYPES.get(info.get("type"), info.get("type", "")),
+                "type_label": type_label_of(info),
                 "active": bool(is_active(info) and alive), "until": _bp_until(info),
                 "theme": info.get("theme", "")},
         "users": len(info.get("users", [])),
