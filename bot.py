@@ -624,6 +624,7 @@ BOT_TYPES = {
     "stars": "⭐ Stars sotish bot",
     "openbudget": "🗳 Open Budget bot",
     "nakrutka": "🚀 Nakrutka bot",
+    "download": "📥 Yuklovchi bot",
 }
 
 # 🎬 MEDIA BOT turlari (ichki bot turi o'zgarmaydi: "kino_pro" — barcha kino funksiyalari saqlanadi).
@@ -689,6 +690,7 @@ DEFAULT_PRICES = {
     "stars": 120_000,
     "openbudget": 120_000,
     "nakrutka": 120_000,
+    "download": 120_000,
 }
 DEFAULT_MONTHLY_RATE = 0.2  # keyingi oylar uchun narxning 20 foizi (standart) — eskirgan, endi ishlatilmaydi
 
@@ -857,6 +859,16 @@ try:
     _km = data["bot_menu"].get("kino_pro")
     if _km and _km.get("name") in ("🎬 Kino BOT", "Kino BOT", "🎬 Kino bot"):
         _km["name"] = BOT_TYPES["kino_pro"]
+        save_data()
+except Exception:
+    pass
+
+
+# Yangi «Yuklovchi bot» turi bir marta avtomatik menyuga qo'shiladi (keyin admin xohlasa o'chirib qo'yadi)
+try:
+    if "download" not in data["bot_menu"] and not data.get("_dl_menu_added"):
+        data["bot_menu"]["download"] = {"name": BOT_TYPES["download"], "enabled": True}
+        data["_dl_menu_added"] = True
         save_data()
 except Exception:
     pass
@@ -1455,6 +1467,13 @@ def tariff_card_text(tid: str, t: dict) -> str:
 
 # Har bir bot turi uchun tavsif (bot yaratish oynasida ko'rsatiladi)
 BOT_DESCRIPTIONS = {
+    "download": (
+        "<i>TikTok, Instagram va YouTube havolasini yuboring — bot uni Telegram videosiga aylantirib beradi.</i>\n\n"
+        "🎧 MP3 yuklash, ♻️ kesh (bir xil video qayta yuklanmaydi), ⏱ kunlik limit va 💎 Premium.\n\n"
+        "📊 Admin panelda: majburiy obuna kanallari, 🏆 top obunachilar, 📝 videodagi matnlar, so'nggi yuklamalar, "
+        "xatolar jurnali, platformalarni yoqish/o'chirish, imzo, cookies, bloklash, texnik tanaffus.\n\n"
+        "🛠 Admin Mini app va xalq uchun Mini app ham bor."
+    ),
     "kino_pro": (
         "<i>Media bot: 🎬 Kino · 📺 Serial · 🎌 Anime · 🧸 Multfilm · 🎭 Drama · 🇮🇳 Hind kinolari · 🇹🇷 Turk seriallari · 🍿 Aralash — "
         "yaratishda o'zingizga kerakli turni tanlaysiz, bot shu nomga moslashadi.</i>\n\n"
@@ -17054,7 +17073,837 @@ def setup_nakrutka_bot(dp: Dispatcher, token: str):
 # ===================== /NAKRUTKA BOT =====================
 
 
+# ===================== 📥 YUKLOVCHI BOT (Downloader) =====================
+# TikTok / Instagram / YouTube havolasini yuborsa — Telegram videosiga aylantirib beradi (yt-dlp orqali).
+# Telegram Bot API cheklovi: bot 50 MB gacha fayl yubora oladi — kattasi pastroq sifatda qayta yuklanadi.
+DL_PLATFORMS = {"tiktok": "🎵 TikTok", "instagram": "📸 Instagram", "youtube": "▶️ YouTube"}
+DL_SEND_LIMIT = 49 * 1024 * 1024          # Telegram'ga yuboriladigan fayl chegarasi
+DL_SEM = None                              # bir vaqtda ko'pi bilan 2 ta yuklash (RAM/CPU asrash)
+DL_ACTIVE = set()                          # (token, uid) — foydalanuvchi bitta yuklash tugamaguncha ikkinchisini boshlamaydi
+DL_TASKS = set()                           # fon vazifalari (mini app)
+DL_MSG = {
+    "bad_url": "🔗 Faqat TikTok, Instagram yoki YouTube havolasini yuboring.",
+    "disabled": "⛔ Bu platformadan yuklash hozircha o'chirilgan.",
+    "maintenance": "🛠 Bot hozircha texnik tanaffusda. Birozdan so'ng urinib ko'ring.",
+    "busy": "⏳ Avvalgi yuklash tugamadi, biroz kuting.",
+    "too_long": "⏱ Video juda uzun (ruxsat etilgan davomiylikdan oshdi).",
+    "too_big": "📦 Video juda katta — Telegram 50 MB dan kattasini qabul qilmaydi.",
+    "login": "🔒 Bu video yopiq yoki kirish talab qilinadi. Ochiq (public) videoning havolasini yuboring.",
+    "failed": "❌ Videoni yuklab bo'lmadi. Havolani tekshirib, keyinroq qayta urinib ko'ring.",
+}
+
+
+class DlError(Exception):
+    def __init__(self, code: str, detail: str = ""):
+        super().__init__(code)
+        self.code = code
+        self.detail = detail
+
+
+def dl_init(info: dict):
+    info.setdefault("dl_platforms", {k: True for k in DL_PLATFORMS})
+    for k in DL_PLATFORMS:
+        info["dl_platforms"].setdefault(k, True)
+    info.setdefault("dl_daily_limit", 10)       # kuniga necha ta (0 = cheksiz); Premium/admin — cheksiz
+    info.setdefault("dl_max_minutes", 15)
+    info.setdefault("dl_mp3", True)
+    info.setdefault("dl_cache_on", True)
+    info.setdefault("dl_footer_on", True)
+    info.setdefault("dl_footer", "")
+    info.setdefault("dl_cookies", "")
+    info.setdefault("dl_log", [])
+    info.setdefault("dl_captions", [])
+    info.setdefault("dl_users", {})
+    info.setdefault("dl_errors", [])
+    info.setdefault("dl_cache", {})
+    info.setdefault("dl_cb", {})
+    info.setdefault("dl_daily", {"date": "", "u": {}})
+    info.setdefault("blocked_users", [])
+    info.setdefault("maintenance_mode", False)
+    for k in ("downloads", "mp3", "cache_hits", "errors"):
+        info["stats"].setdefault(k, 0)
+    info.setdefault("dl_plat_stats", {k: 0 for k in DL_PLATFORMS})
+
+
+def dl_platform(url: str):
+    from urllib.parse import urlparse
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return None
+    if host == "tiktok.com" or host.endswith(".tiktok.com"):
+        return "tiktok"
+    if host == "instagram.com" or host.endswith(".instagram.com") or host == "instagr.am":
+        return "instagram"
+    if host in ("youtu.be", "youtube.com") or host.endswith(".youtube.com"):
+        return "youtube"
+    return None
+
+
+def dl_extract_urls(text: str) -> list:
+    out = []
+    for m in re.finditer(r"https?://[^\s<>\"']+", text or ""):
+        u = m.group(0).rstrip(".,;:!?)]}»")
+        if u not in out:
+            out.append(u)
+    return out
+
+
+def dl_key(url: str, mode: str) -> str:
+    """Keshlash kaliti: kuzatuv parametrlari (?utm=...) e'tiborga olinmaydi."""
+    from urllib.parse import urlparse
+    p = urlparse(url)
+    if dl_platform(url) == "youtube":
+        m = re.search(r"(?:v=|youtu\.be/|shorts/|embed/)([\w-]{6,15})", url)
+        base = "yt:" + (m.group(1) if m else p.path)
+    else:
+        base = (p.hostname or "") + p.path.rstrip("/")
+    return hashlib.md5(f"{mode}|{base}".encode()).hexdigest()[:16]
+
+
+def dl_today() -> str:
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def dl_used_today(info: dict, uid) -> int:
+    d = info.setdefault("dl_daily", {"date": "", "u": {}})
+    if d.get("date") != dl_today():
+        d["date"] = dl_today()
+        d["u"] = {}
+    return int(d["u"].get(str(uid), 0))
+
+
+def dl_remaining(info: dict, uid):
+    """None — cheksiz (admin / Premium / limit yo'q). Aks holda bugun qolgan yuklashlar soni."""
+    if is_admin(info, uid) or is_premium_active(info, uid):
+        return None
+    lim = int(info.get("dl_daily_limit", 10) or 0)
+    if lim <= 0:
+        return None
+    return max(0, lim - dl_used_today(info, uid))
+
+
+def dl_footer_text(info: dict) -> str:
+    if not info.get("dl_footer_on", True):
+        return ""
+    f = (info.get("dl_footer") or "").strip()
+    if f:
+        return f
+    un = (info.get("username") or "").lstrip("@")
+    return f"📥 @{un}" if un else ""
+
+
+def dl_record(info: dict, uid, user, platform: str, url: str, meta: dict, mode: str, cached: bool):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    title = str((meta or {}).get("title") or "")[:100]
+    desc = str((meta or {}).get("desc") or "")[:400]
+    log = info.setdefault("dl_log", [])
+    log.append({"u": uid, "p": platform, "url": url[:200], "t": title, "at": now, "m": mode, "c": bool(cached)})
+    del log[:-300]
+    if desc and not cached:
+        caps = info.setdefault("dl_captions", [])
+        caps.append({"u": uid, "p": platform, "t": title, "d": desc, "at": now})
+        del caps[:-300]
+    users = info.setdefault("dl_users", {})
+    rec = users.setdefault(str(uid), {"n": 0, "name": "", "last": ""})
+    rec["n"] = int(rec.get("n", 0)) + 1
+    rec["last"] = now
+    if user is not None:
+        uname = user.get("username") if isinstance(user, dict) else getattr(user, "username", None)
+        full = user.get("first_name") if isinstance(user, dict) else getattr(user, "full_name", None)
+        rec["name"] = ("@" + uname) if uname else (full or rec.get("name", ""))
+    st = info["stats"]
+    st["downloads"] = st.get("downloads", 0) + 1
+    if mode == "audio":
+        st["mp3"] = st.get("mp3", 0) + 1
+    if cached:
+        st["cache_hits"] = st.get("cache_hits", 0) + 1
+    ps = info.setdefault("dl_plat_stats", {})
+    ps[platform] = ps.get(platform, 0) + 1
+    d = info.setdefault("dl_daily", {"date": "", "u": {}})
+    dl_used_today(info, uid)
+    d["u"][str(uid)] = d["u"].get(str(uid), 0) + 1
+
+
+def dl_error(info: dict, uid, platform, url: str, code: str, detail: str = ""):
+    errs = info.setdefault("dl_errors", [])
+    errs.append({"at": datetime.now().strftime("%Y-%m-%d %H:%M"), "u": uid, "p": platform or "", "url": url[:200],
+                 "code": code, "d": str(detail)[:200]})
+    del errs[:-100]
+    info["stats"]["errors"] = info["stats"].get("errors", 0) + 1
+
+
+def _dl_ffmpeg():
+    import shutil
+    loc = shutil.which("ffmpeg")
+    if loc:
+        return loc
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception:
+        return None
+
+
+def _dl_pick_file(tmpdir: str):
+    best, size = None, -1
+    for fn in os.listdir(tmpdir):
+        if fn.endswith((".part", ".json", ".txt", ".ytdl")):
+            continue
+        fp = os.path.join(tmpdir, fn)
+        try:
+            sz = os.path.getsize(fp)
+        except OSError:
+            continue
+        if sz > size:
+            best, size = fp, sz
+    return best, max(size, 0)
+
+
+def _dl_map_error(msg: str) -> str:
+    m = (msg or "").lower()
+    if any(x in m for x in ("login", "sign in", "private", "cookies", "age-restricted", "confirm you", "not a bot", "members-only", "authentication")):
+        return "login"
+    if "unsupported url" in m:
+        return "bad_url"
+    return "failed"
+
+
+def _dl_ytdlp_sync(url: str, mode: str, platform: str, tmpdir: str, cookies: str, max_minutes: int, low: bool):
+    import yt_dlp
+    if mode == "audio":
+        fmt = "bestaudio[ext=m4a]/bestaudio/best"
+    elif low:
+        fmt = "worst[ext=mp4]/best[height<=360][ext=mp4]/best[height<=360]/worst"
+    else:
+        fmt = ("best[ext=mp4][height<=720]/bv*[height<=720][ext=mp4]+ba[ext=m4a]/"
+               "best[height<=720]/best[ext=mp4]/best")
+    opts = {
+        "outtmpl": os.path.join(tmpdir, "%(id).60s.%(ext)s"),
+        "quiet": True, "no_warnings": True, "noplaylist": True, "format": fmt,
+        "merge_output_format": "mp4", "socket_timeout": 25, "retries": 2, "fragment_retries": 2,
+        "restrictfilenames": True, "max_filesize": 150 * 1024 * 1024,
+        "match_filter": yt_dlp.utils.match_filter_func(f"duration <=? {int(max_minutes) * 60}"),
+    }
+    ff = _dl_ffmpeg()
+    if ff:
+        opts["ffmpeg_location"] = ff
+        if mode == "audio":
+            opts["postprocessors"] = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
+    ck = (cookies or "").strip() or os.getenv("DL_COOKIES", "").strip()
+    if ck:
+        cf = os.path.join(tmpdir, "cookies.txt")
+        with open(cf, "w", encoding="utf-8") as fh:
+            fh.write(ck if ck.startswith("#") else "# Netscape HTTP Cookie File\n" + ck)
+        opts["cookiefile"] = cf
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            res = ydl.extract_info(url, download=True)
+    except Exception as e:
+        raise DlError(_dl_map_error(str(e)), str(e))
+    if not res:
+        raise DlError("too_long")
+    if "entries" in res and res["entries"]:
+        res = next((r for r in res["entries"] if r), res)
+    fp, size = _dl_pick_file(tmpdir)
+    if not fp:
+        raise DlError("failed", "fayl topilmadi")
+    return {"path": fp, "size": size, "title": res.get("title") or "", "desc": res.get("description") or res.get("title") or "",
+            "duration": res.get("duration"), "uploader": res.get("uploader") or res.get("channel") or "",
+            "width": res.get("width"), "height": res.get("height"), "audio": fp.lower().endswith((".mp3", ".m4a", ".opus", ".ogg"))}
+
+
+async def _dl_tikwm(url: str, tmpdir: str):
+    """TikTok uchun zaxira yo'l (yt-dlp ishlamasa): watermarksiz video."""
+    async with httpx.AsyncClient(timeout=40, follow_redirects=True) as c:
+        r = await c.get("https://www.tikwm.com/api/", params={"url": url, "hd": 0})
+        d = (r.json() or {}).get("data") or {}
+        play = d.get("play")
+        if not play:
+            raise DlError("failed", "tikwm: video yo'q")
+        if play.startswith("/"):
+            play = "https://www.tikwm.com" + play
+        fp = os.path.join(tmpdir, "tt.mp4")
+        size = 0
+        async with c.stream("GET", play) as resp:
+            if resp.status_code != 200:
+                raise DlError("failed", f"tikwm HTTP {resp.status_code}")
+            with open(fp, "wb") as fh:
+                async for chunk in resp.aiter_bytes(65536):
+                    size += len(chunk)
+                    if size > 150 * 1024 * 1024:
+                        raise DlError("too_big")
+                    fh.write(chunk)
+    return {"path": fp, "size": size, "title": d.get("title") or "", "desc": d.get("title") or "",
+            "duration": d.get("duration"), "uploader": (d.get("author") or {}).get("nickname") or "",
+            "width": None, "height": None, "audio": False}
+
+
+async def dl_fetch(info: dict, url: str, mode: str, platform: str, tmpdir: str) -> dict:
+    """Faylni yuklab, {path,size,title,desc,...} qaytaradi. Xatoda DlError."""
+    maxm = int(info.get("dl_max_minutes", 15) or 15)
+    cookies = info.get("dl_cookies", "")
+    meta = None
+    try:
+        meta = await asyncio.to_thread(_dl_ytdlp_sync, url, mode, platform, tmpdir, cookies, maxm, False)
+        if mode == "video" and meta["size"] > DL_SEND_LIMIT:
+            for fn in os.listdir(tmpdir):
+                try:
+                    os.remove(os.path.join(tmpdir, fn))
+                except OSError:
+                    pass
+            meta = await asyncio.to_thread(_dl_ytdlp_sync, url, mode, platform, tmpdir, cookies, maxm, True)
+    except DlError as e:
+        if platform == "tiktok" and mode == "video" and e.code in ("failed", "login"):
+            try:
+                meta = await _dl_tikwm(url, tmpdir)
+            except DlError:
+                raise e
+            except Exception:
+                raise e
+        else:
+            raise
+    except ImportError:
+        raise DlError("failed", "yt-dlp o'rnatilmagan (requirements.txt ga yt-dlp qo'shing)")
+    if meta["size"] > DL_SEND_LIMIT:
+        raise DlError("too_big")
+    return meta
+
+
+async def dl_process(bot, info: dict, token: str, uid: int, chat_id: int, url: str, mode: str = "video", user=None) -> str:
+    """Bitta yuklash: tekshiruvlar -> (kesh | yuklash) -> Telegram'ga yuborish -> statistika.
+    Xatoda foydalanuvchiga o'zi xabar yuboradi. Natija kodi: ok | cache | limit | + DL_MSG kalitlari."""
+    global DL_SEM
+    import tempfile
+    import shutil
+
+    async def say(text, **kw):
+        try:
+            await bot.send_message(chat_id, text, **kw)
+        except Exception:
+            pass
+
+    platform = dl_platform(url)
+    if not platform:
+        await say(DL_MSG["bad_url"])
+        return "bad_url"
+    if info.get("maintenance_mode") and not is_admin(info, uid):
+        await say(DL_MSG["maintenance"])
+        return "maintenance"
+    if not info.get("dl_platforms", {}).get(platform, True):
+        await say(DL_MSG["disabled"])
+        return "disabled"
+    rem = dl_remaining(info, uid)
+    if rem == 0:
+        lim = int(info.get("dl_daily_limit", 10) or 0)
+        extra = "\n💎 Cheksiz yuklash uchun Premium sotib oling (💎 Premium)." if info.get("premium_tariffs") else ""
+        await say(f"⏱ Bugungi limit tugadi ({lim} ta). Ertaga qayta urinib ko'ring.{extra}")
+        return "limit"
+    akey = (token, uid)
+    if akey in DL_ACTIVE:
+        await say(DL_MSG["busy"])
+        return "busy"
+    if DL_SEM is None:
+        DL_SEM = asyncio.Semaphore(2)
+    DL_ACTIVE.add(akey)
+    status = None
+    tmpdir = None
+    try:
+        key = dl_key(url, mode)
+        cached = (info.get("dl_cache") or {}).get(key) if info.get("dl_cache_on", True) else None
+        if cached:
+            try:
+                kb = _dl_kb(info, url) if mode == "video" else None
+                if mode == "audio":
+                    await bot.send_audio(chat_id, cached["fid"], caption=cached.get("cap") or None)
+                else:
+                    await bot.send_video(chat_id, cached["fid"], caption=cached.get("cap") or None, reply_markup=kb)
+                dl_record(info, uid, user, platform, url, {"title": cached.get("title", "")}, mode, True)
+                save_data()
+                return "cache"
+            except Exception:
+                info["dl_cache"].pop(key, None)       # eskirgan file_id — qaytadan yuklaymiz
+        try:
+            status = await bot.send_message(chat_id, "⏳ Yuklanmoqda..." if mode == "video" else "🎧 MP3 tayyorlanmoqda...")
+        except Exception:
+            status = None
+        tmpdir = tempfile.mkdtemp(prefix="dl_")
+        async with DL_SEM:
+            meta = await dl_fetch(info, url, mode, platform, tmpdir)
+        title = html_escape(str(meta.get("title") or "")[:180])
+        foot = html_escape(dl_footer_text(info))
+        cap = (title + ("\n\n" if title and foot else "") + foot).strip()[:1000]
+        sent = None
+        if mode == "audio" or meta.get("audio"):
+            sent = await bot.send_audio(chat_id, FSInputFile(meta["path"]), caption=cap or None, title=str(meta.get("title") or "")[:60] or None,
+                                        performer=str(meta.get("uploader") or "")[:60] or None,
+                                        duration=int(meta["duration"]) if meta.get("duration") else None, request_timeout=300)
+            fid = sent.audio.file_id if sent and sent.audio else None
+        else:
+            sent = await bot.send_video(chat_id, FSInputFile(meta["path"]), caption=cap or None, supports_streaming=True,
+                                        duration=int(meta["duration"]) if meta.get("duration") else None,
+                                        width=meta.get("width") or None, height=meta.get("height") or None,
+                                        reply_markup=_dl_kb(info, url), request_timeout=300)
+            fid = sent.video.file_id if sent and sent.video else None
+        if fid and info.get("dl_cache_on", True):
+            cache = info.setdefault("dl_cache", {})
+            cache[key] = {"fid": fid, "cap": cap, "title": str(meta.get("title") or "")[:100]}
+            while len(cache) > 400:
+                cache.pop(next(iter(cache)))
+        dl_record(info, uid, user, platform, url, meta, mode, False)
+        save_data()
+        return "ok"
+    except DlError as e:
+        dl_error(info, uid, platform, url, e.code, e.detail)
+        save_data()
+        await say(DL_MSG.get(e.code, DL_MSG["failed"]))
+        return e.code
+    except Exception as e:
+        logging.error(f"Yuklovchi bot xatosi ({url}): {e}")
+        dl_error(info, uid, platform, url, "failed", str(e))
+        save_data()
+        await say(DL_MSG["failed"])
+        return "failed"
+    finally:
+        DL_ACTIVE.discard(akey)
+        if status is not None:
+            try:
+                await bot.delete_message(chat_id, status.message_id)
+            except Exception:
+                pass
+        if tmpdir:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def _dl_kb(info: dict, url: str):
+    """Video tagidagi «🎧 MP3 yuklash» tugmasi (admin o'chirib qo'yishi mumkin)."""
+    if not info.get("dl_mp3", True):
+        return None
+    cb = info.setdefault("dl_cb", {})
+    cid = hashlib.md5(url.encode()).hexdigest()[:10]
+    cb[cid] = url
+    while len(cb) > 300:
+        cb.pop(next(iter(cb)))
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🎧 MP3 yuklash", callback_data=f"dlmp3_{cid}")]])
+
+
+class DlAdmin(StatesGroup):
+    broadcast = State()
+    limit = State()
+    footer = State()
+    block = State()
+    maxmin = State()
+    cookies = State()
+
+
+def setup_download_bot(dp: Dispatcher, token: str):
+    info = data["bots"][token]
+    admin_id = info["admin_id"]
+    dl_init(info)
+    setup_subscription_handlers(dp, token, admin_id)
+    setup_admin_management(dp, token)
+    setup_premium_system(dp, token, admin_id)
+    setup_global_buttons_handler(dp, lambda m, s: dstart(m))
+    setup_generic_panel(dp, token)
+
+    def is_blocked(uid: int) -> bool:
+        return uid in info.get("blocked_users", [])
+
+    def staff(message_or_cb) -> bool:
+        return is_admin(info, message_or_cb.from_user.id)
+
+    def admin_kb():
+        return ReplyKeyboardMarkup(keyboard=bp_panel_row(info) + [
+            [KeyboardButton(text="📊 Statistika"), KeyboardButton(text="📢 Xabar yuborish")],
+            [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
+            [KeyboardButton(text="🏆 Top obunachilar"), KeyboardButton(text="📝 Videodagi matnlar")],
+            [KeyboardButton(text="📥 So'nggi yuklamalar"), KeyboardButton(text="⚠️ Xatolar jurnali")],
+            [KeyboardButton(text="🌐 Platformalar"), KeyboardButton(text="⏱ Kunlik limit")],
+            [KeyboardButton(text="🔖 Imzo"), KeyboardButton(text="🍪 Cookies")],
+            [KeyboardButton(text="🚫 Bloklash"), KeyboardButton(text="⚙️ Sozlamalar")],
+            [KeyboardButton(text="💳 To'lov tizimlar"), KeyboardButton(text="💎 Premium")],
+        ] + get_global_button_rows(), resize_keyboard=True)
+
+    def user_kb():
+        return ReplyKeyboardMarkup(keyboard=bp_pub_row(info) + [
+            [KeyboardButton(text="📥 Mening yuklamalarim"), KeyboardButton(text="ℹ️ Yordam")],
+        ] + get_global_button_rows(), resize_keyboard=True)
+
+    def platforms_line() -> str:
+        return " · ".join(n for k, n in DL_PLATFORMS.items() if info["dl_platforms"].get(k, True)) or "—"
+
+    @dp.message(Command("start"))
+    async def dstart(message: Message, state: FSMContext = None):
+        uid = message.from_user.id
+        if uid not in info["users"]:
+            info["users"].append(uid)
+            save_data()
+        if state is not None:
+            await state.clear()
+        if not await check_active(message, info, admin_id):
+            return
+        if is_admin(info, uid):
+            await message.answer("📥 <b>Yuklovchi bot boshqaruvi</b>\n\nPastdagi menyudan foydalaning 👇", reply_markup=admin_kb())
+            return
+        if is_blocked(uid):
+            await message.answer("🚫 Siz ushbu botdan foydalanish huquqidan mahrum qilingansiz.")
+            return
+        if not await require_subscription(message, info, admin_id):
+            return
+        await message.answer(
+            f"👋 Salom! Menga havola yuboring — videoni yuklab beraman.\n\n{platforms_line()}\n\n"
+            "🔗 Havolani shu yerga tashlang 👇", reply_markup=user_kb())
+
+    @dp.message(F.text == "ℹ️ Yordam")
+    async def dl_help(message: Message):
+        await message.answer(
+            "ℹ️ <b>Yordam</b>\n\n1️⃣ TikTok, Instagram yoki YouTube'dan video havolasini nusxalang.\n"
+            "2️⃣ Uni shu botga yuboring.\n3️⃣ Video Telegramga yuklab beriladi.\n\n"
+            "🎧 Video tagidagi tugma orqali MP3 ham olishingiz mumkin.\n"
+            f"⏱ Kunlik limit: {'cheksiz' if not int(info.get('dl_daily_limit', 10) or 0) else str(info.get('dl_daily_limit')) + ' ta'}")
+
+    @dp.message(F.text == "📥 Mening yuklamalarim")
+    async def dl_mine(message: Message):
+        uid = message.from_user.id
+        rec = info["dl_users"].get(str(uid), {})
+        rem = dl_remaining(info, uid)
+        rows = [e for e in reversed(info["dl_log"]) if e.get("u") == uid][:8]
+        txt = f"📥 <b>Mening yuklamalarim</b>\n\nJami: <b>{rec.get('n', 0)}</b> ta\n"
+        txt += "Bugun qolgan: " + ("<b>cheksiz</b>" if rem is None else f"<b>{rem}</b> ta") + "\n\n"
+        txt += "\n".join(f"• {DL_PLATFORMS.get(e['p'], e['p'])} — {html_escape(e.get('t') or '(nomsiz)')[:50]} <i>{e['at']}</i>" for e in rows) or "Hali yuklamagansiz."
+        await message.answer(txt)
+
+    # ---------- Admin: statistika va ro'yxatlar ----------
+    @dp.message(Command("stats"))
+    @dp.message(F.text == "📊 Statistika")
+    async def dl_stats(message: Message):
+        if not staff(message):
+            return
+        st = info["stats"]
+        today = dl_today()
+        today_n = sum(1 for e in info["dl_log"] if e.get("at", "").startswith(today))
+        ps = info.get("dl_plat_stats", {})
+        await message.answer(
+            "📊 <b>Statistika</b>\n\n"
+            f"👥 Foydalanuvchilar: <b>{len(info['users'])}</b>\n"
+            f"📥 Yuklamalar: <b>{st.get('downloads', 0)}</b> (bugun: {today_n})\n"
+            + "\n".join(f"   {DL_PLATFORMS[k]}: {ps.get(k, 0)}" for k in DL_PLATFORMS) + "\n"
+            f"🎧 MP3: {st.get('mp3', 0)}\n♻️ Keshdan: {st.get('cache_hits', 0)}\n⚠️ Xatolar: {st.get('errors', 0)}\n"
+            f"🚫 Bloklanganlar: {len(info.get('blocked_users', []))}")
+
+    @dp.message(F.text == "🏆 Top obunachilar")
+    async def dl_top(message: Message):
+        if not staff(message):
+            return
+        rows = sorted(info["dl_users"].items(), key=lambda kv: -int(kv[1].get("n", 0)))[:15]
+        if not rows:
+            await message.answer("Hali yuklashlar yo'q.")
+            return
+        medals = ["🥇", "🥈", "🥉"]
+        lines = [f"{medals[i] if i < 3 else str(i + 1) + '.'} {html_escape(r.get('name') or 'Foydalanuvchi')} (<code>{uid}</code>) — <b>{r.get('n', 0)}</b> ta"
+                 for i, (uid, r) in enumerate(rows)]
+        await message.answer("🏆 <b>Top obunachilar</b> (eng ko'p yuklaganlar)\n\n" + "\n".join(lines))
+
+    @dp.message(Command("matn"))
+    @dp.message(F.text == "📝 Videodagi matnlar")
+    async def dl_captions(message: Message):
+        if not staff(message):
+            return
+        parts = (message.text or "").split(maxsplit=1)
+        needle = parts[1].strip().lower() if message.text.startswith("/matn") and len(parts) > 1 else ""
+        rows = [c for c in reversed(info["dl_captions"]) if not needle or needle in (c.get("d", "") + " " + c.get("t", "")).lower()][:10]
+        if not rows:
+            await message.answer("Matn topilmadi." if needle else "Hali videolar yuklanmagan.")
+            return
+        txt = "📝 <b>Videodagi matnlar</b>" + (f" — «{html_escape(needle)}»" if needle else "") + "\n\n"
+        txt += "\n\n".join(f"{DL_PLATFORMS.get(c['p'], c['p'])} <i>{c['at']}</i>\n{html_escape(c.get('d', '')[:220])}" for c in rows)
+        txt += "\n\n🔎 Qidirish: <code>/matn so'z</code>"
+        await message.answer(txt[:4000])
+
+    @dp.message(F.text == "📥 So'nggi yuklamalar")
+    async def dl_recent(message: Message):
+        if not staff(message):
+            return
+        rows = list(reversed(info["dl_log"]))[:15]
+        if not rows:
+            await message.answer("Hali yuklashlar yo'q.")
+            return
+        await message.answer("📥 <b>So'nggi yuklamalar</b>\n\n" + "\n".join(
+            f"{DL_PLATFORMS.get(e['p'], e['p'])}{' 🎧' if e.get('m') == 'audio' else ''}{' ♻️' if e.get('c') else ''} — "
+            f"{html_escape(e.get('t') or '(nomsiz)')[:40]} · <code>{e['u']}</code> · <i>{e['at']}</i>" for e in rows))
+
+    @dp.message(F.text == "⚠️ Xatolar jurnali")
+    async def dl_errors(message: Message):
+        if not staff(message):
+            return
+        rows = list(reversed(info["dl_errors"]))[:10]
+        if not rows:
+            await message.answer("✅ Xatolar yo'q.")
+            return
+        await message.answer("⚠️ <b>Xatolar jurnali</b>\n\n" + "\n\n".join(
+            f"<i>{e['at']}</i> · {DL_PLATFORMS.get(e['p'], e['p'] or '—')} · <b>{e['code']}</b>\n{html_escape(e.get('d', '')[:150])}" for e in rows)[:4000])
+
+    # ---------- Admin: platformalar / sozlamalar ----------
+    def platforms_kb():
+        rows = [[InlineKeyboardButton(text=("✅ " if info["dl_platforms"].get(k, True) else "⛔ ") + n, callback_data=f"dlp_{k}")]
+                for k, n in DL_PLATFORMS.items()]
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    @dp.message(F.text == "🌐 Platformalar")
+    async def dl_platforms_menu(message: Message):
+        if staff(message):
+            await message.answer("🌐 <b>Platformalar</b>\n\nYoqish / o'chirish uchun bosing:", reply_markup=platforms_kb())
+
+    @dp.callback_query(F.data.startswith("dlp_"))
+    async def dl_platform_toggle(callback: CallbackQuery):
+        if not staff(callback):
+            return
+        k = callback.data.split("_", 1)[1]
+        if k in DL_PLATFORMS:
+            info["dl_platforms"][k] = not info["dl_platforms"].get(k, True)
+            save_data()
+            await callback.message.edit_reply_markup(reply_markup=platforms_kb())
+        await callback.answer()
+
+    def settings_kb():
+        def onoff(v):
+            return "✅" if v else "⛔"
+        return InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"{onoff(info.get('dl_mp3', True))} 🎧 MP3 tugmasi", callback_data="dls_mp3")],
+            [InlineKeyboardButton(text=f"{onoff(info.get('dl_cache_on', True))} ♻️ Kesh (qayta yuklamaslik)", callback_data="dls_cache")],
+            [InlineKeyboardButton(text=f"{onoff(info.get('dl_footer_on', True))} 🔖 Videoga imzo", callback_data="dls_footer")],
+            [InlineKeyboardButton(text=f"{onoff(info.get('maintenance_mode'))} 🛠 Texnik tanaffus", callback_data="dls_maint")],
+            [InlineKeyboardButton(text=f"⏳ Maks. davomiylik: {info.get('dl_max_minutes', 15)} daqiqa", callback_data="dls_maxmin")],
+            [InlineKeyboardButton(text=f"🧹 Keshni tozalash ({len(info.get('dl_cache', {}))})", callback_data="dls_clear")],
+        ])
+
+    @dp.message(F.text == "⚙️ Sozlamalar")
+    async def dl_settings(message: Message):
+        if staff(message):
+            await message.answer("⚙️ <b>Sozlamalar</b>", reply_markup=settings_kb())
+
+    @dp.callback_query(F.data.startswith("dls_"))
+    async def dl_settings_cb(callback: CallbackQuery, state: FSMContext):
+        if not staff(callback):
+            return
+        a = callback.data.split("_", 1)[1]
+        flip = {"mp3": "dl_mp3", "cache": "dl_cache_on", "footer": "dl_footer_on", "maint": "maintenance_mode"}
+        if a in flip:
+            info[flip[a]] = not info.get(flip[a], a != "maint")
+            save_data()
+            await callback.message.edit_reply_markup(reply_markup=settings_kb())
+        elif a == "clear":
+            info["dl_cache"] = {}
+            save_data()
+            await callback.message.edit_reply_markup(reply_markup=settings_kb())
+            await callback.answer("🧹 Kesh tozalandi")
+            return
+        elif a == "maxmin":
+            await state.set_state(DlAdmin.maxmin)
+            await callback.message.answer("⏳ Video maksimal davomiyligini daqiqada kiriting (1–120):")
+        await callback.answer()
+
+    @dp.message(DlAdmin.maxmin)
+    async def dl_maxmin_save(message: Message, state: FSMContext):
+        if not staff(message):
+            return
+        try:
+            v = int((message.text or "").strip())
+            if not 1 <= v <= 120:
+                raise ValueError
+        except ValueError:
+            await message.answer("❌ 1 dan 120 gacha son kiriting.")
+            return
+        info["dl_max_minutes"] = v
+        save_data()
+        await state.clear()
+        await message.answer(f"✅ Maksimal davomiylik: {v} daqiqa.", reply_markup=admin_kb())
+
+    # ---------- Admin: kunlik limit / imzo / bloklash / cookies / xabar ----------
+    @dp.message(F.text == "⏱ Kunlik limit")
+    async def dl_limit_ask(message: Message, state: FSMContext):
+        if not staff(message):
+            return
+        cur = int(info.get("dl_daily_limit", 10) or 0)
+        await state.set_state(DlAdmin.limit)
+        await message.answer(f"⏱ Hozirgi limit: <b>{'cheksiz' if not cur else str(cur) + ' ta/kun'}</b>\n\nYangi limitni kiriting (0 — cheksiz). Premium foydalanuvchilarga limit qo'llanmaydi:")
+
+    @dp.message(DlAdmin.limit)
+    async def dl_limit_save(message: Message, state: FSMContext):
+        if not staff(message):
+            return
+        try:
+            v = int((message.text or "").strip())
+            if not 0 <= v <= 10000:
+                raise ValueError
+        except ValueError:
+            await message.answer("❌ 0 dan 10000 gacha butun son kiriting.")
+            return
+        info["dl_daily_limit"] = v
+        save_data()
+        await state.clear()
+        await message.answer(f"✅ Kunlik limit: {'cheksiz' if not v else str(v) + ' ta'}.", reply_markup=admin_kb())
+
+    @dp.message(F.text == "🔖 Imzo")
+    async def dl_footer_ask(message: Message, state: FSMContext):
+        if not staff(message):
+            return
+        await state.set_state(DlAdmin.footer)
+        await message.answer(f"🔖 Har bir video tagiga qo'shiladigan imzo:\n\n<code>{html_escape(dl_footer_text(info) or '—')}</code>\n\n"
+                             "Yangi matnni yuboring (masalan: 📥 @mening_botim). Standartga qaytarish uchun <code>-</code> yuboring:")
+
+    @dp.message(DlAdmin.footer)
+    async def dl_footer_save(message: Message, state: FSMContext):
+        if not staff(message):
+            return
+        t = (message.text or "").strip()
+        info["dl_footer"] = "" if t == "-" else t[:200]
+        save_data()
+        await state.clear()
+        await message.answer("✅ Imzo saqlandi.", reply_markup=admin_kb())
+
+    @dp.message(F.text == "🚫 Bloklash")
+    async def dl_block_ask(message: Message, state: FSMContext):
+        if not staff(message):
+            return
+        await state.set_state(DlAdmin.block)
+        bl = info.get("blocked_users", [])
+        await message.answer("🚫 Bloklash / blokdan chiqarish uchun foydalanuvchi ID sini yuboring.\n\n"
+                             f"Bloklanganlar: {', '.join(str(x) for x in bl[-20:]) or 'yo`q'}")
+
+    @dp.message(DlAdmin.block)
+    async def dl_block_save(message: Message, state: FSMContext):
+        if not staff(message):
+            return
+        try:
+            tid = int((message.text or "").strip())
+        except ValueError:
+            await message.answer("❌ Faqat ID (raqam) yuboring.")
+            return
+        bl = info.setdefault("blocked_users", [])
+        if tid in bl:
+            bl.remove(tid)
+            res = f"✅ {tid} blokdan chiqarildi."
+        elif is_admin(info, tid):
+            res = "❌ Adminni bloklab bo'lmaydi."
+        else:
+            bl.append(tid)
+            res = f"🚫 {tid} bloklandi."
+        save_data()
+        await state.clear()
+        await message.answer(res, reply_markup=admin_kb())
+
+    @dp.message(F.text == "🍪 Cookies")
+    async def dl_cookies_ask(message: Message, state: FSMContext):
+        if not staff(message):
+            return
+        has = bool((info.get("dl_cookies") or "").strip() or os.getenv("DL_COOKIES", "").strip())
+        await state.set_state(DlAdmin.cookies)
+        await message.answer(
+            f"🍪 <b>Cookies</b>: {'✅ o`rnatilgan' if has else '⛔ yo`q'}\n\n"
+            "Instagram va ba'zi YouTube videolari kirish (login) talab qiladi. Brauzerdan <b>cookies.txt</b> (Netscape formatida) "
+            "faylini eksport qilib, shu yerga <b>fayl</b> sifatida yuboring. O'chirish uchun <code>-</code> yuboring.\n\n"
+            "⚠️ Cookies — shaxsiy kirish ma'lumoti. Asosiy hisobingiz o'rniga alohida (ikkinchi) hisobdan foydalaning.")
+
+    @dp.message(DlAdmin.cookies, F.document)
+    async def dl_cookies_file(message: Message, state: FSMContext):
+        if not staff(message):
+            return
+        doc = message.document
+        if (doc.file_size or 0) > 300 * 1024:
+            await message.answer("❌ Fayl juda katta (300 KB gacha).")
+            return
+        buf = BytesIO()
+        await message.bot.download(doc, destination=buf)
+        txt = buf.getvalue().decode("utf-8", errors="ignore")
+        if "\t" not in txt:
+            await message.answer("❌ Bu Netscape formatidagi cookies.txt ga o'xshamaydi.")
+            return
+        info["dl_cookies"] = txt
+        save_data()
+        await state.clear()
+        await message.answer("✅ Cookies saqlandi. Instagram/YouTube'ni sinab ko'ring.", reply_markup=admin_kb())
+
+    @dp.message(DlAdmin.cookies, F.text)
+    async def dl_cookies_text(message: Message, state: FSMContext):
+        if not staff(message):
+            return
+        if (message.text or "").strip() == "-":
+            info["dl_cookies"] = ""
+            save_data()
+            await state.clear()
+            await message.answer("🗑 Cookies o'chirildi.", reply_markup=admin_kb())
+        else:
+            await message.answer("📎 cookies.txt faylini <b>fayl</b> sifatida yuboring yoki o'chirish uchun <code>-</code> yozing.")
+
+    @dp.message(F.text == "📢 Xabar yuborish")
+    async def dl_bc_ask(message: Message, state: FSMContext):
+        if not staff(message):
+            return
+        await state.set_state(DlAdmin.broadcast)
+        await message.answer(f"📢 Xabar matnini yuboring ({len(info['users'])} kishiga boradi). Bekor qilish: /start")
+
+    @dp.message(DlAdmin.broadcast, F.text)
+    async def dl_bc_send(message: Message, state: FSMContext):
+        if not staff(message):
+            return
+        text = message.text
+        await state.clear()
+        sent = failed = 0
+        for u in list(info["users"]):
+            try:
+                await message.bot.send_message(u, text)
+                sent += 1
+            except Exception:
+                failed += 1
+            await asyncio.sleep(0.05)
+        await message.answer(f"✅ Yuborildi: {sent}\n❌ Yetmadi: {failed}", reply_markup=admin_kb())
+
+    # ---------- MP3 tugmasi ----------
+    @dp.callback_query(F.data.startswith("dlmp3_"))
+    async def dl_mp3_cb(callback: CallbackQuery):
+        uid = callback.from_user.id
+        if not info.get("dl_mp3", True):
+            await callback.answer("MP3 hozircha o'chirilgan", show_alert=True)
+            return
+        if is_blocked(uid):
+            await callback.answer("🚫 Taqiqlangan", show_alert=True)
+            return
+        if not await check_active(callback, info, admin_id) or not await require_subscription(callback, info, admin_id):
+            return
+        url = info.get("dl_cb", {}).get(callback.data.split("_", 1)[1])
+        if not url:
+            await callback.answer("Havola eskirgan — videoni qayta yuboring", show_alert=True)
+            return
+        await callback.answer("🎧 Tayyorlanmoqda...")
+        await dl_process(callback.bot, info, token, uid, callback.message.chat.id, url, "audio", user=callback.from_user)
+
+    # ---------- Havola (asosiy ish) — eng oxirida ----------
+    @dp.message(F.text)
+    async def dl_link(message: Message):
+        uid = message.from_user.id
+        if uid not in info["users"]:
+            info["users"].append(uid)
+            save_data()
+        if not await check_active(message, info, admin_id):
+            return
+        if is_blocked(uid) and not is_admin(info, uid):
+            await message.answer("🚫 Siz ushbu botdan foydalanish huquqidan mahrum qilingansiz.")
+            return
+        if not await require_subscription(message, info, admin_id):
+            return
+        urls = dl_extract_urls(message.text)
+        if not urls:
+            await message.answer("🔗 TikTok, Instagram yoki YouTube havolasini yuboring.")
+            return
+        await dl_process(message.bot, info, token, uid, message.chat.id, urls[0], "video", user=message.from_user)
+
+
+# ===================== /YUKLOVCHI BOT =====================
+
+
 SETUP_FUNCTIONS = {
+    "download": setup_download_bot,
     "nakrutka": setup_nakrutka_bot,
     "openbudget": setup_openbudget_bot,
     "kino_pro": setup_kino_bot,
@@ -20057,6 +20906,7 @@ async def start_web_server():
     app.router.add_post("/api/pub/ai/ask", pub_ai_ask)
     app.router.add_post("/api/pub/ai/reset", pub_ai_reset)
     app.router.add_post("/api/pub/taxi/order", pub_taxi_order)
+    app.router.add_post("/api/pub/dl/send", pub_dl_send)
     app.router.add_get("/api/pub/ob/list", pub_ob_list)
     app.router.add_get("/api/pub/ob/project", pub_ob_project)
     app.router.add_post("/api/pub/ob/toggle", pub_ob_toggle)
@@ -20096,6 +20946,9 @@ async def start_web_server():
     app.router.add_post("/api/bp/rate/save", bp_rate_save)
     app.router.add_post("/api/bp/rate/delete", bp_rate_delete)
     app.router.add_get("/api/bp/taxi/orders", bp_taxi_orders)
+    app.router.add_get("/api/bp/dl/data", bp_dl_data)
+    app.router.add_post("/api/bp/dl/settings", bp_dl_settings)
+    app.router.add_post("/api/bp/dl/block", bp_dl_block)
     app.router.add_get("/api/kino/users", kino_api_users)
     app.router.add_post("/api/kino/user/block", kino_api_user_block)
     app.router.add_get("/api/kino/payments", kino_api_payments)
@@ -21861,7 +22714,7 @@ class BotMetricsMiddleware(BaseMiddleware):
         return result
 
 
-_BOT_EMOJI = {"openbudget": "🗳", "kino_pro": "🎬", "shop": "🛍", "ai": "🤖", "taxi": "🚕", "nakrutka": "🚀"}
+_BOT_EMOJI = {"download": "📥", "openbudget": "🗳", "kino_pro": "🎬", "shop": "🛍", "ai": "🤖", "taxi": "🚕", "nakrutka": "🚀"}
 _creator_username_cache = {"v": ""}
 
 
@@ -24144,9 +24997,10 @@ if (!ID) { $("m").innerHTML = '<div class="emp">Bu sahifani Telegramdagi bot ich
 # ================= UMUMIY ADMIN MINI APP (/botpanel) =================
 # Kino va Savdo botda o'z panellari bor. Qolgan bot turlari (AI, Pul, Tarjimon, Taksi, Open Budget) uchun —
 # bitta umumiy panel: statistika, xabar yuborish, majburiy obuna, adminlar + tur bo'yicha bo'lim (Pul: kurslar, Taksi: buyurtmalar).
-BP_TYPES = ("ai", "money", "translate", "taxi", "openbudget")
+BP_TYPES = ("ai", "money", "translate", "taxi", "openbudget", "download")
 BP_STAT_LABELS = {"questions": "Savollar", "conversions": "Konvertatsiyalar", "translations": "Tarjimalar",
-                  "orders": "Buyurtmalar", "requests": "So'rovlar"}
+                  "orders": "Buyurtmalar", "requests": "So'rovlar",
+                  "downloads": "Yuklamalar", "mp3": "MP3", "cache_hits": "Keshdan", "errors": "Xatolar"}
 BP_JOBS = {}     # token -> {"running": bool, "total": int, "sent": int, "failed": int}
 
 
@@ -24280,7 +25134,7 @@ async def bp_overview(request):
         "stats": [{"label": BP_STAT_LABELS.get(k, k), "value": v} for k, v in (info.get("stats") or {}).items()
                   if isinstance(v, (int, float))],
         "series": series,
-        "extra": info.get("type") if info.get("type") in ("money", "taxi") else "",
+        "extra": info.get("type") if info.get("type") in ("money", "taxi", "download") else "",
     }, headers=_NO_STORE)
 
 
@@ -24429,6 +25283,111 @@ async def bp_taxi_orders(request):
     return web.json_response({"orders": rows}, headers=_NO_STORE)
 
 
+async def bp_dl_data(request):
+    """Yuklovchi bot: statistika, top foydalanuvchilar, so'nggi yuklamalar, videodagi matnlar, xatolar, sozlamalar."""
+    token, info, uid, err = bp_auth(request)
+    if err:
+        return err
+    if info.get("type") != "download":
+        return _bp_err("not_found", 404)
+    dl_init(info)
+    needle = str(request.query.get("q", "")).strip().lower()[:60]
+    today = dl_today()
+    log = info["dl_log"]
+    days = {}
+    for e in log:
+        d = e.get("at", "")[:10]
+        days[d] = days.get(d, 0) + 1
+    series = []
+    for i in range(6, -1, -1):
+        d = (datetime.now().date() - timedelta(days=i)).strftime("%Y-%m-%d")
+        series.append({"d": d[8:] + "." + d[5:7], "n": days.get(d, 0)})
+    top = sorted(info["dl_users"].items(), key=lambda kv: -int(kv[1].get("n", 0)))[:20]
+    caps = [c for c in reversed(info["dl_captions"]) if not needle or needle in (c.get("d", "") + " " + c.get("t", "")).lower()][:40]
+    ps = info.get("dl_plat_stats", {})
+    return web.json_response({
+        "stats": {"users": len(info.get("users", [])), "downloads": info["stats"].get("downloads", 0),
+                  "today": sum(1 for e in log if e.get("at", "").startswith(today)),
+                  "mp3": info["stats"].get("mp3", 0), "cache_hits": info["stats"].get("cache_hits", 0),
+                  "errors": info["stats"].get("errors", 0), "blocked": len(info.get("blocked_users", []))},
+        "platforms": [{"key": k, "name": n, "count": ps.get(k, 0), "on": bool(info["dl_platforms"].get(k, True))} for k, n in DL_PLATFORMS.items()],
+        "series": series,
+        "top": [{"id": u, "name": r.get("name", ""), "n": r.get("n", 0), "last": r.get("last", "")} for u, r in top],
+        "recent": [{"p": DL_PLATFORMS.get(e.get("p"), e.get("p")), "t": e.get("t", ""), "u": e.get("u"), "at": e.get("at", ""),
+                    "m": e.get("m", "video"), "c": bool(e.get("c"))} for e in list(reversed(log))[:30]],
+        "captions": [{"p": DL_PLATFORMS.get(c.get("p"), c.get("p")), "t": c.get("t", ""), "d": c.get("d", ""), "at": c.get("at", ""), "u": c.get("u")} for c in caps],
+        "errors": [{"at": e.get("at", ""), "p": DL_PLATFORMS.get(e.get("p"), e.get("p") or "—"), "code": e.get("code", ""), "d": e.get("d", "")}
+                   for e in list(reversed(info["dl_errors"]))[:20]],
+        "blocked": list(info.get("blocked_users", []))[-30:],
+        "settings": {"limit": int(info.get("dl_daily_limit", 10) or 0), "max_minutes": int(info.get("dl_max_minutes", 15) or 15),
+                     "mp3": bool(info.get("dl_mp3", True)), "cache": bool(info.get("dl_cache_on", True)),
+                     "footer_on": bool(info.get("dl_footer_on", True)), "footer": info.get("dl_footer", ""),
+                     "maintenance": bool(info.get("maintenance_mode")), "cache_size": len(info.get("dl_cache", {})),
+                     "cookies": bool((info.get("dl_cookies") or "").strip() or os.getenv("DL_COOKIES", "").strip())},
+    }, headers=_NO_STORE)
+
+
+async def bp_dl_settings(request):
+    body = await _bp_body(request)
+    token, info, uid, err = bp_auth(request, body)
+    if err:
+        return err
+    if info.get("type") != "download":
+        return _bp_err("not_found", 404)
+    dl_init(info)
+    try:
+        if "limit" in body:
+            v = int(body["limit"])
+            if not 0 <= v <= 10000:
+                return _bp_err("bad_value")
+            info["dl_daily_limit"] = v
+        if "max_minutes" in body:
+            v = int(body["max_minutes"])
+            if not 1 <= v <= 120:
+                return _bp_err("bad_value")
+            info["dl_max_minutes"] = v
+    except (TypeError, ValueError):
+        return _bp_err("bad_value")
+    for src, dst in (("mp3", "dl_mp3"), ("cache", "dl_cache_on"), ("footer_on", "dl_footer_on"), ("maintenance", "maintenance_mode")):
+        if src in body:
+            info[dst] = bool(body[src])
+    if "footer" in body:
+        info["dl_footer"] = str(body["footer"]).strip()[:200]
+    if isinstance(body.get("platforms"), dict):
+        for k in DL_PLATFORMS:
+            if k in body["platforms"]:
+                info["dl_platforms"][k] = bool(body["platforms"][k])
+    if body.get("clear_cache"):
+        info["dl_cache"] = {}
+    if body.get("clear_cookies"):
+        info["dl_cookies"] = ""
+    save_data()
+    return web.json_response({"ok": True}, headers=_NO_STORE)
+
+
+async def bp_dl_block(request):
+    body = await _bp_body(request)
+    token, info, uid, err = bp_auth(request, body)
+    if err:
+        return err
+    if info.get("type") != "download":
+        return _bp_err("not_found", 404)
+    try:
+        tid = int(str(body.get("id", "")).strip())
+    except ValueError:
+        return _bp_err("bad_value")
+    if is_admin(info, tid):
+        return _bp_err("bad_value")
+    bl = info.setdefault("blocked_users", [])
+    if body.get("block", True):
+        if tid not in bl:
+            bl.append(tid)
+    elif tid in bl:
+        bl.remove(tid)
+    save_data()
+    return web.json_response({"ok": True, "blocked": len(bl)}, headers=_NO_STORE)
+
+
 async def botpanel_page(request):
     return web.Response(
         text=BOTPANEL_HTML.replace("__PALETTES__", theme_palettes_json()),
@@ -24490,7 +25449,7 @@ var tg = window.Telegram && Telegram.WebApp; if (tg) { try { tg.ready(); tg.expa
 var B = new URLSearchParams(location.search).get("b") || "", ID = (tg && tg.initData) || "";
 var PAL = __PALETTES__, TAB = "home", EXTRA = "", POLL = null;
 var ERR = { forbidden: "Sizda bu botga kirish huquqi yo'q", invalid_init_data: "Mini appni botning ichidan oching", bad_text: "Xabar matnini kiriting (4000 belgigacha)",
-  busy: "Oldingi yuborish hali tugamadi", no_users: "Foydalanuvchilar yo'q", bad_rate: "Valyuta kodi va kurs (musbat son) kerak", not_found: "Topilmadi" };
+  busy: "Oldingi yuborish hali tugamadi", no_users: "Foydalanuvchilar yo'q", bad_rate: "Valyuta kodi va kurs (musbat son) kerak", bad_value: "Qiymat noto'g'ri", not_found: "Topilmadi" };
 function esc(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
 function nf(n) { return Number(n || 0).toLocaleString("ru-RU").replace(/ /g, " "); }
 function q(p, extra) { return p + "?b=" + encodeURIComponent(B) + (extra || ""); }
@@ -24498,18 +25457,19 @@ function $(id) { return document.getElementById(id); }
 function toast(t) { var e = $("toast"); e.textContent = t; e.style.display = "block"; setTimeout(function () { e.style.display = "none"; }, 2600); }
 function themeHex(k) { try { var p = String(k).split("-"); return PAL[p[0]].shades[Number(p[1]) - 1] || ""; } catch (e) { return ""; } }
 function applyTheme(k) { var c = themeHex(k); if (!c) return; var st = document.documentElement.style; st.setProperty("--ac", c); st.setProperty("--acs", "color-mix(in srgb," + c + " 16%,transparent)"); }
-async function get(p) { var r = await fetch(q(p, "&initData=" + encodeURIComponent(ID))); var j = await r.json().catch(function () { return {}; }); if (!r.ok) throw new Error(ERR[j.error] || ("Xato " + r.status)); return j; }
+async function get(p, x) { var r = await fetch(q(p, "&initData=" + encodeURIComponent(ID) + (x || ""))); var j = await r.json().catch(function () { return {}; }); if (!r.ok) throw new Error(ERR[j.error] || ("Xato " + r.status)); return j; }
 async function post(p, b) { var r = await fetch(q(p), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(Object.assign({ initData: ID }, b)) }); var j = await r.json().catch(function () { return {}; }); if (!r.ok) throw new Error(ERR[j.error] || ("Xato " + r.status)); return j; }
 function fail(e) { toast(e && e.message ? e.message : "Xatolik"); }
 function tabs() {
   var t = [["home", "&#128202;", "Bosh sahifa"], ["bc", "&#128226;", "Xabar"]];
   if (EXTRA === "money") t.push(["rates", "&#128177;", "Kurslar"]);
   if (EXTRA === "taxi") t.push(["taxi", "&#128661;", "Buyurtmalar"]);
+  if (EXTRA === "download") { t.push(["dl", "&#128229;", "Yuklash"]); t.push(["dlt", "&#128221;", "Matnlar"]); t.push(["dls", "&#9881;&#65039;", "Sozlama"]); }
   t.push(["ch", "&#128225;", "Obuna"]); t.push(["adm", "&#128100;", "Adminlar"]);
   $("nav").innerHTML = t.map(function (x) { return '<b data-t="' + x[0] + '"' + (TAB === x[0] ? ' class="on"' : "") + "><span>" + x[1] + "</span>" + x[2] + "</b>"; }).join("");
   $("nav").querySelectorAll("b").forEach(function (el) { el.onclick = function () { TAB = el.getAttribute("data-t"); show(); }; });
 }
-function show() { if (POLL) { clearInterval(POLL); POLL = null; } tabs(); ({ home: vHome, bc: vBc, rates: vRates, taxi: vTaxi, ch: vCh, adm: vAdm })[TAB](); }
+function show() { if (POLL) { clearInterval(POLL); POLL = null; } tabs(); ({ home: vHome, bc: vBc, rates: vRates, taxi: vTaxi, ch: vCh, adm: vAdm, dl: vDl, dlt: vDlt, dls: vDls })[TAB](); }
 async function vHome() {
   var m = $("m"); m.innerHTML = '<div class="emp">Yuklanmoqda...</div>';
   try {
@@ -24552,6 +25512,46 @@ async function vTaxi() {
     m.innerHTML = j.orders.length ? j.orders.map(function (o) { return '<div class="cd"><div style="display:flex;justify-content:space-between"><b>#' + esc(o.id.slice(0, 6)) + '</b><span class="tag">' + esc(o.status) + '</span></div><div class="hint">' + esc(o.at) + " &middot; ID: " + esc(o.user_id) + "</div><div>&#128205; " + esc(o.from) + "<br>&#127937; " + esc(o.to) + "<br>&#128222; " + esc(o.phone) + "</div></div>"; }).join("") : '<div class="emp">Buyurtma yo\'q</div>';
   } catch (e) { m.innerHTML = '<div class="emp">' + esc(e.message) + "</div>"; }
 }
+async function vDl() {
+  var m = $("m"); try {
+    var j = await get("/api/bp/dl/data"), st = j.stats, mx = Math.max.apply(null, j.series.map(function (x) { return x.n; }).concat([1]));
+    m.innerHTML = '<div class="st"><div><small>Yuklamalar</small><b>' + nf(st.downloads) + "</b></div><div><small>Bugun</small><b>" + nf(st.today) + "</b></div><div><small>MP3</small><b>" + nf(st.mp3) + "</b></div><div><small>Keshdan</small><b>" + nf(st.cache_hits) + "</b></div><div><small>Xatolar</small><b>" + nf(st.errors) + "</b></div><div><small>Bloklangan</small><b>" + nf(st.blocked) + "</b></div></div>" +
+      '<div class="cd"><h3>Oxirgi 7 kun yuklamalari</h3><div class="bars">' + j.series.map(function (x) { return '<div title="' + x.n + ' ta"><i style="height:' + Math.round(x.n / mx * 100) + '%"></i>' + x.d + "</div>"; }).join("") + "</div></div>" +
+      '<div class="cd"><h3>Platformalar</h3>' + j.platforms.map(function (p) { return '<div class="row"><div class="nm"><b>' + esc(p.name) + "</b></div><b>" + nf(p.count) + "</b> " + (p.on ? '<span class="tag ok">Yoqilgan</span>' : '<span class="tag no">O\'chiq</span>') + "</div>"; }).join("") + "</div>" +
+      '<div class="cd"><h3>&#127942; Top obunachilar</h3>' + (j.top.length ? j.top.map(function (u, i) { return '<div class="row"><div class="nm"><b>' + (i + 1) + ". " + esc(u.name || "Foydalanuvchi") + "</b><span>ID: " + esc(u.id) + " &middot; " + esc(u.last) + "</span></div><b>" + nf(u.n) + "</b></div>"; }).join("") : '<div class="hint">Hali yo\'q</div>') + "</div>" +
+      '<div class="cd"><h3>&#128229; So\'nggi yuklamalar</h3>' + (j.recent.length ? j.recent.map(function (e) { return '<div class="row"><div class="nm"><b>' + esc(e.p) + (e.m === "audio" ? " &#127911;" : "") + (e.c ? " &#9851;&#65039;" : "") + "</b><span>" + esc((e.t || "(nomsiz)").slice(0, 60)) + " &middot; " + esc(e.u) + " &middot; " + esc(e.at) + "</span></div></div>"; }).join("") : '<div class="hint">Hali yo\'q</div>') + "</div>";
+  } catch (e) { m.innerHTML = '<div class="emp">' + esc(e.message) + "</div>"; }
+}
+var DLQ = "";
+async function vDlt() {
+  var m = $("m"); try {
+    var j = await get("/api/bp/dl/data", DLQ ? "&q=" + encodeURIComponent(DLQ) : "");
+    m.innerHTML = '<div class="cd"><h3>&#128221; Videodagi matnlar</h3><div class="hint">Yuklangan videolarning tavsifi (caption). Qidirish mumkin.</div><input id="dq" placeholder="So\'z bo\'yicha qidirish..." value="' + esc(DLQ) + '"><button class="btn" id="dqb">Qidirish</button></div>' +
+      (j.captions.length ? j.captions.map(function (c) { return '<div class="cd"><div class="hint">' + esc(c.p) + " &middot; " + esc(c.at) + " &middot; ID: " + esc(c.u) + '</div><div style="white-space:pre-wrap;word-wrap:break-word">' + esc(c.d) + "</div></div>"; }).join("") : '<div class="emp">Matn topilmadi</div>');
+    $("dqb").onclick = function () { DLQ = $("dq").value.trim(); vDlt(); };
+  } catch (e) { m.innerHTML = '<div class="emp">' + esc(e.message) + "</div>"; }
+}
+async function vDls() {
+  var m = $("m"); try {
+    var j = await get("/api/bp/dl/data"), s = j.settings;
+    function chk(id, on, label) { return '<div class="row"><div class="nm"><b>' + label + '</b></div><input type="checkbox" id="' + id + '"' + (on ? " checked" : "") + ' style="width:auto"></div>'; }
+    m.innerHTML = '<div class="cd"><h3>&#9881;&#65039; Sozlamalar</h3>' + j.platforms.map(function (p) { return chk("p_" + p.key, p.on, esc(p.name)); }).join("") +
+      chk("s_mp3", s.mp3, "&#127911; MP3 tugmasi") + chk("s_cache", s.cache, "&#9851;&#65039; Kesh (qayta yuklamaslik)") + chk("s_foot", s.footer_on, "&#128278; Videoga imzo") + chk("s_mnt", s.maintenance, "&#128736; Texnik tanaffus") +
+      '<label>Kunlik limit (0 — cheksiz; Premium/adminga qo\'llanmaydi)</label><input id="s_lim" inputmode="numeric" value="' + esc(s.limit) + '"><label>Maks. davomiylik (daqiqa)</label><input id="s_max" inputmode="numeric" value="' + esc(s.max_minutes) + '"><label>Imzo matni (bo\'sh — bot nomi)</label><input id="s_ft" maxlength="200" value="' + esc(s.footer) + '"><button class="btn" id="s_sv">Saqlash</button>' +
+      '<button class="btn g" id="s_cc">&#129529; Keshni tozalash (' + nf(s.cache_size) + ")</button></div>" +
+      '<div class="cd"><h3>&#127850; Cookies</h3><div class="hint">Holat: ' + (s.cookies ? "o\'rnatilgan" : "yo\'q") + ". Yangi cookies.txt ni botning o\'zida yuboring: &#127850; Cookies.</div>" + (s.cookies ? '<button class="btn g" id="s_ck">O\'chirish</button>' : "") + "</div>" +
+      '<div class="cd"><h3>&#128683; Bloklash</h3><label>Foydalanuvchi ID</label><input id="b_id" inputmode="numeric" placeholder="123456789"><button class="btn" id="b_go">Bloklash</button><button class="btn g" id="b_un">Blokdan chiqarish</button><div class="hint">Bloklanganlar: ' + (j.blocked.length ? esc(j.blocked.join(", ")) : "yo\'q") + "</div></div>" +
+      '<div class="cd"><h3>&#9888;&#65039; Xatolar jurnali</h3>' + (j.errors.length ? j.errors.map(function (e) { return '<div class="row"><div class="nm"><b>' + esc(e.p) + " &middot; " + esc(e.code) + "</b><span>" + esc(e.at) + " &middot; " + esc((e.d || "").slice(0, 120)) + "</span></div></div>"; }).join("") : '<div class="hint">Xatolar yo\'q</div>') + "</div>";
+    $("s_sv").onclick = async function () {
+      var pl = {}; j.platforms.forEach(function (p) { pl[p.key] = $("p_" + p.key).checked; });
+      try { await post("/api/bp/dl/settings", { platforms: pl, mp3: $("s_mp3").checked, cache: $("s_cache").checked, footer_on: $("s_foot").checked, maintenance: $("s_mnt").checked, limit: $("s_lim").value, max_minutes: $("s_max").value, footer: $("s_ft").value }); toast("Saqlandi ✅"); vDls(); } catch (e) { fail(e); }
+    };
+    $("s_cc").onclick = async function () { try { await post("/api/bp/dl/settings", { clear_cache: true }); toast("Kesh tozalandi"); vDls(); } catch (e) { fail(e); } };
+    if ($("s_ck")) $("s_ck").onclick = async function () { if (!confirm("Cookies o'chirilsinmi?")) return; try { await post("/api/bp/dl/settings", { clear_cookies: true }); vDls(); } catch (e) { fail(e); } };
+    $("b_go").onclick = async function () { try { await post("/api/bp/dl/block", { id: $("b_id").value, block: true }); toast("Bloklandi"); vDls(); } catch (e) { fail(e); } };
+    $("b_un").onclick = async function () { try { await post("/api/bp/dl/block", { id: $("b_id").value, block: false }); toast("Blokdan chiqarildi"); vDls(); } catch (e) { fail(e); } };
+  } catch (e) { m.innerHTML = '<div class="emp">' + esc(e.message) + "</div>"; }
+}
 async function vCh() {
   var m = $("m"); try {
     var j = await get("/api/bp/channels");
@@ -24577,7 +25577,7 @@ if (!ID) { $("m").innerHTML = '<div class="emp">Bu sahifani Telegramdagi bot ich
 # Kino va Savdo botda xalq uchun o'z sahifalari bor (/kino, /shop). Qolgan 5 tur uchun — bitta sahifa, tur bo'yicha ko'rinish.
 # MUHIM: bot ichidagi qoidalar (faol/to'xtagan bot, majburiy obuna, Premium, bloklash) mini appda ham AYNAN shunday ishlaydi.
 PUB_LANGS = {"uz": "🇺🇿 O'zbek", "en": "🇬🇧 English", "ru": "🇷🇺 Русский", "tr": "🇹🇷 Türkçe", "ar": "🇸🇦 العربية"}
-PUB_MENU_TEXT = {"ai": "AI chat", "money": "Konvertor", "translate": "Tarjimon", "taxi": "Taksi", "openbudget": "Loyihalar"}
+PUB_MENU_TEXT = {"ai": "AI chat", "money": "Konvertor", "translate": "Tarjimon", "taxi": "Taksi", "openbudget": "Loyihalar", "download": "Yuklash"}
 PUB_GATE_CACHE = {}     # (token, uid) -> (vaqt, natija)
 PUB_RL = {}             # (token, uid, kalit) -> [vaqtlar]
 PUB_TAXI_MAX_PENDING = 3
@@ -24684,6 +25684,14 @@ async def pub_info(request):
         hist = (info.get("ai_history") or {}).get(str(uid), [])
         out["history"] = [{"role": "user" if h.get("role") == "user" else "ai",
                            "text": (h.get("parts") or [{}])[0].get("text", "")} for h in hist][-12:]
+    elif t == "download":
+        dl_init(info)
+        out["remaining"] = dl_remaining(info, uid)
+        out["limit"] = int(info.get("dl_daily_limit", 10) or 0)
+        out["mp3"] = bool(info.get("dl_mp3", True))
+        out["platforms"] = [DL_PLATFORMS[k] for k in DL_PLATFORMS if info["dl_platforms"].get(k, True)]
+        out["history"] = [{"p": DL_PLATFORMS.get(e.get("p"), e.get("p")), "t": e.get("t", ""), "at": e.get("at", "")}
+                          for e in reversed(info["dl_log"]) if e.get("u") == uid][:8]
     elif t == "taxi":
         mine = [o for o in (info.get("orders") or {}).values() if o.get("user_id") == uid]
         mine.sort(key=lambda o: o.get("created_at", ""), reverse=True)
@@ -24911,6 +25919,50 @@ async def pub_ob_photo(request):
     return web.Response(body=hit[0], content_type=hit[1], headers={"Cache-Control": "public, max-age=3600"})
 
 
+# ---------- Yuklovchi bot (xalq uchun) ----------
+async def _pub_dl_run(token: str, info: dict, uid: int, user: dict, url: str, mode: str):
+    b = _new_bot(token)
+    try:
+        await dl_process(b, info, token, uid, uid, url, mode, user=user)
+    except Exception as e:
+        logging.error(f"Mini app yuklash xatosi: {e}")
+    finally:
+        await _close_bot(b)
+
+
+async def pub_dl_send(request):
+    """POST {url, mode: video|audio} — yuklashni fonda boshlaydi; video foydalanuvchining bot chatiga keladi."""
+    body = await _pub_body(request)
+    token, info, uid, user, err = await pub_auth(request, body)
+    if err:
+        return err
+    if info.get("type") != "download":
+        return _pub_err("not_found", 404)
+    dl_init(info)
+    urls = dl_extract_urls(str(body.get("url", "")))
+    url = urls[0] if urls else ""
+    platform = dl_platform(url) if url else None
+    mode = "audio" if body.get("mode") == "audio" else "video"
+    if not platform:
+        return _pub_err("bad_link")
+    if not info["dl_platforms"].get(platform, True):
+        return _pub_err("disabled")
+    if mode == "audio" and not info.get("dl_mp3", True):
+        return _pub_err("no_mp3")
+    if info.get("maintenance_mode") and not is_admin(info, uid):
+        return _pub_err("maintenance", 503)
+    if dl_remaining(info, uid) == 0:
+        return _pub_err("limit", 429)
+    if (token, uid) in DL_ACTIVE:
+        return _pub_err("busy", 429)
+    if not _pub_rate(token, uid, "dl", 6, 60):
+        return _pub_err("slow_down", 429)
+    t = asyncio.create_task(_pub_dl_run(token, info, uid, user, url, mode))
+    DL_TASKS.add(t)
+    t.add_done_callback(DL_TASKS.discard)
+    return web.json_response({"ok": True}, headers=_NO_STORE)
+
+
 async def botapp_page(request):
     return web.Response(
         text=BOTAPP_HTML.replace("__PALETTES__", theme_palettes_json()),
@@ -24974,7 +26026,7 @@ label{display:block;color:var(--mu);font-size:13px;margin:10px 0 4px}
 var tg = window.Telegram && Telegram.WebApp; if (tg) { try { tg.ready(); tg.expand(); } catch (e) {} }
 var B = new URLSearchParams(location.search).get("b") || "", ID = (tg && tg.initData) || "";
 var PAL = __PALETTES__, INFO = null, T = "";
-var ERR = { bad_value: "Ma'lumot noto'g'ri", slow_down: "Juda tez, biroz kuting", ai_error: "Xatolik yuz berdi, birozdan keyin urinib ko'ring", too_many: "Sizda kutilayotgan buyurtmalar ko'p, haydovchi javobini kuting", invalid_init_data: "Mini appni botning ichidan oching", not_found: "Topilmadi" };
+var ERR = { bad_link: "TikTok, Instagram yoki YouTube havolasini kiriting", disabled: "Bu platforma hozircha o'chirilgan", no_mp3: "MP3 hozircha o'chirilgan", maintenance: "Bot texnik tanaffusda", limit: "Bugungi limit tugadi", busy: "Avvalgi yuklash tugamadi, biroz kuting", bad_value: "Ma'lumot noto'g'ri", slow_down: "Juda tez, biroz kuting", ai_error: "Xatolik yuz berdi, birozdan keyin urinib ko'ring", too_many: "Sizda kutilayotgan buyurtmalar ko'p, haydovchi javobini kuting", invalid_init_data: "Mini appni botning ichidan oching", not_found: "Topilmadi" };
 function esc(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
 function nf(n, d) { return Number(n || 0).toLocaleString("ru-RU", { maximumFractionDigits: d == null ? 2 : d }).replace(/ /g, " "); }
 function q(p, extra) { return p + "?b=" + encodeURIComponent(B) + (extra || ""); }
@@ -25106,15 +26158,31 @@ async function obOpen(id) {
     bind();
   } catch (e) { fail(e); }
 }
+/* ---------- Yuklovchi ---------- */
+function vDl() {
+  var m = $("m"), mode = "video";
+  function hist() { return INFO.history.length ? INFO.history.map(function (h) { return '<div class="row"><div><b>' + esc(h.p) + '</b><div class="hint">' + esc((h.t || "(nomsiz)").slice(0, 60)) + " &middot; " + esc(h.at) + "</div></div></div>"; }).join("") : '<div class="hint">Hali yuklamagansiz</div>'; }
+  function lim() { return INFO.remaining == null ? "Bugun: cheksiz" : "Bugun qolgan: " + INFO.remaining + " ta"; }
+  m.innerHTML = '<div class="cd"><div class="hint">' + esc(INFO.platforms.join(" · ")) + '</div><label>Video havolasi</label><input id="u" placeholder="https://..." autocapitalize="off" autocomplete="off">' +
+    (INFO.mp3 ? '<div class="chips" style="margin-top:10px"><i id="mv" class="on">&#127916; Video</i><i id="ma">&#127911; MP3</i></div>' : "") +
+    '<button class="btn" id="go">&#128229; Yuklash</button><div class="hint" id="lm">' + lim() + '</div><div class="hint" id="st"></div></div><div class="cd"><b>So\'nggi yuklamalarim</b><div id="hl">' + hist() + "</div></div>";
+  if (INFO.mp3) { $("mv").onclick = function () { mode = "video"; $("mv").className = "on"; $("ma").className = ""; }; $("ma").onclick = function () { mode = "audio"; $("ma").className = "on"; $("mv").className = ""; }; }
+  $("go").onclick = async function () {
+    var b = this, u = $("u").value.trim(); if (!u) return; b.disabled = true;
+    try { await post("/api/pub/dl/send", { url: u, mode: mode }); $("st").textContent = "✅ Yuklanmoqda — tayyor bo'lgach video bot chatiga keladi."; $("u").value = "";
+      setTimeout(async function () { try { INFO = await get("/api/pub/info"); $("hl").innerHTML = hist(); $("lm").textContent = lim(); } catch (e) {} }, 15000); } catch (e) { fail(e); }
+    b.disabled = false;
+  };
+}
 /* ---------- Boshlash ---------- */
 async function start() {
   if (!ID) { $("m").innerHTML = '<div class="emp">Bu sahifani Telegramdagi bot ichidan oching.</div>'; return; }
   try {
     INFO = await get("/api/pub/info"); T = INFO.type;
     if (INFO.theme) applyTheme(INFO.theme);
-    var emo = { ai: "🤖", money: "💱", translate: "🌐", taxi: "🚕", openbudget: "🗳" }[T] || "";
+    var emo = { download: "📥", ai: "🤖", money: "💱", translate: "🌐", taxi: "🚕", openbudget: "🗳" }[T] || "";
     $("ttl").textContent = emo + " " + (INFO.name || "Mini app"); $("sub").textContent = "";
-    await ({ money: vMoney, translate: vTr, ai: vAi, taxi: vTaxi, openbudget: vOb })[T]();
+    await ({ money: vMoney, translate: vTr, ai: vAi, taxi: vTaxi, openbudget: vOb, download: vDl })[T]();
   } catch (e) { if (e.gate) showGate(e.gate); else $("m").innerHTML = '<div class="emp">' + esc(e.message) + "</div>"; }
 }
 start();
