@@ -625,6 +625,7 @@ BOT_TYPES = {
     "openbudget": "🗳 Open Budget bot",
     "nakrutka": "🚀 Nakrutka bot",
     "download": "📥 Yuklovchi bot",
+    "roblox": "🥚 Roblox tuxum bot",
 }
 
 # 🎬 MEDIA BOT turlari (ichki bot turi o'zgarmaydi: "kino_pro" — barcha kino funksiyalari saqlanadi).
@@ -691,6 +692,7 @@ DEFAULT_PRICES = {
     "openbudget": 120_000,
     "nakrutka": 120_000,
     "download": 120_000,
+    "roblox": 120_000,
 }
 DEFAULT_MONTHLY_RATE = 0.2  # keyingi oylar uchun narxning 20 foizi (standart) — eskirgan, endi ishlatilmaydi
 
@@ -869,6 +871,16 @@ try:
     if "download" not in data["bot_menu"] and not data.get("_dl_menu_added"):
         data["bot_menu"]["download"] = {"name": BOT_TYPES["download"], "enabled": True}
         data["_dl_menu_added"] = True
+        save_data()
+except Exception:
+    pass
+
+
+# Yangi «Roblox tuxum bot» turi bir marta avtomatik menyuga qo'shiladi
+try:
+    if "roblox" not in data["bot_menu"] and not data.get("_egg_menu_added"):
+        data["bot_menu"]["roblox"] = {"name": BOT_TYPES["roblox"], "enabled": True}
+        data["_egg_menu_added"] = True
         save_data()
 except Exception:
     pass
@@ -1467,6 +1479,12 @@ def tariff_card_text(tid: str, t: dict) -> str:
 
 # Har bir bot turi uchun tavsif (bot yaratish oynasida ko'rsatiladi)
 BOT_DESCRIPTIONS = {
+    "roblox": (
+        "<i>Roblox uslubidagi tuxum o'yini: tuxum sotib oling, ichidan nodir petlar (⚪🔵🟣🟡) chiqaring — ular soatiga tanga ishlab beradi.</i>\n\n"
+        "🥚 4 xil tuxum, 🐾 16 ta pet, 💰 passiv daromad, 🎁 kunlik bonus, 🔍 tuxum ovi, 👥 do'st taklif qilish, 🏆 reyting, 🎟 promokodlar, 💎 Premium (x2).\n\n"
+        "📊 Admin panelda: majburiy obuna, top o'yinchilar, promokod yaratish, tanga berish, sozlamalar, bloklash, xabar yuborish.\n\n"
+        "ℹ️ Bot ichidagi o'yin — haqiqiy Robux emas."
+    ),
     "download": (
         "<i>TikTok, Instagram va YouTube havolasini yuboring — bot uni Telegram videosiga aylantirib beradi.</i>\n\n"
         "🎧 MP3 yuklash, ♻️ kesh (bir xil video qayta yuklanmaydi), ⏱ kunlik limit va 💎 Premium.\n\n"
@@ -17902,7 +17920,764 @@ def setup_download_bot(dp: Dispatcher, token: str):
 # ===================== /YUKLOVCHI BOT =====================
 
 
+# ===================== 🥚 TUXUM BOT (Roblox uslubidagi o'yin) =====================
+import random as _eg_random
+import time as _eg_time
+
+EG_RARITY = {"common": ("⚪", "Oddiy"), "rare": ("🔵", "Nodir"), "epic": ("🟣", "Epik"), "legend": ("🟡", "Afsonaviy")}
+# key: (nomi, emoji, nodirlik, soatiga daromad)
+EG_PETS = {
+    "dog": {"name": "Kuchukcha", "emoji": "🐶", "rar": "common", "inc": 3},
+    "cat": {"name": "Mushukcha", "emoji": "🐱", "rar": "common", "inc": 4},
+    "bunny": {"name": "Quyoncha", "emoji": "🐰", "rar": "rare", "inc": 7},
+    "fox": {"name": "Tulkicha", "emoji": "🦊", "rar": "epic", "inc": 14},
+    "panda": {"name": "Panda", "emoji": "🐼", "rar": "rare", "inc": 30},
+    "lion": {"name": "Sher", "emoji": "🦁", "rar": "rare", "inc": 45},
+    "tiger": {"name": "Yo'lbars", "emoji": "🐯", "rar": "epic", "inc": 75},
+    "unicorn": {"name": "Yakkashox", "emoji": "🦄", "rar": "legend", "inc": 170},
+    "wolf": {"name": "Bo'ri", "emoji": "🐺", "rar": "epic", "inc": 180},
+    "eagle": {"name": "Burgut", "emoji": "🦅", "rar": "epic", "inc": 270},
+    "dragon": {"name": "Ajdarho", "emoji": "🐉", "rar": "legend", "inc": 480},
+    "phoenix": {"name": "Feniks", "emoji": "🔥", "rar": "legend", "inc": 950},
+    "robo": {"name": "Robo-it", "emoji": "🤖", "rar": "epic", "inc": 1000},
+    "alien": {"name": "Alien", "emoji": "👾", "rar": "legend", "inc": 1600},
+    "rainbow": {"name": "Kamalak ajdarho", "emoji": "🌈", "rar": "legend", "inc": 3200},
+    "king": {"name": "Shoh ajdarho", "emoji": "👑", "rar": "legend", "inc": 8500},
+}
+EG_EGGS = {
+    "common": {"name": "Oddiy tuxum", "emoji": "🥚", "price": 100, "pets": [("dog", 50), ("cat", 30), ("bunny", 15), ("fox", 5)]},
+    "rare": {"name": "Nodir tuxum", "emoji": "🪺", "price": 600, "pets": [("panda", 45), ("lion", 30), ("tiger", 18), ("unicorn", 7)]},
+    "epic": {"name": "Epik tuxum", "emoji": "🔮", "price": 3000, "pets": [("wolf", 45), ("eagle", 30), ("dragon", 17), ("phoenix", 8)]},
+    "legend": {"name": "Afsonaviy tuxum", "emoji": "👑", "price": 15000, "pets": [("robo", 45), ("alien", 30), ("rainbow", 17), ("king", 8)]},
+}
+EG_SELL_HOURS = 6          # pet sotilganda: soatlik daromad x 6 tanga
+EG_CFG_DEFAULTS = {"start": 300, "daily": 200, "hunt_min": 30, "cap_h": 8, "ref": 300}
+EG_CFG_META = {
+    "start": ("🎁 Boshlang'ich tanga", 0, 1_000_000),
+    "daily": ("📅 Kunlik bonus", 0, 1_000_000),
+    "hunt_min": ("🔍 Tuxum ovi pauzasi (daqiqa)", 1, 1440),
+    "cap_h": ("⏳ Daromad yig'ilish chegarasi (soat)", 1, 72),
+    "ref": ("👥 Taklif bonusi", 0, 1_000_000),
+}
+EG_BUSY = set()
+
+
+def eg_init(info: dict):
+    info.setdefault("eg_users", {})
+    info.setdefault("eg_promos", {})
+    cfg = info.setdefault("eg_cfg", {})
+    for k, v in EG_CFG_DEFAULTS.items():
+        cfg.setdefault(k, v)
+    info.setdefault("blocked_users", [])
+    info.setdefault("maintenance_mode", False)
+    for k in ("hatched", "hunts", "daily_claims", "promos", "sold"):
+        info["stats"].setdefault(k, 0)
+
+
+def eg_fmt(n) -> str:
+    return f"{int(n):,}".replace(",", " ")
+
+
+def eg_dur(sec) -> str:
+    sec = max(0, int(sec))
+    h, m = sec // 3600, (sec % 3600) // 60
+    return (f"{h} soat " if h else "") + (f"{m} daq" if m or not h else "")
+
+
+def eg_user(info: dict, uid, now=None, name=None) -> dict:
+    now = now if now is not None else _eg_time.time()
+    users = info["eg_users"]
+    u = users.get(str(uid))
+    if u is None:
+        u = users[str(uid)] = {"coins": int(info["eg_cfg"]["start"]), "pets": {}, "t_col": now, "t_daily": 0, "streak": 0,
+                               "t_hunt": 0, "hatched": 0, "refs": 0, "ref_by": None, "name": "", "since": now, "earned": 0}
+    if name:
+        u["name"] = name
+    return u
+
+
+def eg_base_rate(u: dict) -> int:
+    return sum(EG_PETS[p]["inc"] * int(n) for p, n in u.get("pets", {}).items() if p in EG_PETS)
+
+
+def eg_rate(info: dict, uid, u: dict) -> int:
+    return eg_base_rate(u) * (2 if is_premium_active(info, uid) else 1)
+
+
+def eg_pending(info: dict, uid, u: dict, now=None) -> int:
+    now = now if now is not None else _eg_time.time()
+    cap = int(info["eg_cfg"]["cap_h"]) * 3600
+    el = max(0.0, min(now - u["t_col"], cap))
+    return int(eg_rate(info, uid, u) * el / 3600)
+
+
+def eg_collect(info: dict, uid, u: dict, now=None) -> int:
+    now = now if now is not None else _eg_time.time()
+    amt = eg_pending(info, uid, u, now)
+    u["coins"] += amt
+    u["earned"] = u.get("earned", 0) + amt
+    u["t_col"] = now
+    return amt
+
+
+def eg_roll(egg_key: str, rnd=None) -> str:
+    rnd = rnd or _eg_random
+    pets = EG_EGGS[egg_key]["pets"]
+    return rnd.choices([p for p, _ in pets], weights=[w for _, w in pets], k=1)[0]
+
+
+def eg_give_pet(info: dict, u: dict, pk: str):
+    u["pets"][pk] = int(u["pets"].get(pk, 0)) + 1
+    u["hatched"] = u.get("hatched", 0) + 1
+    info["stats"]["hatched"] = info["stats"].get("hatched", 0) + 1
+
+
+def eg_hatch(info: dict, uid, u: dict, egg_key: str, now=None, rnd=None):
+    """Tuxum sotib olib ochadi. Pet kaliti yoki None (tanga yetmasa)."""
+    egg = EG_EGGS.get(egg_key)
+    if not egg:
+        return None
+    now = now if now is not None else _eg_time.time()
+    eg_collect(info, uid, u, now)          # avval yig'ilganini hisoblaymiz (yangi pet o'tmishga ta'sir qilmasin)
+    if u["coins"] < egg["price"]:
+        return None
+    u["coins"] -= egg["price"]
+    pk = eg_roll(egg_key, rnd)
+    eg_give_pet(info, u, pk)
+    return pk
+
+
+def eg_daily(info: dict, u: dict, now=None):
+    now = now if now is not None else _eg_time.time()
+    if u["t_daily"] and now - u["t_daily"] < 24 * 3600:
+        return ("wait", 24 * 3600 - (now - u["t_daily"]))
+    streak = u.get("streak", 0) + 1 if (u["t_daily"] and now - u["t_daily"] < 48 * 3600) else 1
+    streak = min(streak, 7)
+    base = int(info["eg_cfg"]["daily"])
+    bonus = base + (streak - 1) * (base // 4)
+    u["streak"] = streak
+    u["t_daily"] = now
+    u["coins"] += bonus
+    info["stats"]["daily_claims"] = info["stats"].get("daily_claims", 0) + 1
+    return ("ok", bonus, streak)
+
+
+def eg_hunt(info: dict, u: dict, now=None, rnd=None):
+    rnd = rnd or _eg_random
+    now = now if now is not None else _eg_time.time()
+    cd = int(info["eg_cfg"]["hunt_min"]) * 60
+    if u["t_hunt"] and now - u["t_hunt"] < cd:
+        return ("wait", cd - (now - u["t_hunt"]))
+    u["t_hunt"] = now
+    info["stats"]["hunts"] = info["stats"].get("hunts", 0) + 1
+    r = rnd.random()
+    if r < 0.05:
+        pk = eg_roll("common", rnd)
+        eg_give_pet(info, u, pk)
+        return ("egg", pk)
+    amt = rnd.randint(80, 200) if r < 0.30 else rnd.randint(20, 80)
+    u["coins"] += amt
+    return ("coins", amt)
+
+
+def eg_sell_price(pk: str) -> int:
+    return EG_PETS[pk]["inc"] * EG_SELL_HOURS
+
+
+def eg_sell(info: dict, uid, u: dict, pk: str, now=None):
+    n = int(u["pets"].get(pk, 0))
+    if pk not in EG_PETS or n <= 0:
+        return None
+    eg_collect(info, uid, u, now)
+    if n == 1:
+        del u["pets"][pk]
+    else:
+        u["pets"][pk] = n - 1
+    price = eg_sell_price(pk)
+    u["coins"] += price
+    info["stats"]["sold"] = info["stats"].get("sold", 0) + 1
+    return price
+
+
+def eg_promo(info: dict, uid, u: dict, code: str):
+    code = (code or "").strip().upper()
+    p = info["eg_promos"].get(code)
+    if not p:
+        return ("none",)
+    if uid in p["used"]:
+        return ("used",)
+    if len(p["used"]) >= int(p["uses"]):
+        return ("over",)
+    p["used"].append(uid)
+    u["coins"] += int(p["coins"])
+    info["stats"]["promos"] = info["stats"].get("promos", 0) + 1
+    return ("ok", int(p["coins"]))
+
+
+def eg_top(info: dict, n: int = 10):
+    rows = []
+    for k, u in info["eg_users"].items():
+        rows.append((int(k), u.get("name") or "", eg_base_rate(u), sum(int(x) for x in u.get("pets", {}).values()), u.get("coins", 0)))
+    rows.sort(key=lambda r: (-r[2], -r[4]))
+    return rows[:n]
+
+
+def eg_pet_line(pk: str, n: int = 0) -> str:
+    p = EG_PETS[pk]
+    return f"{p['emoji']} {p['name']} {EG_RARITY[p['rar']][0]}" + (f" ×{n}" if n else "") + f" — {eg_fmt(p['inc'])}/soat"
+
+
+def eg_eggs_text(u: dict) -> str:
+    out = [f"🥚 <b>Tuxumlar</b>\n\n🪙 Balans: <b>{eg_fmt(u['coins'])}</b>\n"]
+    for k, e in EG_EGGS.items():
+        tot = sum(w for _, w in e["pets"])
+        out.append(f"{e['emoji']} <b>{e['name']}</b> — {eg_fmt(e['price'])} 🪙\n" + " · ".join(
+            f"{EG_PETS[p]['emoji']} {round(w * 100 / tot)}%" for p, w in e["pets"]))
+    return "\n\n".join(out)
+
+
+class EgAdmin(StatesGroup):
+    broadcast = State()
+    promo = State()
+    give = State()
+    block = State()
+    cfg = State()
+
+
+class EgUser(StatesGroup):
+    promo = State()
+
+
+def setup_egg_bot(dp: Dispatcher, token: str):
+    info = data["bots"][token]
+    admin_id = info["admin_id"]
+    eg_init(info)
+    setup_subscription_handlers(dp, token, admin_id)
+    setup_admin_management(dp, token)
+    setup_premium_system(dp, token, admin_id)
+    setup_global_buttons_handler(dp, lambda m, s: estart(m))
+
+    def is_blocked(uid: int) -> bool:
+        return uid in info.get("blocked_users", [])
+
+    def staff(ev) -> bool:
+        return is_admin(info, ev.from_user.id)
+
+    def admin_kb():
+        return ReplyKeyboardMarkup(keyboard=[
+            [KeyboardButton(text="📊 Statistika"), KeyboardButton(text="📢 Xabar yuborish")],
+            [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
+            [KeyboardButton(text="🏆 Top o'yinchilar"), KeyboardButton(text="🎁 Promokodlar")],
+            [KeyboardButton(text="🪙 Tanga berish"), KeyboardButton(text="🚫 Bloklash")],
+            [KeyboardButton(text="⚙️ Sozlamalar"), KeyboardButton(text="💎 Premium")],
+            [KeyboardButton(text="💳 To'lov tizimlar"), KeyboardButton(text="🎮 O'ynash")],
+        ] + get_global_button_rows(), resize_keyboard=True)
+
+    def user_kb(uid: int):
+        rows = [
+            [KeyboardButton(text="🥚 Tuxumlar"), KeyboardButton(text="🐾 Petlarim")],
+            [KeyboardButton(text="💰 Daromad yig'ish"), KeyboardButton(text="🎁 Kunlik bonus")],
+            [KeyboardButton(text="🔍 Tuxum ovi"), KeyboardButton(text="🏆 Reyting")],
+            [KeyboardButton(text="👥 Do'stlarni taklif qilish"), KeyboardButton(text="🎟 Promokod")],
+            [KeyboardButton(text="👤 Profil"), KeyboardButton(text="ℹ️ Yordam")],
+        ]
+        if is_admin(info, uid):
+            rows.append([KeyboardButton(text="🛠 Admin panel")])
+        return ReplyKeyboardMarkup(keyboard=rows + get_global_button_rows(), resize_keyboard=True)
+
+    async def gate(ev) -> bool:
+        uid = ev.from_user.id
+        is_cb = hasattr(ev, "data")
+
+        async def deny(text):
+            if is_cb:
+                await ev.answer(text, show_alert=True)
+            else:
+                await ev.answer(text)
+        if not await check_active(ev, info, admin_id):
+            return False
+        if is_admin(info, uid):
+            return True
+        if is_blocked(uid):
+            await deny("🚫 Siz ushbu botdan foydalanish huquqidan mahrum qilingansiz.")
+            return False
+        if info.get("maintenance_mode"):
+            await deny("🛠 Bot texnik tanaffusda. Birozdan keyin qayting.")
+            return False
+        if not await require_subscription(ev, info, admin_id):
+            return False
+        return True
+
+    def me(ev):
+        fu = ev.from_user
+        name = ("@" + fu.username) if fu.username else (fu.full_name or "")
+        return eg_user(info, fu.id, name=name)
+
+    # ---------- /start (+ taklif havolasi) ----------
+    @dp.message(Command("start"))
+    async def estart(message: Message, state: FSMContext = None):
+        uid = message.from_user.id
+        if state is not None:
+            await state.clear()
+        if not await check_active(message, info, admin_id):
+            return
+        new_user = str(uid) not in info["eg_users"]
+        if uid not in info["users"]:
+            info["users"].append(uid)
+        u = me(message)
+        if new_user and not is_blocked(uid):
+            parts = (message.text or "").split(maxsplit=1)
+            arg = parts[1].strip() if len(parts) > 1 and (message.text or "").startswith("/start") else ""
+            if arg.startswith("ref_") and arg[4:].isdigit():
+                rid = int(arg[4:])
+                ref = info["eg_users"].get(str(rid))
+                bonus = int(info["eg_cfg"]["ref"])
+                if ref is not None and rid != uid and bonus > 0:
+                    u["ref_by"] = rid
+                    u["coins"] += bonus
+                    ref["coins"] += bonus
+                    ref["refs"] = ref.get("refs", 0) + 1
+                    try:
+                        await message.bot.send_message(rid, f"👥 Do'stingiz botga qo'shildi! Sizga <b>+{eg_fmt(bonus)} 🪙</b> berildi.")
+                    except Exception:
+                        pass
+        save_data()
+        if is_admin(info, uid):
+            await message.answer("🥚 <b>Tuxum bot boshqaruvi</b>\n\nPastdagi menyudan foydalaning 👇", reply_markup=admin_kb())
+            return
+        if not await gate(message):
+            return
+        await message.answer(
+            f"🥚 <b>Tuxum olami</b>ga xush kelibsiz!\n\nTuxum sotib oling, ichidan nodir petlar chiqaring — ular sizga har soat tanga olib keladi. "
+            f"Eng kuchli petlarni yig'ib, reytingda birinchi bo'ling! 🏆\n\n🎁 Boshlang'ich balans: <b>{eg_fmt(u['coins'])} 🪙</b>",
+            reply_markup=user_kb(uid))
+
+    @dp.message(F.text == "🎮 O'ynash")
+    async def e_play(message: Message):
+        if staff(message):
+            me(message)
+            await message.answer("🎮 O'yin rejimi. Qaytish: «🛠 Admin panel».", reply_markup=user_kb(message.from_user.id))
+
+    @dp.message(F.text == "🛠 Admin panel")
+    async def e_back_admin(message: Message):
+        if staff(message):
+            await message.answer("🛠 Admin panel", reply_markup=admin_kb())
+
+    # ---------- O'yinchi ----------
+    @dp.message(F.text == "ℹ️ Yordam")
+    async def e_help(message: Message):
+        await message.answer(
+            "ℹ️ <b>Qanday o'ynaladi?</b>\n\n"
+            "🥚 Tuxum sotib oling — ichidan tasodifiy pet chiqadi.\n"
+            "🐾 Har bir pet soatiga tanga ishlab beradi (💰 Daromad yig'ish tugmasi bilan olasiz, "
+            f"{info['eg_cfg']['cap_h']} soatgacha to'planadi).\n"
+            "🎁 Har kuni bonus, 🔍 tuxum ovida tanga yoki bepul pet toping.\n"
+            "👥 Do'st taklif qilsangiz — ikkalangizga ham bonus.\n"
+            "💎 Premium foydalanuvchilar daromadi 2 barobar.\n\n"
+            "ℹ️ Bu — bot ichidagi o'yin. Tanga haqiqiy Robux emas va Roblox bilan bog'liq emas.")
+
+    @dp.message(F.text == "👤 Profil")
+    async def e_profile(message: Message):
+        if not await gate(message):
+            return
+        uid = message.from_user.id
+        u = me(message)
+        npets = sum(int(x) for x in u["pets"].values())
+        rate = eg_rate(info, uid, u)
+        await message.answer(
+            f"👤 <b>Profil</b>{' 💎' if is_premium_active(info, uid) else ''}\n\n"
+            f"🪙 Balans: <b>{eg_fmt(u['coins'])}</b>\n🐾 Petlar: <b>{npets}</b> ({len(u['pets'])} tur)\n"
+            f"📈 Daromad: <b>{eg_fmt(rate)}</b>/soat\n💰 Yig'ilgan: <b>{eg_fmt(eg_pending(info, uid, u))}</b>\n"
+            f"🥚 Ochilgan tuxumlar: {u.get('hatched', 0)}\n👥 Takliflar: {u.get('refs', 0)}\n🔥 Bonus seriyasi: {u.get('streak', 0)} kun")
+
+    @dp.message(F.text == "🥚 Tuxumlar")
+    async def e_eggs(message: Message):
+        if not await gate(message):
+            return
+        u = me(message)
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+            text=f"{e['emoji']} {e['name']} — {eg_fmt(e['price'])} 🪙", callback_data=f"egbuy_{k}")] for k, e in EG_EGGS.items()])
+        await message.answer(eg_eggs_text(u), reply_markup=kb)
+
+    @dp.callback_query(F.data.startswith("egbuy_"))
+    async def e_buy(callback: CallbackQuery):
+        if not await gate(callback):
+            return
+        uid = callback.from_user.id
+        key = callback.data.split("_", 1)[1]
+        if key not in EG_EGGS:
+            await callback.answer()
+            return
+        if (token, uid) in EG_BUSY:
+            await callback.answer("⏳ Tuxum ochilmoqda...")
+            return
+        EG_BUSY.add((token, uid))
+        try:
+            u = me(callback)
+            pk = eg_hatch(info, uid, u, key)
+            if pk is None:
+                await callback.answer(f"❌ Tanga yetarli emas. Kerak: {eg_fmt(EG_EGGS[key]['price'])} 🪙", show_alert=True)
+                return
+            save_data()
+            await callback.answer()
+            egg = EG_EGGS[key]
+            for frame in (f"{egg['emoji']} Tuxum qimirlayapti...", f"{egg['emoji']}💥 Yoriq paydo bo'ldi...", "🐣 Yoriladi..."):
+                try:
+                    await callback.message.edit_text(frame)
+                except Exception:
+                    pass
+                await asyncio.sleep(0.7)
+            p = EG_PETS[pk]
+            r_em, r_name = EG_RARITY[p["rar"]]
+            kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+                text=f"{egg['emoji']} Yana: {eg_fmt(egg['price'])} 🪙", callback_data=f"egbuy_{key}")]])
+            try:
+                await callback.message.edit_text(
+                    f"🎉 <b>Tabriklaymiz!</b>\n\n{p['emoji']} <b>{p['name']}</b>\n{r_em} Nodirlik: <b>{r_name}</b>\n"
+                    f"📈 Daromad: <b>{eg_fmt(p['inc'])}</b>/soat\n\n🪙 Balans: {eg_fmt(u['coins'])}", reply_markup=kb)
+            except Exception:
+                await callback.message.answer(f"🎉 {p['emoji']} {p['name']} ({r_name})!")
+        finally:
+            EG_BUSY.discard((token, uid))
+
+    def pets_view(uid, u):
+        if not u["pets"]:
+            return "🐾 Hali petingiz yo'q. «🥚 Tuxumlar» bo'limidan tuxum oching!", None
+        items = sorted(((p, n) for p, n in u["pets"].items() if p in EG_PETS), key=lambda x: -EG_PETS[x[0]]["inc"])
+        txt = "🐾 <b>Petlarim</b>\n\n" + "\n".join(eg_pet_line(p, n) for p, n in items)
+        txt += f"\n\n📈 Jami: <b>{eg_fmt(eg_rate(info, uid, u))}</b>/soat" + (" (💎 x2)" if is_premium_active(info, uid) else "")
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+            text=f"💰 Sotish: {EG_PETS[p]['emoji']} {EG_PETS[p]['name']} (+{eg_fmt(eg_sell_price(p))})", callback_data=f"egsell_{p}")] for p, _ in items])
+        return txt, kb
+
+    @dp.message(F.text == "🐾 Petlarim")
+    async def e_pets(message: Message):
+        if not await gate(message):
+            return
+        txt, kb = pets_view(message.from_user.id, me(message))
+        await message.answer(txt, reply_markup=kb)
+
+    @dp.callback_query(F.data.startswith("egsell_"))
+    async def e_sell(callback: CallbackQuery):
+        if not await gate(callback):
+            return
+        uid = callback.from_user.id
+        u = me(callback)
+        price = eg_sell(info, uid, u, callback.data.split("_", 1)[1])
+        if price is None:
+            await callback.answer("Bu pet sizda yo'q", show_alert=True)
+            return
+        save_data()
+        txt, kb = pets_view(uid, u)
+        try:
+            await callback.message.edit_text(txt, reply_markup=kb)
+        except Exception:
+            pass
+        await callback.answer(f"💰 +{eg_fmt(price)} 🪙")
+
+    @dp.message(F.text == "💰 Daromad yig'ish")
+    async def e_collect(message: Message):
+        if not await gate(message):
+            return
+        uid = message.from_user.id
+        u = me(message)
+        if not u["pets"]:
+            await message.answer("🐾 Hali petingiz yo'q. Avval «🥚 Tuxumlar» dan tuxum oching.")
+            return
+        amt = eg_collect(info, uid, u)
+        save_data()
+        await message.answer(f"💰 Yig'ildi: <b>+{eg_fmt(amt)} 🪙</b>\n🪙 Balans: <b>{eg_fmt(u['coins'])}</b>\n📈 Daromad: {eg_fmt(eg_rate(info, uid, u))}/soat")
+
+    @dp.message(F.text == "🎁 Kunlik bonus")
+    async def e_daily(message: Message):
+        if not await gate(message):
+            return
+        u = me(message)
+        r = eg_daily(info, u)
+        if r[0] == "wait":
+            await message.answer(f"⏳ Keyingi bonusgacha: <b>{eg_dur(r[1])}</b>")
+            return
+        save_data()
+        await message.answer(f"🎁 Kunlik bonus: <b>+{eg_fmt(r[1])} 🪙</b>\n🔥 Seriya: {r[2]} kun (7 kungacha bonus oshadi)\n🪙 Balans: {eg_fmt(u['coins'])}")
+
+    @dp.message(F.text == "🔍 Tuxum ovi")
+    async def e_hunt(message: Message):
+        if not await gate(message):
+            return
+        u = me(message)
+        r = eg_hunt(info, u)
+        if r[0] == "wait":
+            await message.answer(f"⏳ Yangi ovga: <b>{eg_dur(r[1])}</b>")
+            return
+        save_data()
+        if r[0] == "egg":
+            await message.answer(f"🎉 Ajoyib omad! Ov paytida tuxum topdingiz va undan <b>{EG_PETS[r[1]]['emoji']} {EG_PETS[r[1]]['name']}</b> chiqdi!")
+        else:
+            await message.answer(f"🔍 Siz yashirin xazina topdingiz: <b>+{eg_fmt(r[1])} 🪙</b>\n🪙 Balans: {eg_fmt(u['coins'])}")
+
+    @dp.message(F.text == "🏆 Reyting")
+    async def e_rating(message: Message):
+        if not await gate(message):
+            return
+        rows = [r for r in eg_top(info, 10) if r[2] > 0]
+        if not rows:
+            await message.answer("🏆 Reyting hali bo'sh. Birinchi bo'ling!")
+            return
+        medals = ["🥇", "🥈", "🥉"]
+        lines = [f"{medals[i] if i < 3 else str(i + 1) + '.'} {html_escape(r[1] or 'Yashirin')} — 📈 {eg_fmt(r[2])}/soat · 🐾 {r[3]}" for i, r in enumerate(rows)]
+        await message.answer("🏆 <b>Eng kuchli o'yinchilar</b>\n\n" + "\n".join(lines))
+
+    @dp.message(F.text == "👥 Do'stlarni taklif qilish")
+    async def e_invite(message: Message):
+        if not await gate(message):
+            return
+        uid = message.from_user.id
+        u = me(message)
+        uname = info.get("username") or (await message.bot.me()).username
+        await message.answer(
+            f"👥 <b>Do'stlarni taklif qiling</b>\n\nHar bir do'stingiz uchun ikkalangizga <b>+{eg_fmt(info['eg_cfg']['ref'])} 🪙</b>.\n\n"
+            f"🔗 Sizning havolangiz:\nhttps://t.me/{uname}?start=ref_{uid}\n\nTaklif qilinganlar: <b>{u.get('refs', 0)}</b>")
+
+    async def do_promo(message: Message, code: str):
+        u = me(message)
+        r = eg_promo(info, message.from_user.id, u, code)
+        if r[0] == "ok":
+            save_data()
+            await message.answer(f"🎉 Promokod qabul qilindi: <b>+{eg_fmt(r[1])} 🪙</b>")
+        else:
+            await message.answer({"none": "❌ Bunday promokod yo'q.", "used": "⚠️ Siz bu promokoddan foydalangansiz.", "over": "😔 Promokod limiti tugagan."}[r[0]])
+
+    @dp.message(Command("promo"))
+    async def e_promo_cmd(message: Message):
+        if not await gate(message):
+            return
+        parts = (message.text or "").split(maxsplit=1)
+        if len(parts) < 2:
+            await message.answer("🎟 Promokodni yozing: <code>/promo KOD</code>")
+            return
+        await do_promo(message, parts[1])
+
+    @dp.message(F.text == "🎟 Promokod")
+    async def e_promo_ask(message: Message, state: FSMContext):
+        if not await gate(message):
+            return
+        await state.set_state(EgUser.promo)
+        await message.answer("🎟 Promokodni yuboring (bekor qilish: /start):")
+
+    @dp.message(EgUser.promo, F.text)
+    async def e_promo_in(message: Message, state: FSMContext):
+        await state.clear()
+        if await gate(message):
+            await do_promo(message, message.text)
+
+    # ---------- Admin ----------
+    @dp.message(Command("stats"))
+    @dp.message(F.text == "📊 Statistika")
+    async def e_stats(message: Message):
+        if not staff(message):
+            return
+        st = info["stats"]
+        us = info["eg_users"].values()
+        await message.answer(
+            "📊 <b>Statistika</b>\n\n"
+            f"👥 Foydalanuvchilar: <b>{len(info['users'])}</b>\n🎮 O'yinchilar: <b>{len(info['eg_users'])}</b>\n"
+            f"🥚 Ochilgan tuxumlar: <b>{st.get('hatched', 0)}</b>\n🐾 Petlar (jami): {sum(sum(int(x) for x in u['pets'].values()) for u in us)}\n"
+            f"💰 Sotilgan petlar: {st.get('sold', 0)}\n🪙 Aylanmadagi tanga: {eg_fmt(sum(u['coins'] for u in us))}\n"
+            f"🎁 Kunlik bonuslar: {st.get('daily_claims', 0)}\n🔍 Tuxum ovlari: {st.get('hunts', 0)}\n🎟 Promokodlar ishlatilgan: {st.get('promos', 0)}\n"
+            f"🚫 Bloklanganlar: {len(info.get('blocked_users', []))}")
+
+    @dp.message(F.text == "🏆 Top o'yinchilar")
+    async def e_top_admin(message: Message):
+        if not staff(message):
+            return
+        rows = eg_top(info, 15)
+        if not rows:
+            await message.answer("Hali o'yinchilar yo'q.")
+            return
+        medals = ["🥇", "🥈", "🥉"]
+        await message.answer("🏆 <b>Top o'yinchilar</b>\n\n" + "\n".join(
+            f"{medals[i] if i < 3 else str(i + 1) + '.'} {html_escape(r[1] or 'Foydalanuvchi')} (<code>{r[0]}</code>) — 📈 {eg_fmt(r[2])}/soat · 🐾 {r[3]} · 🪙 {eg_fmt(r[4])}"
+            for i, r in enumerate(rows)))
+
+    def promos_text():
+        ps = info["eg_promos"]
+        lines = [f"<code>{c}</code> — {eg_fmt(p['coins'])} 🪙 · {len(p['used'])}/{p['uses']}" for c, p in list(ps.items())[-20:]]
+        return ("🎁 <b>Promokodlar</b>\n\n" + ("\n".join(lines) if lines else "Hali yo'q.") +
+                "\n\n➕ Yaratish: <code>KOD tanga soni</code> (masalan: <code>YANGI 500 50</code>)\n🗑 O'chirish: <code>-KOD</code>")
+
+    @dp.message(F.text == "🎁 Promokodlar")
+    async def e_promos(message: Message, state: FSMContext):
+        if not staff(message):
+            return
+        await state.set_state(EgAdmin.promo)
+        await message.answer(promos_text())
+
+    @dp.message(EgAdmin.promo, F.text)
+    async def e_promos_save(message: Message, state: FSMContext):
+        if not staff(message):
+            return
+        t = message.text.strip()
+        if t.startswith("-"):
+            code = t[1:].strip().upper()
+            if info["eg_promos"].pop(code, None) is None:
+                await message.answer("❌ Bunday kod yo'q.")
+                return
+            save_data()
+            await state.clear()
+            await message.answer(f"🗑 {code} o'chirildi.", reply_markup=admin_kb())
+            return
+        parts = t.split()
+        try:
+            code, coins, uses = parts[0].upper(), int(parts[1]), int(parts[2])
+            if not re.fullmatch(r"[A-Z0-9_]{3,20}", code) or not 1 <= coins <= 1_000_000 or not 1 <= uses <= 100000 or len(parts) != 3:
+                raise ValueError
+        except (IndexError, ValueError):
+            await message.answer("❌ Format: <code>KOD tanga soni</code> — kod 3–20 ta lotin harf/raqam. Masalan: <code>YANGI 500 50</code>")
+            return
+        info["eg_promos"][code] = {"coins": coins, "uses": uses, "used": []}
+        save_data()
+        await state.clear()
+        await message.answer(f"✅ Promokod yaratildi: <code>{code}</code> — {eg_fmt(coins)} 🪙, {uses} marta.", reply_markup=admin_kb())
+
+    @dp.message(F.text == "🪙 Tanga berish")
+    async def e_give_ask(message: Message, state: FSMContext):
+        if not staff(message):
+            return
+        await state.set_state(EgAdmin.give)
+        await message.answer("🪙 Format: <code>ID miqdor</code> (masalan: <code>123456789 500</code>). Ayirish uchun minus: <code>123456789 -200</code>")
+
+    @dp.message(EgAdmin.give, F.text)
+    async def e_give_save(message: Message, state: FSMContext):
+        if not staff(message):
+            return
+        try:
+            a, b = message.text.split()
+            tid, amt = int(a), int(b)
+            if abs(amt) > 10_000_000:
+                raise ValueError
+        except ValueError:
+            await message.answer("❌ Format: <code>ID miqdor</code>")
+            return
+        u = info["eg_users"].get(str(tid))
+        if u is None:
+            await message.answer("❌ Bu foydalanuvchi o'yinni boshlamagan.")
+            return
+        u["coins"] = max(0, u["coins"] + amt)
+        save_data()
+        await state.clear()
+        await message.answer(f"✅ {tid}: {'+' if amt >= 0 else ''}{eg_fmt(amt)} 🪙 (balans: {eg_fmt(u['coins'])})", reply_markup=admin_kb())
+        if amt > 0:
+            try:
+                await message.bot.send_message(tid, f"🎁 Admin sizga <b>+{eg_fmt(amt)} 🪙</b> sovg'a qildi!")
+            except Exception:
+                pass
+
+    @dp.message(F.text == "🚫 Bloklash")
+    async def e_block_ask(message: Message, state: FSMContext):
+        if not staff(message):
+            return
+        await state.set_state(EgAdmin.block)
+        await message.answer("🚫 Bloklash / blokdan chiqarish uchun foydalanuvchi ID sini yuboring.\n\n"
+                             f"Bloklanganlar: {', '.join(str(x) for x in info.get('blocked_users', [])[-20:]) or 'yo`q'}")
+
+    @dp.message(EgAdmin.block, F.text)
+    async def e_block_save(message: Message, state: FSMContext):
+        if not staff(message):
+            return
+        try:
+            tid = int(message.text.strip())
+        except ValueError:
+            await message.answer("❌ Faqat ID (raqam) yuboring.")
+            return
+        bl = info.setdefault("blocked_users", [])
+        if tid in bl:
+            bl.remove(tid)
+            res = f"✅ {tid} blokdan chiqarildi."
+        elif is_admin(info, tid):
+            res = "❌ Adminni bloklab bo'lmaydi."
+        else:
+            bl.append(tid)
+            res = f"🚫 {tid} bloklandi."
+        save_data()
+        await state.clear()
+        await message.answer(res, reply_markup=admin_kb())
+
+    def cfg_kb():
+        rows = [[InlineKeyboardButton(text=f"{meta[0]}: {info['eg_cfg'][k]}", callback_data=f"egcfg_{k}")] for k, meta in EG_CFG_META.items()]
+        rows.append([InlineKeyboardButton(text=("✅" if info.get("maintenance_mode") else "⛔") + " 🛠 Texnik tanaffus", callback_data="egcfg_maint")])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    @dp.message(F.text == "⚙️ Sozlamalar")
+    async def e_cfg(message: Message):
+        if staff(message):
+            await message.answer("⚙️ <b>Sozlamalar</b>\n\nO'zgartirish uchun bosing:", reply_markup=cfg_kb())
+
+    @dp.callback_query(F.data.startswith("egcfg_"))
+    async def e_cfg_cb(callback: CallbackQuery, state: FSMContext):
+        if not staff(callback):
+            return
+        k = callback.data.split("_", 1)[1]
+        if k == "maint":
+            info["maintenance_mode"] = not info.get("maintenance_mode")
+            save_data()
+            await callback.message.edit_reply_markup(reply_markup=cfg_kb())
+        elif k in EG_CFG_META:
+            await state.set_state(EgAdmin.cfg)
+            await state.update_data(cfg_key=k)
+            n, lo, hi = EG_CFG_META[k]
+            await callback.message.answer(f"{n}\nHozir: <b>{info['eg_cfg'][k]}</b>\n\nYangi qiymatni yuboring ({lo}–{hi}):")
+        await callback.answer()
+
+    @dp.message(EgAdmin.cfg, F.text)
+    async def e_cfg_save(message: Message, state: FSMContext):
+        if not staff(message):
+            return
+        k = (await state.get_data()).get("cfg_key")
+        if k not in EG_CFG_META:
+            await state.clear()
+            return
+        n, lo, hi = EG_CFG_META[k]
+        try:
+            v = int(message.text.strip())
+            if not lo <= v <= hi:
+                raise ValueError
+        except ValueError:
+            await message.answer(f"❌ {lo} dan {hi} gacha butun son kiriting.")
+            return
+        info["eg_cfg"][k] = v
+        save_data()
+        await state.clear()
+        await message.answer(f"✅ {n}: {v}", reply_markup=admin_kb())
+
+    @dp.message(F.text == "📢 Xabar yuborish")
+    async def e_bc_ask(message: Message, state: FSMContext):
+        if not staff(message):
+            return
+        await state.set_state(EgAdmin.broadcast)
+        await message.answer(f"📢 Xabar matnini yuboring ({len(info['users'])} kishiga boradi). Bekor qilish: /start")
+
+    @dp.message(EgAdmin.broadcast, F.text)
+    async def e_bc_send(message: Message, state: FSMContext):
+        if not staff(message):
+            return
+        text = message.text
+        await state.clear()
+        sent = failed = 0
+        for u in list(info["users"]):
+            try:
+                await message.bot.send_message(u, text)
+                sent += 1
+            except Exception:
+                failed += 1
+            await asyncio.sleep(0.05)
+        await message.answer(f"✅ Yuborildi: {sent}\n❌ Yetmadi: {failed}", reply_markup=admin_kb())
+
+
+# ===================== /TUXUM BOT =====================
+
+
 SETUP_FUNCTIONS = {
+    "roblox": setup_egg_bot,
     "download": setup_download_bot,
     "nakrutka": setup_nakrutka_bot,
     "openbudget": setup_openbudget_bot,
@@ -22714,7 +23489,7 @@ class BotMetricsMiddleware(BaseMiddleware):
         return result
 
 
-_BOT_EMOJI = {"download": "📥", "openbudget": "🗳", "kino_pro": "🎬", "shop": "🛍", "ai": "🤖", "taxi": "🚕", "nakrutka": "🚀"}
+_BOT_EMOJI = {"roblox": "🥚", "download": "📥", "openbudget": "🗳", "kino_pro": "🎬", "shop": "🛍", "ai": "🤖", "taxi": "🚕", "nakrutka": "🚀"}
 _creator_username_cache = {"v": ""}
 
 
