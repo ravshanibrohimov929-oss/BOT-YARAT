@@ -18792,6 +18792,14 @@ async def start_child_bot(token: str, bot_type: str):
                     )
                 except Exception as e:
                     logging.info(f"Savdo admin menyu tugmasi ({token[-6:]}, {_aid}): {e}")
+    if bot_type == "roblox":
+        _binfo = data["bots"].get(token, {})
+        _egg_u = get_eggapp_url(_binfo.get("id"))
+        if _egg_u:
+            try:
+                await child_bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text="🥚 O'yin", web_app=WebAppInfo(url=_egg_u)))
+            except Exception as _e:
+                logging.info(f"Tuxum o'yini menyu tugmasi ({token[-6:]}): {_e}")
     if bot_type in BP_TYPES:
         _binfo = data["bots"].get(token, {})
         _pub_u = get_botapp_url(_binfo.get("id"))
@@ -25849,13 +25857,13 @@ def setup_generic_panel(dp: Dispatcher, token: str):
             [InlineKeyboardButton(text="🛠 Admin Mini app", web_app=WebAppInfo(url=_u))]]))
 
 
-def bp_find_bot(bot_id):
+def bp_find_bot(bot_id, extra_types=()):
     try:
         bid = int(bot_id)
     except Exception:
         return None, None
     for token, info in data["bots"].items():
-        if info.get("id") == bid and info.get("type") in BP_TYPES:
+        if info.get("id") == bid and (info.get("type") in BP_TYPES or info.get("type") in extra_types):
             return token, info
     return None, None
 
@@ -26439,7 +26447,7 @@ async def pub_gate(token: str, info: dict, uid: int) -> dict:
 
 async def pub_auth(request, body=None, gate=True):
     """(token, info, uid, user_dict, xato). initData imzosi + bot qoidalari."""
-    token, info = bp_find_bot(request.query.get("b"))
+    token, info = bp_find_bot(request.query.get("b"), ("roblox",))
     if not info:
         return None, None, None, None, _pub_err("bot_not_found", 404)
     init_data = body.get("initData", "") if body is not None else request.query.get("initData", "")
@@ -26814,8 +26822,8 @@ async def egg_page(request):
 
 async def _egg_ctx(request, body=None):
     token, info, uid, user, err = await pub_auth(request, body)
-    if err:
-        return None, None, None, None, err
+    if err is not None or info is None:
+        return None, None, None, None, err if err is not None else _pub_err("bot_not_found", 404)
     if info.get("type") != "roblox":
         return None, None, None, None, _pub_err("not_found", 404)
     eg_init(info)
