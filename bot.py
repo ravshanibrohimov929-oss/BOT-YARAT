@@ -27029,7 +27029,8 @@ h2{margin:6px 0 10px;font-size:20px;font-weight:900}
 .pet .e{font-size:38px}.pet b{display:block;font-size:12px}.pet span{font-size:11px;color:var(--mu)}
 .pet.lock{opacity:.45}.pet.lock .e{filter:brightness(0)}
 .pet .n{position:absolute;top:4px;right:6px;font-size:12px;font-weight:900;background:#000a;border-radius:8px;padding:0 6px}
-.ov{position:fixed;inset:0;z-index:100;background:radial-gradient(circle at 50% 40%,rgba(80,40,200,.96),rgba(10,5,40,.98));display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px;text-align:center}
+.ov{position:fixed;inset:0;z-index:100;background:radial-gradient(circle at 50% 40%,#5028c8,#0a0528);display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:10px 6px;text-align:center}
+.ov>:first-child{margin-top:auto}.ov>:last-child{margin-bottom:auto}
 .ov[hidden]{display:none}
 .ov .big{font-size:150px;line-height:1}
 .shake{animation:shake .5s ease-in-out infinite}
@@ -27057,6 +27058,14 @@ input{width:100%;padding:12px 14px;border-radius:12px;border:2px solid var(--bd)
 .lb .rk{width:34px;font-weight:900;font-size:18px;text-align:center}.lb .nm{flex:1;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.lb.me{background:rgba(255,210,63,.18);border-radius:12px}
 .stat{display:grid;grid-template-columns:1fr 1fr;gap:8px}.stat div{background:rgba(0,0,0,.28);border-radius:12px;padding:10px}.stat b{display:block;font-size:18px}.stat span{font-size:11px;color:var(--mu)}
 .ar{display:flex;gap:8px;margin:8px 0;align-items:center}.ar .grow{flex:1}
+.cv{display:block;width:100%;height:250px;touch-action:pan-y}
+img.pi{width:100%;max-width:84px;height:auto;display:block;margin:0 auto;pointer-events:none}
+.pet.lock img.pi{filter:brightness(0)}
+.drop img.pi{width:44px;margin:0;flex:none}
+.rc img.pi{width:84px}.res.one .rc img.pi{width:130px}
+.ovcv{display:none;width:100%;max-width:560px;height:44vh}
+.sh3{display:block;width:130px;height:130px;flex:none}
+.ov{overflow-y:auto}.ov .res.many{gap:6px}.ov .rc.sm{width:62px;padding:6px 2px;border-width:2px}.ov .rc.sm img.pi{width:46px}.ov .rc.sm b{font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .err{text-align:center;padding:40px 16px}.err .big{font-size:70px}
 </style>
 </head>
@@ -27070,9 +27079,302 @@ input{width:100%;padding:12px 14px;border-radius:12px;border:2px solid var(--bd)
   <main id="m"><div class="err"><div class="big">🥚</div><p class="mu">Yuklanmoqda...</p></div></main>
 </div>
 <div class="tabs" id="tabs"></div>
-<div class="ov" id="ov" hidden><div class="big" id="ovEgg">🥚</div><div class="res" id="ovRes"></div><div id="ovBtn" style="margin-top:18px"></div></div>
+<div class="ov" id="ov" hidden><canvas class="ovcv" id="ovCv"></canvas><div class="big" id="ovEgg">🥚</div><div class="res" id="ovRes"></div><div id="ovBtn" style="margin-top:18px"></div></div>
 <div class="sheet" id="sh" hidden></div>
 <div class="toast" id="toast" hidden></div>
+<script>
+/* ===== Mini 3D (tashqi kutubxonasiz): poligonlarni canvas'ga chizadi ===== */
+var G3 = (function () {
+  var PI = Math.PI, sin = Math.sin, cos = Math.cos, sqrt = Math.sqrt;
+  function rotV(p, rx, ry, rz) {
+    var x = p[0], y = p[1], z = p[2], t;
+    if (rz) { t = x * cos(rz) - y * sin(rz); y = x * sin(rz) + y * cos(rz); x = t; }
+    if (rx) { t = y * cos(rx) - z * sin(rx); z = y * sin(rx) + z * cos(rx); y = t; }
+    if (ry) { t = x * cos(ry) + z * sin(ry); z = -x * sin(ry) + z * cos(ry); x = t; }
+    return [x, y, z];
+  }
+  function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+  function rgb(c, k, a) { return "rgb(" + Math.round(clamp(c[0] * k, 0, 255)) + "," + Math.round(clamp(c[1] * k, 0, 255)) + "," + Math.round(clamp(c[2] * k, 0, 255)) + ")"; }
+  // ---- geometriya ----
+  var BOX_V = [[-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1], [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]];
+  var BOX_F = [[4, 5, 6, 7], [1, 0, 3, 2], [5, 1, 2, 6], [0, 4, 7, 3], [7, 6, 2, 3], [0, 1, 5, 4]];
+  function buildGrid(part) {
+    var LA = part.lat || 9, LO = part.lon || 14, g = [], i, j, A0 = part.a0 == null ? -PI / 2 : part.a0, A1 = part.a1 == null ? PI / 2 : part.a1;
+    for (i = 0; i <= LA; i++) {
+      var v = i / LA, row = [];
+      for (j = 0; j <= LO; j++) {
+        var u = j / LO, b = u * 2 * PI, a0 = A0, a1 = A1;
+        if (part.edge) { var ed = part.edge(j % LO); if (part.edgeSide === "a0") a0 = A0 + ed; else a1 = A1 + ed; }
+        var a = a0 + (a1 - a0) * v, r = cos(a), y = sin(a), x, z, rr = r;
+        if (part.type === "egg") { rr = r * (1 - 0.16 * y); y = y * 1.28; }
+        x = rr * sin(b); z = rr * cos(b);
+        row.push([x * part.s[0], y * part.s[1], z * part.s[2], u, v]);
+      }
+      g.push(row);
+    }
+    return { grid: g, LA: LA, LO: LO };
+  }
+  function Scene(canvas, opt) {
+    opt = opt || {};
+    this.cv = canvas; this.ctx = canvas.getContext("2d");
+    this.objs = []; this.cam = { d: opt.d || 6, pitch: opt.pitch == null ? 0.22 : opt.pitch, f: opt.f || 1.35 };
+    this.fx = []; this.bg = null; this.flash = 0; this.rays = null; this.time = 0;
+    this.size = opt.size || 0;
+    this.resize();
+  }
+  Scene.prototype.resize = function () {
+    var cv = this.cv, dpr = Math.min(2, window.devicePixelRatio || 1), w = this.size || cv.clientWidth || 300, h = this.size || cv.clientHeight || 300;
+    if (this.size) dpr = 1;
+    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); this.W = cv.width; this.H = cv.height; this.dpr = dpr;
+  };
+  Scene.prototype.project = function (p) {
+    var c = this.cam, q = rotV(p, c.pitch, 0, 0); q[2] -= c.d;
+    var k = this.H * c.f / (-q[2]);
+    return [this.W / 2 + q[0] * k, this.H * 0.52 - q[1] * k, q];
+  };
+  // obyekt: {parts:[], pos:[x,y,z], rot:[rx,ry,rz], sc:[sx,sy,sz], hidden, shadow}
+  Scene.prototype.add = function (o) { o.pos = o.pos || [0, 0, 0]; o.rot = o.rot || [0, 0, 0]; o.sc = o.sc || [1, 1, 1]; this.objs.push(o); return o; };
+  var LD = (function () { var l = [-0.45, 0.75, 0.6], n = sqrt(l[0] * l[0] + l[1] * l[1] + l[2] * l[2]); return [l[0] / n, l[1] / n, l[2] / n]; })();
+  Scene.prototype.render = function (t) {
+    var ctx = this.ctx, W = this.W, H = this.H, self = this, faces = [], oi, pi;
+    this.time = t;
+    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, W, H);
+    if (this.bg) this.bg(ctx, W, H, t);
+    // rays (orqada)
+    if (this.rays) this.drawRays(ctx, t);
+    for (oi = 0; oi < this.objs.length; oi++) {
+      var o = this.objs[oi]; if (o.hidden) continue;
+      if (o.shadow) {
+        var sp = this.project([o.pos[0], -o.shadow.y, o.pos[2]]), sr = o.shadow.r * o.sc[0] * this.H * this.cam.f / (this.cam.d) * 0.5;
+        ctx.save(); ctx.translate(sp[0], sp[1]); ctx.scale(1, 0.32);
+        var gr = ctx.createRadialGradient(0, 0, 0, 0, 0, sr); gr.addColorStop(0, "rgba(0,0,0,.45)"); gr.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(0, 0, sr, 0, 2 * PI); ctx.fill(); ctx.restore();
+      }
+      for (pi = 0; pi < o.parts.length; pi++) this.partFaces(o, o.parts[pi], t, faces);
+    }
+    faces.sort(function (a, b) { return a.z - b.z; });
+    ctx.lineJoin = "round";
+    for (var i = 0; i < faces.length; i++) {
+      var f = faces[i], p = f.p;
+      ctx.globalAlpha = f.a;
+      ctx.fillStyle = f.c; ctx.strokeStyle = f.s;
+      ctx.lineWidth = f.lw * this.dpr;
+      ctx.beginPath(); ctx.moveTo(p[0], p[1]);
+      for (var k = 2; k < p.length; k += 2) ctx.lineTo(p[k], p[k + 1]);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    // zarralar
+    for (var q = this.fx.length - 1; q >= 0; q--) {
+      var s = this.fx[q]; s.life -= 1; if (s.life <= 0) { this.fx.splice(q, 1); continue; }
+      s.x += s.vx; s.y += s.vy; s.vy += s.g || 0;
+      var al = clamp(s.life / s.max, 0, 1);
+      ctx.globalAlpha = al; ctx.fillStyle = s.col;
+      ctx.save(); ctx.translate(s.x, s.y); ctx.rotate(s.life * 0.2);
+      var r = s.r * this.dpr; ctx.beginPath();
+      for (var m = 0; m < 8; m++) { var rad = m % 2 ? r * 0.35 : r; ctx.lineTo(cos(m * PI / 4) * rad, sin(m * PI / 4) * rad); }
+      ctx.closePath(); ctx.fill(); ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+    if (this.flash > 0.01) { ctx.fillStyle = "rgba(255,255,255," + clamp(this.flash, 0, 1) + ")"; ctx.fillRect(0, 0, W, H); this.flash *= 0.86; }
+  };
+  Scene.prototype.drawRays = function (ctx, t) {
+    var R = this.rays, p = this.project(R.pos), n = 14, rad = this.H * 0.75 * R.k;
+    ctx.save(); ctx.translate(p[0], p[1]); ctx.rotate(t * 0.0007);
+    for (var i = 0; i < n; i++) {
+      ctx.rotate(2 * PI / n); ctx.fillStyle = R.col; ctx.globalAlpha = 0.13 * R.k;
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(rad, -rad * 0.045); ctx.lineTo(rad, rad * 0.045); ctx.closePath(); ctx.fill();
+    }
+    ctx.restore(); ctx.globalAlpha = 1;
+  };
+  Scene.prototype.burst = function (pos, col, n) {
+    var p = this.project(pos);
+    for (var i = 0; i < n; i++) {
+      var a = Math.random() * 2 * PI, v = (2 + Math.random() * 5) * this.dpr;
+      this.fx.push({ x: p[0], y: p[1], vx: cos(a) * v, vy: sin(a) * v - 2 * this.dpr, g: 0.12 * this.dpr, life: 40 + Math.random() * 30, max: 70, r: 4 + Math.random() * 6, col: col[(Math.random() * col.length) | 0] });
+    }
+  };
+  Scene.prototype.partFaces = function (o, part, t, out) {
+    var ctx = this.ctx, an = part.anim ? part.anim(t, o) : null, off = an && an.o || [0, 0, 0], prot = an && an.r || part.rot || [0, 0, 0];
+    var c = part.c || [0, 0, 0], self = this, cam = this.cam, W = this.W, H = this.H;
+    var cc = [c[0] + off[0], c[1] + off[1], c[2] + off[2]];
+    var toCam = function (v) {
+      var p = rotV(v, prot[0], prot[1], prot[2]);
+      p = [p[0] + cc[0], p[1] + cc[1], p[2] + cc[2]];
+      if (part.world) { p = part.world(p, o, t); }
+      p = [p[0] * o.sc[0], p[1] * o.sc[1], p[2] * o.sc[2]];
+      p = rotV(p, o.rot[0], o.rot[1], o.rot[2]);
+      p = [p[0] + o.pos[0], p[1] + o.pos[1], p[2] + o.pos[2]];
+      p = rotV(p, cam.pitch, 0, 0); p[2] -= cam.d; return p;
+    };
+    var ctr = toCam([0, 0, 0]), k;
+    var pr = function (q) { var kk = H * cam.f / (-q[2]); return [W / 2 + q[0] * kk, H * 0.52 - q[1] * kk]; };
+    var alpha = (part.alpha == null ? 1 : (typeof part.alpha === "function" ? part.alpha(o, t) : part.alpha)) * (o.alpha == null ? 1 : o.alpha);
+    var emis = part.emit || 0;
+    var polys = [];
+    if (part.type === "box") {
+      if (!part._v) { part._v = BOX_V.map(function (v) { return [v[0] * part.s[0] / 2, v[1] * part.s[1] / 2, v[2] * part.s[2] / 2]; }); }
+      var vs = part._v.map(toCam);
+      for (var i = 0; i < 6; i++) { var f = BOX_F[i]; polys.push({ v: [vs[f[0]], vs[f[1]], vs[f[2]], vs[f[3]]], col: part.col }); }
+    } else {
+      if (!part._g) part._g = buildGrid(part);
+      var G = part._g, T = [];
+      for (var a = 0; a <= G.LA; a++) { T.push(G.grid[a].map(function (v) { var w = toCam(v); w.u = v[3]; w.vv = v[4]; w.l = v; return w; })); }
+      for (a = 0; a < G.LA; a++) for (var b = 0; b < G.LO; b++) {
+        var p0 = T[a][b], p1 = T[a][b + 1], p2 = T[a + 1][b + 1], p3 = T[a + 1][b];
+        var col = part.col, loc = null;
+        if (part.colorAt) { loc = { u: (p0.u + p1.u) / 2, v: (p0.vv + p2.vv) / 2, y: (p0.l[1] + p2.l[1]) / 2 / part.s[1], x: p0.l[0], z: p0.l[2] }; col = part.colorAt(loc, o, t, a, G.LA); }
+        polys.push({ v: [p0, p1, p2, p3], col: col });
+      }
+    }
+    var shell = part.type === "egg" && o.open > 0.02;
+    for (var n = 0; n < polys.length; n++) {
+      var pl = polys[n], v = pl.v, d1 = [v[1][0] - v[0][0], v[1][1] - v[0][1], v[1][2] - v[0][2]], d2 = [v[2][0] - v[0][0], v[2][1] - v[0][1], v[2][2] - v[0][2]];
+      var nx = d1[1] * d2[2] - d1[2] * d2[1], ny = d1[2] * d2[0] - d1[0] * d2[2], nz = d1[0] * d2[1] - d1[1] * d2[0];
+      var fc = [(v[0][0] + v[2][0]) / 2, (v[0][1] + v[2][1]) / 2, (v[0][2] + v[2][2]) / 2];
+      var dx = fc[0] - ctr[0], dy = fc[1] - ctr[1], dz = fc[2] - ctr[2];
+      if (nx * dx + ny * dy + nz * dz < 0) { nx = -nx; ny = -ny; nz = -nz; }
+      var nl = sqrt(nx * nx + ny * ny + nz * nz) || 1; nx /= nl; ny /= nl; nz /= nl;
+      var facing = (nx * -fc[0] + ny * -fc[1] + nz * -fc[2]) > 0, inner = false;
+      if (!facing) { if (!shell) continue; inner = true; nx = -nx; ny = -ny; nz = -nz; }
+      var lam = Math.max(0, nx * LD[0] + ny * LD[1] + nz * LD[2]);
+      var kk = emis ? 1.15 : 0.5 + 0.62 * lam;
+      var base = pl.col; if (inner) base = part.inner || [255, 244, 214];
+      var fill = rgb(base, kk), pts = [], zz = 0;
+      for (var q = 0; q < 4; q++) { var pp = pr(v[q]); pts.push(pp[0], pp[1]); zz += v[q][2]; }
+      out.push({ z: zz / 4 + (inner ? -0.02 : 0), p: pts, c: fill, s: part.type === "box" ? rgb(base, kk * 0.62) : fill, lw: part.type === "box" ? 1.1 : 1, a: alpha });
+    }
+  };
+  return { Scene: Scene, rotV: rotV, rgb: rgb };
+})();
+
+</script>
+<script>
+/* ===== Modellar: tuxumlar va petlar (Roblox uslubidagi blokli) ===== */
+var G3M = (function () {
+  var PI = Math.PI, sin = Math.sin, cos = Math.cos;
+  function B(c, s, col, x) { var p = { type: "box", c: c, s: s, col: col }; if (x) for (var k in x) p[k] = x[k]; return p; }
+  function S(c, r, col, x) { var p = { type: "sph", c: c, s: [r, r, r], col: col, lat: 6, lon: 9 }; if (x) for (var k in x) p[k] = x[k]; return p; }
+  var DK = [32, 26, 30], WH = [250, 250, 250];
+  function eyes(z, y, sp, col) { y = y == null ? 0.55 : y; return [B([-(sp || 0.26), y, z], [0.15, 0.22, 0.05], col || DK), B([(sp || 0.26), y, z], [0.15, 0.22, 0.05], col || DK), B([-(sp || 0.26) + 0.03, y + 0.05, z + 0.03], [0.05, 0.07, 0.03], WH), B([(sp || 0.26) + 0.03, y + 0.05, z + 0.03], [0.05, 0.07, 0.03], WH)]; }
+  function wag(amp, sp) { return function (t) { return { r: [0, sin(t / (sp || 220)) * (amp || 0.4), 0] }; }; }
+  function wing(side, col, sz, y) {
+    // sz: [yoyilish, balandlik]; old tomonga qarab, ikki yonda panel
+    return B([side * (0.5 + sz[0] / 2), (y == null ? 0.1 : y) + 0.22, -0.42], [sz[0], sz[1] || 0.9, 0.07], col, { anim: function (t) { return { r: [0, side * sin(t / 150) * 0.32, side * -0.22] }; } });
+  }
+  function frame(o) {
+    var P = [], lg = o.leg || o.body;
+    [[-0.28, 0.25], [0.28, 0.25], [-0.28, -0.25], [0.28, -0.25]].forEach(function (p) { P.push(B([p[0], -0.8, p[1]], [0.3, 0.42, 0.3], lg)); });
+    P.push(B([0, -0.35, 0], [1.0, 0.8, 0.9], o.body));
+    if (o.belly) P.push(B([0, -0.42, 0.2], [0.8, 0.55, 0.55], o.belly));
+    P.push(B([0, 0.45, 0.12], [1.05, 0.92, 0.95], o.head || o.body));
+    if (o.snout) P.push(B([0, 0.28, 0.66], [0.52, 0.34, 0.28], o.snout));
+    if (!o.noeyes) P = P.concat(eyes(0.6));
+    P.push(B([0, o.snout ? 0.36 : 0.32, o.snout ? 0.81 : 0.62], [0.2, 0.12, 0.06], o.nose || DK));
+    return P;
+  }
+  function ears(kind, col, inner, tip) {
+    var P = [];
+    [-1, 1].forEach(function (s) {
+      if (kind === "tri") { P.push(B([s * 0.32, 1.05, 0.08], [0.3, 0.28, 0.2], col)); P.push(B([s * 0.32, 1.28, 0.08], [0.18, 0.2, 0.14], tip || col)); }
+      else if (kind === "round") P.push(S([s * 0.4, 1.0, 0.02], 0.2, col, { lat: 5, lon: 8 }));
+      else if (kind === "long") { P.push(B([s * 0.22, 1.4, 0.02], [0.22, 0.85, 0.14], col)); if (inner) P.push(B([s * 0.22, 1.4, 0.1], [0.1, 0.65, 0.04], inner)); }
+      else if (kind === "floppy") P.push(B([s * 0.58, 0.55, 0.1], [0.14, 0.55, 0.32], col));
+    });
+    return P;
+  }
+  function tail(kind, col, tipc) {
+    if (kind === "stub") return [S([0, -0.1, -0.52], 0.15, col)];
+    if (kind === "long") return [B([0, -0.05, -0.68], [0.14, 0.14, 0.4], col, { anim: wag(0.3) }), B([0, 0.05, -0.95], [0.14, 0.14, 0.3], tipc || col, { anim: wag(0.55) })];
+    if (kind === "fluffy") return [S([0, -0.05, -0.7], 0.3, col, { anim: wag(0.25) }), S([0, -0.02, -0.92], 0.18, tipc || col, { anim: wag(0.35) })];
+    return [];
+  }
+  var PETS = {
+    dog: function () { return frame({ body: [205, 152, 92], belly: [242, 224, 196], snout: [242, 224, 196], nose: DK }).concat(ears("floppy", [120, 80, 42]), tail("stub", [205, 152, 92])); },
+    cat: function () { return frame({ body: [150, 152, 165], belly: [225, 225, 232], nose: [240, 150, 165] }).concat(ears("tri", [150, 152, 165], null, [240, 170, 185]), tail("long", [150, 152, 165]), [B([0, -0.3, 0], [1.02, 0.1, 0.14], [100, 102, 115]), B([0, -0.05, 0], [1.02, 0.1, 0.14], [100, 102, 115])]); },
+    bunny: function () { return frame({ body: [250, 250, 252], belly: [255, 230, 236], nose: [240, 140, 160] }).concat(ears("long", [250, 250, 252], [255, 190, 205]), tail("fluffy", [255, 255, 255])); },
+    fox: function () { return frame({ body: [236, 122, 42], belly: [255, 245, 235], snout: [255, 245, 235] }).concat(ears("tri", [236, 122, 42], null, [60, 40, 34]), tail("fluffy", [236, 122, 42], [255, 255, 255])); },
+    panda: function () { var P = frame({ body: [250, 250, 250], leg: [30, 28, 30], nose: DK, noeyes: true }); P = P.concat([B([-0.27, 0.56, 0.6], [0.28, 0.32, 0.05], DK), B([0.27, 0.56, 0.6], [0.28, 0.32, 0.05], DK), B([-0.27, 0.58, 0.64], [0.1, 0.13, 0.04], WH), B([0.27, 0.58, 0.64], [0.1, 0.13, 0.04], WH)]); return P.concat(ears("round", DK), tail("stub", WH)); },
+    lion: function () { var m = [150, 92, 42]; return frame({ body: [222, 172, 92], belly: [240, 215, 160], snout: [240, 215, 160] }).concat([B([0, 0.5, -0.28], [1.6, 1.4, 0.35], m), B([-0.78, 0.48, 0.1], [0.3, 1.25, 0.8], m), B([0.78, 0.48, 0.1], [0.3, 1.25, 0.8], m), B([0, 1.05, 0.0], [1.3, 0.3, 0.8], m)], ears("round", [222, 172, 92]), tail("long", [222, 172, 92], m)); },
+    tiger: function () { var k = [38, 30, 28]; return frame({ body: [242, 150, 42], belly: [255, 238, 215], snout: [255, 238, 215] }).concat(ears("round", [242, 150, 42]), tail("long", [242, 150, 42], k), [B([0, -0.3, -0.3], [1.04, 0.14, 0.12], k), B([0, -0.3, 0.05], [1.04, 0.14, 0.12], k), B([0, -0.3, 0.35], [1.04, 0.14, 0.12], k), B([0, -0.55, -0.15], [1.04, 0.12, 0.12], k), B([0, 0.92, 0.45], [0.1, 0.12, 0.06], k, { c: [0, 0.9, 0.58] }), B([-0.18, 0.83, 0.6], [0.08, 0.2, 0.05], k), B([0.18, 0.83, 0.6], [0.08, 0.2, 0.05], k)]); },
+    unicorn: function () {
+      var rb = [[255, 90, 90], [255, 170, 60], [255, 230, 80], [90, 220, 120], [90, 170, 255], [170, 110, 255]], P = frame({ body: [252, 250, 255], belly: [255, 235, 245], nose: [240, 150, 175] });
+      P = P.concat(ears("tri", [252, 250, 255], null, [255, 200, 220]), [B([0, 1.08, 0.38], [0.22, 0.28, 0.22], [255, 220, 120]), B([0, 1.3, 0.38], [0.16, 0.22, 0.16], [255, 235, 150]), B([0, 1.5, 0.38], [0.1, 0.2, 0.1], [255, 250, 200])]);
+      for (var i = 0; i < 5; i++) P.push(B([0, 0.95 - i * 0.28, -0.42 - (i > 2 ? 0.05 : 0)], [0.26, 0.28, 0.3], rb[i]));
+      for (i = 0; i < 3; i++) P.push(B([0, -0.05 - i * 0.05, -0.62 - i * 0.2], [0.18, 0.18, 0.22], rb[3 + i], { anim: wag(0.3, 200 + i * 40) }));
+      return P;
+    },
+    wolf: function () { return frame({ body: [112, 122, 146], belly: [200, 208, 225], snout: [165, 175, 195], nose: DK }).concat(ears("tri", [90, 98, 120]), tail("fluffy", [112, 122, 146], [200, 208, 225])); },
+    eagle: function () { var P = frame({ body: [122, 82, 52], head: [248, 248, 250], leg: [245, 190, 50], nose: [250, 190, 50] }); P = P.concat([B([0, 0.36, 0.74], [0.26, 0.24, 0.34], [250, 190, 50]), B([0, -0.15, -0.62], [0.6, 0.12, 0.5], [95, 62, 40]), wing(-1, [105, 70, 44], [1.0, 0.9]), wing(1, [105, 70, 44], [1.0, 0.9]), B([-1.42, 0.35, -0.42], [0.4, 0.8, 0.06], [248, 248, 250]), B([1.42, 0.35, -0.42], [0.4, 0.8, 0.06], [248, 248, 250])]); return P; },
+    dragon: function () {
+      var g = [62, 172, 92], P = frame({ body: g, belly: [242, 222, 132], snout: [80, 190, 108], nose: [30, 80, 40] });
+      P = P.concat([B([-0.32, 1.1, 0.05], [0.13, 0.36, 0.13], [250, 240, 210]), B([0.32, 1.1, 0.05], [0.13, 0.36, 0.13], [250, 240, 210]), wing(-1, [40, 130, 70], [1.0, 0.9], 0.15), wing(1, [40, 130, 70], [1.0, 0.9], 0.15)]);
+      for (var i = 0; i < 4; i++) P.push(B([0, 0.1, 0.3 - i * 0.22], [0.1, 0.16, 0.14], [240, 210, 90]));
+      return P.concat(tail("long", g, [240, 210, 90]));
+    },
+    phoenix: function () {
+      var P = frame({ body: [236, 84, 40], head: [255, 150, 40], belly: [255, 190, 70], leg: [250, 190, 50], nose: [250, 190, 50] }), fl = function (c, a, sp) { return { alpha: a, anim: function (t) { return { o: [0, sin(t / sp) * 0.06, 0] }; }, col: c }; };
+      P = P.concat([B([0, 1.1, 0.05], [0.2, 0.42, 0.2], [255, 220, 80], { emit: 1 }), wing(-1, [255, 110, 30], [1.2, 1.0], 0.2), wing(1, [255, 110, 30], [1.2, 1.0], 0.2), B([-1.62, 0.5, -0.46], [0.5, 0.7, 0.06], [255, 210, 70], { emit: 1 }), B([1.62, 0.5, -0.46], [0.5, 0.7, 0.06], [255, 210, 70], { emit: 1 }),
+        B([0, 0.0, -0.7], [0.4, 0.4, 0.5], [255, 120, 30], { alpha: 0.92, emit: 1, anim: function (t) { return { o: [0, sin(t / 90) * 0.05, 0] }; } }), B([0, 0.1, -1.05], [0.28, 0.3, 0.4], [255, 210, 70], { emit: 1, alpha: 0.9, anim: function (t) { return { o: [0, sin(t / 70) * 0.08, 0] }; } })]);
+      return P;
+    },
+    robo: function () {
+      var P = frame({ body: [150, 166, 188], head: [172, 188, 208], leg: [90, 98, 116], noeyes: true, nose: [90, 98, 116] });
+      return P.concat([B([0, 0.55, 0.62], [0.82, 0.24, 0.05], [90, 230, 255], { emit: 1 }), B([0, 1.08, 0.1], [0.08, 0.3, 0.08], [100, 108, 126]), S([0, 1.28, 0.1], 0.1, [255, 80, 80], { emit: 1 }), B([-0.6, 0.45, 0.12], [0.14, 0.34, 0.34], [90, 98, 116]), B([0.6, 0.45, 0.12], [0.14, 0.34, 0.34], [90, 98, 116]), B([0, -0.25, 0.47], [0.55, 0.42, 0.05], [60, 120, 210]), B([-0.15, -0.25, 0.51], [0.14, 0.14, 0.03], [255, 220, 80], { emit: 1 }), B([0.15, -0.25, 0.51], [0.14, 0.14, 0.03], [90, 230, 140], { emit: 1 })]);
+    },
+    alien: function () {
+      var g = [132, 222, 72], P = frame({ body: g, head: g, belly: [190, 245, 130], noeyes: true, nose: [60, 120, 40] });
+      P = P.concat([B([-0.27, 0.52, 0.6], [0.32, 0.4, 0.05], [20, 20, 30]), B([0.27, 0.52, 0.6], [0.32, 0.4, 0.05], [20, 20, 30]), B([-0.22, 0.6, 0.64], [0.09, 0.12, 0.03], WH), B([0.32, 0.6, 0.64], [0.09, 0.12, 0.03], WH),
+        B([-0.25, 1.15, 0.05], [0.06, 0.36, 0.06], g), B([0.25, 1.15, 0.05], [0.06, 0.36, 0.06], g), S([-0.25, 1.4, 0.05], 0.13, [255, 120, 220], { emit: 1 }), S([0.25, 1.4, 0.05], 0.13, [255, 120, 220], { emit: 1 })]);
+      return P;
+    },
+    rainbow: function () {
+      var rb = [[255, 80, 80], [255, 165, 50], [255, 230, 80], [90, 220, 120], [80, 170, 255], [170, 110, 255]], P = [];
+      [[-0.28, 0.25], [0.28, 0.25], [-0.28, -0.25], [0.28, -0.25]].forEach(function (p, i) { P.push(B([p[0], -0.8, p[1]], [0.3, 0.42, 0.3], rb[(i * 2) % 6])); });
+      for (var i = 0; i < 3; i++) P.push(B([0, -0.35, 0.3 - i * 0.3], [1.0, 0.8, 0.3], rb[[0, 2, 4][i]]));
+      P.push(B([0, 0.45, 0.12], [1.05, 0.92, 0.95], [250, 250, 255]), B([0, 0.28, 0.66], [0.52, 0.34, 0.28], [255, 236, 250]), B([0, 0.36, 0.81], [0.2, 0.12, 0.06], DK));
+      P = P.concat(eyes(0.6), [B([-0.3, 1.12, 0.05], [0.13, 0.36, 0.13], WH), B([0.3, 1.12, 0.05], [0.13, 0.36, 0.13], WH)]);
+      for (i = 0; i < 6; i++) { var hh = 1.0 - i * 0.1; P.push(B([-(0.62 + i * 0.16), 0.3 + (hh - 0.9) / 2, -0.45], [0.16, hh, 0.07], rb[i], { emit: 1, anim: function (t) { return { r: [0, -sin(t / 150) * 0.3, 0.2] }; } }), B([0.62 + i * 0.16, 0.3 + (hh - 0.9) / 2, -0.45], [0.16, hh, 0.07], rb[i], { emit: 1, anim: function (t) { return { r: [0, sin(t / 150) * 0.3, -0.2] }; } })); }
+      for (i = 0; i < 4; i++) P.push(B([0, 0.1, 0.3 - i * 0.22], [0.1, 0.16, 0.14], rb[i + 1]));
+      for (i = 0; i < 4; i++) P.push(B([0, -0.05, -0.62 - i * 0.2], [0.16 - i * 0.02, 0.16, 0.22], rb[i], { anim: wag(0.3, 200 + i * 30) }));
+      return P;
+    },
+    king: function () {
+      var gd = [238, 186, 52], pu = [122, 50, 176], P = frame({ body: gd, belly: pu, snout: [248, 205, 90], nose: [120, 70, 20] });
+      P = P.concat([B([0, 1.0, 0.1], [0.9, 0.2, 0.7], [255, 214, 60], { emit: 0.3 }), B([-0.36, 1.2, 0.1], [0.14, 0.3, 0.14], [255, 214, 60]), B([0, 1.22, 0.1], [0.14, 0.38, 0.14], [255, 214, 60]), B([0.36, 1.2, 0.1], [0.14, 0.3, 0.14], [255, 214, 60]), S([0, 1.1, 0.5], 0.09, [255, 60, 90], { emit: 1 }),
+        B([-0.5, 0.95, -0.2], [0.14, 0.42, 0.14], [252, 242, 215]), B([0.5, 0.95, -0.2], [0.14, 0.42, 0.14], [252, 242, 215]), B([0, -0.2, -0.52], [1.05, 1.1, 0.08], [196, 36, 60]), wing(-1, pu, [1.3, 1.1], 0.25), wing(1, pu, [1.3, 1.1], 0.25)]);
+      for (var i = 0; i < 4; i++) P.push(B([0, 0.1, 0.3 - i * 0.22], [0.1, 0.18, 0.14], [255, 214, 60]));
+      return P.concat(tail("long", gd, [255, 214, 60]));
+    }
+  };
+  // ---- tuxumlar ----
+  var EGGS = {
+    common: { base: [246, 236, 208], pat: function (u, y, t) { return sin(u * 20) * sin(y * 16 + 1.3) > 0.5 ? [168, 116, 72] : null; }, inner: [255, 248, 228] },
+    rare: { base: [84, 168, 255], pat: function (u, y) { var tri = Math.abs(((u * 8) % 1) - 0.5) * 2; return Math.abs(y - (0.52 + 0.07 * tri)) < 0.06 ? [255, 255, 255] : (Math.abs(y - (0.24 + 0.05 * tri)) < 0.035 ? [200, 230, 255] : null); }, inner: [215, 235, 255] },
+    epic: { base: [164, 86, 238], pat: function (u, y) { var a = Math.abs(((u * 9) % 1) - 0.5), b = Math.abs(((y * 7) % 1) - 0.5); return a + b < 0.26 ? ((Math.floor(u * 9) + Math.floor(y * 7)) % 2 ? [255, 130, 200] : [255, 224, 90]) : null; }, inner: [235, 210, 255] },
+    legend: { base: [255, 200, 40], pat: function (u, y, t) { var band = Math.floor(y * 9); if (band % 3 === 0) { var h = [[255, 90, 90], [90, 220, 120], [90, 160, 255]][(band / 3) % 3 | 0] || [255, 90, 90]; return h; } return null; }, inner: [255, 240, 190], shine: true }
+  };
+  function makeEgg(kind, low) {
+    var E = EGGS[kind], R = 0.9, ac = 0.12;
+    var zig = function (j) { return (j % 2 ? 0.1 : -0.06); };
+    var color = function (top) {
+      return function (loc, o, t, row, LA) {
+        var y = (loc.y / 1.28 + 1) / 2, c = E.pat(loc.u, y, t) || E.base, k = 1;
+        if (E.shine) k = 1 + 0.12 * sin(t / 260 + loc.u * 12 + y * 6);
+        if (o.crack > 0.05 && ((!top && row === LA - 1) || (top && row === 0))) return [58, 40, 30];
+        return [c[0] * k, c[1] * k, c[2] * k];
+      };
+    };
+    var bottom = { type: "egg", s: [R, R, R], a0: -PI / 2, a1: ac, edge: zig, edgeSide: "a1", lat: low ? 6 : 11, lon: low ? 12 : 20, col: E.base, colorAt: color(false), inner: E.inner };
+    var top = { type: "egg", s: [R, R, R], a0: ac, a1: PI / 2, edge: zig, edgeSide: "a0", lat: low ? 5 : 9, lon: low ? 12 : 20, col: E.base, colorAt: color(true), inner: E.inner,
+      anim: function (t, o) { var k = o.open || 0; return { o: [0, k * 1.2, -k * 0.2], r: [-k * 0.5, 0, k * 0.55] }; } };
+    return { parts: [bottom, top], open: 0, crack: 0, shadow: { y: 1.15, r: 1.2 } };
+  }
+  function makePet(pk) { var f = PETS[pk]; return { parts: f ? f() : PETS.dog(), shadow: { y: 1.02, r: 1.1 } }; }
+  return { makeEgg: makeEgg, makePet: makePet, PETS: PETS };
+})();
+
+</script>
 <script>
 var tg = window.Telegram && window.Telegram.WebApp;
 if (tg) { try { tg.ready(); tg.expand(); tg.setHeaderColor && tg.setHeaderColor("#1b1464"); tg.setBackgroundColor && tg.setBackgroundColor("#1b1464"); } catch (e) {} }
@@ -27085,6 +27387,17 @@ function fmt(n) { return String(Math.floor(n)).replace(/\B(?=(\d{3})+(?!\d))/g, 
 function dur(s) { s = Math.max(0, Math.floor(s)); var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60; return h ? h + " soat " + m + " daq" : (m ? m + " daq " : "") + x + " s"; }
 function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 function hap(k) { try { if (tg && tg.HapticFeedback) { if (k === "ok") tg.HapticFeedback.notificationOccurred("success"); else tg.HapticFeedback.impactOccurred(k || "light"); } } catch (e) {} }
+function has3d() { try { return typeof G3 !== "undefined" && typeof G3M !== "undefined" && !!document.createElement("canvas").getContext("2d"); } catch (e) { return false; } }
+var THUMB = {};
+function thumb(pk) {
+  if (THUMB[pk] !== undefined) return THUMB[pk];
+  var u = "";
+  try {
+    if (has3d()) { var c = document.createElement("canvas"), sc = new G3.Scene(c, { d: 5.3, size: 150 }), o = sc.add(G3M.makePet(pk)); o.rot = [0, 0.55, 0]; o.shadow = null; sc.render(0); u = c.toDataURL("image/png"); }
+  } catch (e) { u = ""; }
+  THUMB[pk] = u; return u;
+}
+function petImg(pk) { var u = thumb(pk); return u ? '<img class="pi" src="' + u + '" alt="">' : '<div class="e">' + CAT.pets[pk].emoji + "</div>"; }
 function toast(t) { var e = $("toast"); e.textContent = t; e.hidden = false; clearTimeout(tt); tt = setTimeout(function () { e.hidden = true; }, 2400); }
 var ERR = { no_coins: "Tanga yetarli emas", wait: "Hali erta", slow_down: "Sekinroq 🙂", promo_none: "Bunday promokod yo'q", promo_used: "Bu promokoddan foydalangansiz", promo_over: "Promokod limiti tugagan", maintenance: "Texnik tanaffus. Birozdan keyin qayting", bad_value: "Noto'g'ri qiymat", no_pet: "Bu pet sizda yo'q", forbidden: "Ruxsat yo'q", invalid_init_data: "Mini appni bot ichidan oching", bot_not_found: "Bot topilmadi", net: "Aloqa xatosi" };
 async function api(method, path, body) {
@@ -27121,7 +27434,7 @@ function fail(e) {
 function rarCol(r) { return "r-" + r; }
 function petCard(pk, extra) {
   var p = CAT.pets[pk], rr = CAT.rar[p.rar];
-  return '<div class="pet ' + rarCol(p.rar) + '">' + (extra && extra.n ? '<div class="n">×' + extra.n + "</div>" : "") + '<div class="e">' + p.emoji + "</div><b>" + esc(p.name) + "</b><span>" + rr[0] + " " + rr[1] + "<br>📈 " + fmt(p.inc) + "/s</span></div>";
+  return '<div class="pet ' + rarCol(p.rar) + '">' + (extra && extra.n ? '<div class="n">×' + extra.n + "</div>" : "") + petImg(pk) + "<b>" + esc(p.name) + "</b><span>" + rr[0] + " " + rr[1] + "<br>📈 " + fmt(p.inc) + "/s</span></div>";
 }
 function tabs() {
   var t = [["egg", "🥚", "Tuxum"], ["pets", "🐾", "Petlar"], ["bonus", "🎁", "Bonus"], ["top", "🏆", "Reyting"]];
@@ -27148,18 +27461,19 @@ function render() {
 // ---------- Tuxum ----------
 function viewEgg(m) {
   var e = CAT.eggs[eggIdx], can = function (n) { return ST.coins >= e.price * n; };
-  m.innerHTML = '<div class="stage"><div class="row" style="justify-content:space-between"><button class="arrow" id="pv">‹</button><div><div class="egg" id="eggTap">' + e.emoji + '</div><div class="plat"></div></div><button class="arrow" id="nx">›</button></div>' +
+  m.innerHTML = '<div class="stage"><div class="row" style="justify-content:space-between"><button class="arrow" id="pv">‹</button><div style="flex:1;min-width:0">' + (has3d() ? '<canvas class="cv" id="eggCv"></canvas>' : '<div class="egg" id="eggTap">' + e.emoji + '</div><div class="plat"></div>') + '</div><button class="arrow" id="nx">›</button></div>' +
     "<h2>" + esc(e.name) + "</h2>" + '<div class="dots">' + CAT.eggs.map(function (x, i) { return '<i class="' + (i === eggIdx ? "on" : "") + '"></i>'; }).join("") + "</div>" +
     '<div class="mu">Tuxumni bosing yoki pastdagi tugmalardan foydalaning</div></div>' +
     '<div class="hb"><button class="btn ' + (can(1) ? "" : "off") + '" id="h1">Ochish ×1<small>🪙 ' + fmt(e.price) + '</small></button><button class="btn bl ' + (can(3) ? "" : "off") + '" id="h3">×3<small>🪙 ' + fmt(e.price * 3) + '</small></button><button class="btn gn ' + (can(10) ? "" : "off") + '" id="h10">×10<small>🪙 ' + fmt(e.price * 10) + "</small></button></div>" +
     '<div class="ar"><div class="grow mu">Avto-ochish: tanga tugaguncha ketma-ket ochadi</div><button class="btn sm ' + (auto ? "rd" : "bl") + '" id="au">' + (auto ? "⏹ To'xtatish" : "▶ Avto ×" + autoN) + '</button><button class="btn sm" id="aun">×' + autoN + "</button></div>" +
     '<div class="card"><b>Ichidan chiqishi mumkin:</b><div class="drops" style="margin-top:8px">' + e.pets.map(function (d) {
       var p = CAT.pets[d.pk];
-      return '<div class="drop ' + rarCol(p.rar) + '"><div class="e">' + p.emoji + "</div><div><b>" + esc(p.name) + "</b><span>" + d.pct + "% · 📈 " + fmt(p.inc) + "/s</span></div></div>";
+      return '<div class="drop ' + rarCol(p.rar) + '">' + (thumb(d.pk) ? '<img class="pi" src="' + thumb(d.pk) + '" alt="">' : '<div class="e">' + p.emoji + "</div>") + "<div><b>" + esc(p.name) + "</b><span>" + d.pct + "% · 📈 " + fmt(p.inc) + "/s</span></div></div>";
     }).join("") + "</div></div>";
   $("pv").onclick = function () { eggIdx = (eggIdx + CAT.eggs.length - 1) % CAT.eggs.length; hap("light"); render(); };
   $("nx").onclick = function () { eggIdx = (eggIdx + 1) % CAT.eggs.length; hap("light"); render(); };
-  $("eggTap").onclick = function () { hatch(1); };
+  if ($("eggTap")) $("eggTap").onclick = function () { hatch(1); };
+  startStage();
   $("h1").onclick = function () { hatch(1); };
   $("h3").onclick = function () { hatch(3); };
   $("h10").onclick = function () { hatch(10); };
@@ -27177,6 +27491,13 @@ async function hatch(n, fromAuto) {
   try {
     var p = api("POST", "act", { a: "hatch", egg: e.key, n: n });
     p.catch(function () {});
+    if (has3d()) {
+      var h = beginHatch(e, n);
+      var j3 = await p;
+      setState(j3.state);
+      await new Promise(function (resolve) { h.fromAuto = fromAuto; h.done = resolve; h.res = j3.result; });
+      return true;
+    }
     await shake(e.emoji);
     var j = await p;
     setState(j.state);
@@ -27184,7 +27505,10 @@ async function hatch(n, fromAuto) {
     return true;
   } catch (er) { hideOv(); fail(er); return false; } finally { busy = false; }
 }
-function hideOv() { $("ov").hidden = true; $("ovRes").innerHTML = ""; $("ovBtn").innerHTML = ""; }
+function hideOv() {
+  HS = null; $("ovCv").style.display = "none"; $("ov").hidden = true; $("ovRes").innerHTML = ""; $("ovBtn").innerHTML = ""; $("ovEgg").style.display = "";
+  kick();
+}
 async function shake(emoji) {
   var ov = $("ov"), eg = $("ovEgg");
   $("ovRes").innerHTML = ""; $("ovBtn").innerHTML = "";
@@ -27193,13 +27517,16 @@ async function shake(emoji) {
   await sleep(auto ? 350 : 650); eg.className = "big flash"; hap("heavy");
   await sleep(330); eg.style.display = "none";
 }
-function reveal(res, fromAuto) {
-  var one = res.length === 1;
-  $("ovRes").className = "res" + (one ? " one" : "");
-  $("ovRes").innerHTML = res.map(function (r, i) {
+function cardsHtml(res) {
+  var one = res.length === 1, many = res.length > 3;
+  if (many) return '<div class="res many">' + res.map(function (r, i) { var p = CAT.pets[r.pk]; return '<div class="rc sm ' + rarCol(p.rar) + '" style="animation-delay:' + (i * 60) + 'ms">' + (r.new ? '<div class="new" style="font-size:9px;padding:0 5px;top:-8px">NEW</div>' : "") + petImg(r.pk) + "<b>" + esc(p.name) + "</b></div>"; }).join("") + "</div>";
+  return '<div class="res' + (one ? " one" : "") + '">' + res.map(function (r, i) {
     var p = CAT.pets[r.pk], rr = CAT.rar[p.rar];
-    return '<div class="rc ' + rarCol(p.rar) + '" style="animation-delay:' + (i * 90) + 'ms">' + (r.new ? '<div class="new">YANGI!</div>' : "") + '<div class="e">' + p.emoji + "</div><b>" + esc(p.name) + "</b><span>" + rr[0] + " " + rr[1] + "<br>📈 " + fmt(p.inc) + "/soat</span></div>";
-  }).join("");
+    return '<div class="rc ' + rarCol(p.rar) + '" style="animation-delay:' + (i * 90) + 'ms;' + (many ? "width:96px;padding:8px 2px" : "") + '">' + (r.new ? '<div class="new">YANGI!</div>' : "") + petImg(r.pk) + "<b>" + esc(p.name) + "</b><span>" + rr[0] + " " + rr[1] + (many ? "" : "<br>📈 " + fmt(p.inc) + "/soat") + "</span></div>";
+  }).join("") + "</div>";
+}
+function reveal(res, fromAuto) {
+  $("ovRes").className = ""; $("ovRes").innerHTML = cardsHtml(res);
   var best = res.some(function (r) { return CAT.pets[r.pk].rar === "legend"; });
   hap(best ? "ok" : "light");
   return new Promise(function (resolve) {
@@ -27214,23 +27541,122 @@ function reveal(res, fromAuto) {
     }
   });
 }
+// ---------- 3D sahna ----------
+var HS = null, STG = null, SHT = null, RAF = 0;
+function kick() { if (!RAF) RAF = requestAnimationFrame(frame); }
+function frame(now) {
+  RAF = 0; var live = false;
+  try { live = stageTick(now) || live; live = hatchTick(now) || live; live = sheetTick(now) || live; } catch (e) { live = false; if (window.console) console.error(e); }
+  if (live) kick();
+}
+function startStage() {
+  STG = null; var cv = $("eggCv"); if (!cv || !has3d()) return;
+  var e = CAT.eggs[eggIdx], sc = new G3.Scene(cv, { d: 5.6 }), eg = G3M.makeEgg(e.key); sc.add(eg);
+  STG = { cv: cv, sc: sc, eg: eg, t0: performance.now(), ry: 0.4, vel: 0, drag: false, moved: 0, lx: 0 };
+  cv.onpointerdown = function (ev) { STG.drag = true; STG.moved = 0; STG.lx = ev.clientX; try { cv.setPointerCapture(ev.pointerId); } catch (x) {} };
+  cv.onpointermove = function (ev) { if (!STG || !STG.drag) return; var dx = ev.clientX - STG.lx; STG.lx = ev.clientX; STG.moved += Math.abs(dx); STG.ry += dx * 0.012; STG.vel = dx * 0.0012; };
+  cv.onpointerup = function () { if (!STG) return; var was = STG.drag; STG.drag = false; if (was && STG.moved < 8) hatch(1); };
+  cv.onpointercancel = function () { if (STG) STG.drag = false; };
+  kick();
+}
+function stageTick(now) {
+  var s = STG; if (!s || $("eggCv") !== s.cv || tab !== "egg" || !$("ov").hidden) return false;
+  var t = now - s.t0;
+  if (!s.drag) { s.ry += 0.012 + s.vel; s.vel *= 0.94; }
+  var pop = Math.min(1, t / 380), k = 0.55 + 0.45 * (1 - Math.pow(1 - pop, 3));
+  s.eg.rot = [0, s.ry, Math.sin(t / 900) * 0.05]; s.eg.pos = [0, Math.sin(t / 520) * 0.09, 0]; s.eg.sc = [k, k, k];
+  s.sc.render(now); return true;
+}
+var RAR_ORD = { common: 0, rare: 1, epic: 2, legend: 3 }, RAR_COL = { common: "#ffffff", rare: "#5cb2ff", epic: "#c27bff", legend: "#ffd23f" };
+var SPARK = { common: ["#fff", "#ffe9a8"], rare: ["#8fd0ff", "#fff", "#4aa3ff"], epic: ["#e0a8ff", "#fff", "#ff8fd8"], legend: ["#ffd23f", "#fff2a8", "#ff9a3c", "#fff"] };
+function beginHatch(e, n) {
+  var cv = $("ovCv"), ov = $("ov");
+  $("ovRes").innerHTML = ""; $("ovBtn").innerHTML = ""; $("ovEgg").style.display = "none";
+  cv.style.display = "block"; cv.style.height = n === 1 ? "46vh" : (n === 3 ? "32vh" : "38vh"); ov.hidden = false;
+  var pos = [], d, k;
+  if (n === 1) { pos = [[0, 0, 0]]; d = 6.6; k = 1; }
+  else if (n === 3) { pos = [[-2.5, 0, 0], [0, 0, 0], [2.5, 0, 0]]; d = 11.6; k = 1; }
+  else { for (var i = 0; i < 10; i++) pos.push([((i % 5) - 2) * 1.95, i < 5 ? 1.35 : -1.35, 0]); d = 13; k = 0.7; }
+  var sc = new G3.Scene(cv, { d: d }), eggs = [];
+  for (var q = 0; q < n; q++) { var eg = G3M.makeEgg(e.key, n > 1); eg.pos = pos[q].slice(); eg.sc = [k, k, k]; eg._base = pos[q].slice(); sc.add(eg); eggs.push(eg); }
+  HS = { sc: sc, eggs: eggs, pets: [], n: n, k: k, t0: performance.now(), res: null, fast: auto, cards: false, rays: false, key: e.key };
+  hap("light"); kick(); return HS;
+}
+function ease(x) { return x < 0 ? 0 : x > 1 ? 1 : 1 - Math.pow(1 - x, 3); }
+function backOut(x) { if (x <= 0) return 0; if (x >= 1) return 1; var c1 = 1.9, c3 = c1 + 1; return 1 + c3 * Math.pow(x - 1, 3) + c1 * Math.pow(x - 1, 2); }
+function hatchTick(now) {
+  var h = HS; if (!h) return false;
+  var sp = h.fast ? 1.8 : 1, T = (now - h.t0) / 1000 * sp, sc = h.sc, allDone = true, m = h.res ? h.res.length : 0, shakeEnd = 1.6;
+  for (var i = 0; i < h.eggs.length; i++) {
+    var eg = h.eggs[i], lt = T - i * 0.11;
+    if (h.res && i >= m) { eg.hidden = true; continue; }
+    if (eg.bt == null) {
+      allDone = false;
+      var am = ease(lt / 1.4), w = 10 + am * 22;
+      if (lt < 0) { am = 0; w = 0; }
+      eg.rot = [Math.sin(lt * 9) * 0.05 * am, Math.sin(lt * 3) * 0.35 * (1 - am * 0.6), Math.sin(lt * w) * 0.16 * am];
+      eg.pos = [eg._base[0], eg._base[1] + Math.abs(Math.sin(lt * w * 0.5)) * 0.07 * am, eg._base[2]];
+      eg.crack = lt > 0.7 ? Math.min(1, (lt - 0.7) / 0.5) : 0;
+      if (h.res && lt >= shakeEnd) {
+        eg.bt = lt; var r = h.res[i], pt = CAT.pets[r.pk], pet = G3M.makePet(r.pk);
+        pet.sc = [0, 0, 0]; pet.pos = eg._base.slice(); pet.rot = [0, 0.4, 0]; sc.add(pet); h.pets[i] = pet;
+        var cols = SPARK[pt.rar]; sc.flash = Math.max(sc.flash, pt.rar === "legend" ? 1 : (pt.rar === "epic" ? 0.85 : 0.65));
+        sc.burst(eg._base, cols, h.n > 3 ? 14 : (pt.rar === "legend" ? 70 : 38));
+        if (!h.rays || RAR_ORD[pt.rar] > RAR_ORD[h.rays]) { if (RAR_ORD[pt.rar] >= 1) { h.rays = pt.rar; sc.rays = { pos: eg._base.slice(), col: RAR_COL[pt.rar], k: 0 }; } }
+        hap(pt.rar === "legend" ? "heavy" : "medium");
+      }
+    } else {
+      var bt = lt - eg.bt;
+      eg.open = ease(bt / 0.45); eg.crack = 1; eg.rot = [0, 0.4, 0]; eg.pos = eg._base.slice();
+      eg.alpha = bt > 0.4 ? Math.max(0, 1 - (bt - 0.4) / 0.5) : 1; if (eg.alpha <= 0) eg.hidden = true;
+      var pet = h.pets[i], ps = backOut(bt / 0.7) * h.k * 0.98;
+      pet.sc = [ps, ps, ps]; pet.rot = [0, 0.4 + bt * 1.4, 0]; pet.pos = [eg._base[0], eg._base[1] + 0.1 + Math.sin(bt * 3) * 0.05 * (bt > 0.7 ? 1 : 0), eg._base[2]];
+      if (bt < 1.2) allDone = false;
+    }
+  }
+  if (sc.rays) sc.rays.k = Math.min(1, sc.rays.k + 0.05);
+  sc.render(now);
+  if (h.res && allDone && !h.cards) { h.cards = true; showCards(h); }
+  return true;
+}
+function showCards(h) {
+  $("ovRes").className = ""; $("ovRes").innerHTML = cardsHtml(h.res);
+  var best = h.res.some(function (r) { return CAT.pets[r.pk].rar === "legend"; });
+  hap(best ? "ok" : "light");
+  var done = function () { var d = h.done; hideOv(); if (d) d(); };
+  if (h.fromAuto && auto) {
+    $("ovBtn").innerHTML = '<button class="btn rd" id="ovStop">⏹ To\'xtatish</button>';
+    $("ovStop").onclick = function () { auto = false; };
+    setTimeout(done, best ? 2400 : 1500);
+  } else {
+    $("ovBtn").innerHTML = '<button class="btn" id="ovOk">Davom etish</button>';
+    $("ovOk").onclick = done;
+  }
+}
+function sheetTick(now) {
+  var s = SHT; if (!s) return false;
+  if ($("sh").hidden || $("shCv") !== s.cv) { SHT = null; return false; }
+  s.pet.rot = [0, 0.3 + now / 1100, 0]; s.pet.pos = [0, Math.sin(now / 450) * 0.06, 0]; s.sc.render(now); return true;
+}
 // ---------- Petlar ----------
 function viewPets(m) {
   var keys = Object.keys(CAT.pets), have = keys.filter(function (k) { return ST.pets[k]; }).length;
   keys.sort(function (a, b) { return CAT.pets[a].inc - CAT.pets[b].inc; });
   m.innerHTML = '<div class="card"><b>📖 Kolleksiya: ' + have + "/" + keys.length + '</b><div class="mu">Jami petlar: ' + fmt(Object.keys(ST.pets).reduce(function (s, k) { return s + ST.pets[k]; }, 0)) + " · ochilgan tuxumlar: " + fmt(ST.hatched) + '</div></div><div class="grid">' +
     keys.map(function (k) {
-      if (!ST.pets[k]) return '<div class="pet lock"><div class="e">' + CAT.pets[k].emoji + "</div><b>???</b><span>" + CAT.rar[CAT.pets[k].rar][0] + " " + CAT.rar[CAT.pets[k].rar][1] + "</span></div>";
+      if (!ST.pets[k]) return '<div class="pet lock">' + petImg(k) + "<b>???</b><span>" + CAT.rar[CAT.pets[k].rar][0] + " " + CAT.rar[CAT.pets[k].rar][1] + "</span></div>";
       return '<div data-k="' + k + '">' + petCard(k, { n: ST.pets[k] }) + "</div>";
     }).join("") + "</div>";
   Array.prototype.forEach.call(m.querySelectorAll("[data-k]"), function (d) { d.onclick = function () { petSheet(d.getAttribute("data-k")); }; });
 }
 function petSheet(k) {
   var p = CAT.pets[k], n = ST.pets[k] || 0, rr = CAT.rar[p.rar], sh = $("sh");
-  sh.innerHTML = '<div class="row"><div style="font-size:64px">' + p.emoji + '</div><div style="flex:1"><b style="font-size:18px">' + esc(p.name) + "</b><div class=\"mu\">" + rr[0] + " " + rr[1] + " · ×" + n + "<br>📈 " + fmt(p.inc) + "/soat (bittasi)</div></div></div>" +
+  sh.innerHTML = '<div class="row">' + (has3d() ? '<canvas class="sh3" id="shCv"></canvas>' : '<div style="font-size:64px">' + p.emoji + "</div>") + '<div style="flex:1"><b style="font-size:18px">' + esc(p.name) + "</b><div class=\"mu\">" + rr[0] + " " + rr[1] + " · ×" + n + "<br>📈 " + fmt(p.inc) + "/soat (bittasi)</div></div></div>" +
     '<div class="ar"><button class="btn rd" id="s1" style="flex:1">Sotish +' + fmt(p.sell) + '</button>' + (n > 1 ? '<button class="btn rd" id="sx" style="flex:1">Takrorlarni sotish +' + fmt(p.sell * (n - 1)) + "</button>" : "") + '</div><button class="btn bl" id="sc" style="width:100%">Yopish</button>';
   sh.hidden = false;
-  $("sc").onclick = function () { sh.hidden = true; };
+  SHT = null;
+  if (has3d() && $("shCv")) { var scn = new G3.Scene($("shCv"), { d: 5.6 }), pt = scn.add(G3M.makePet(k)); SHT = { cv: $("shCv"), sc: scn, pet: pt }; kick(); }
+  $("sc").onclick = function () { sh.hidden = true; SHT = null; };
   var sell = function (extras) {
     var go = async function () {
       try { var j = await api("POST", "act", { a: "sell", pk: k, extras: extras }); sh.hidden = true; setState(j.state); toast("💰 +" + fmt(j.result.coins) + " 🪙"); hap("ok"); } catch (e) { fail(e); }
