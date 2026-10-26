@@ -18174,7 +18174,7 @@ def setup_egg_bot(dp: Dispatcher, token: str):
         ] + get_global_button_rows(), resize_keyboard=True)
 
     def user_kb(uid: int):
-        rows = [
+        rows = ([[KeyboardButton(text="🎮 Mini app o'yin")]] if get_eggapp_url(info.get("id")) else []) + [
             [KeyboardButton(text="🥚 Tuxumlar"), KeyboardButton(text="🐾 Petlarim")],
             [KeyboardButton(text="💰 Daromad yig'ish"), KeyboardButton(text="🎁 Kunlik bonus")],
             [KeyboardButton(text="🔍 Tuxum ovi"), KeyboardButton(text="🏆 Reyting")],
@@ -18249,8 +18249,22 @@ def setup_egg_bot(dp: Dispatcher, token: str):
             return
         await message.answer(
             f"🥚 <b>Tuxum olami</b>ga xush kelibsiz!\n\nTuxum sotib oling, ichidan nodir petlar chiqaring — ular sizga har soat tanga olib keladi. "
-            f"Eng kuchli petlarni yig'ib, reytingda birinchi bo'ling! 🏆\n\n🎁 Boshlang'ich balans: <b>{eg_fmt(u['coins'])} 🪙</b>",
+            f"Eng kuchli petlarni yig'ib, reytingda birinchi bo'ling! 🏆\n\n🎮 To'liq o'yin — «Mini app o'yin» tugmasida.\n🎁 Boshlang'ich balans: <b>{eg_fmt(u['coins'])} 🪙</b>",
             reply_markup=user_kb(uid))
+
+    @dp.message(F.text == "🎮 Mini app o'yin")
+    async def e_miniapp(message: Message):
+        # Klaviatura tugmasi initData bermaydi — shuning uchun inline web_app tugma yuboriladi
+        if not await gate(message):
+            return
+        _u = get_eggapp_url(info.get("id"))
+        if not _u:
+            await message.answer("⚠️ Mini app manzili sozlanmagan.")
+            return
+        me(message)
+        save_data()
+        await message.answer("🥚 <b>Tuxum olami</b>\n\nO'yinni ochish uchun bosing 👇", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🎮 O'ynash", web_app=WebAppInfo(url=_u))]]))
 
     @dp.message(F.text == "🎮 O'ynash")
     async def e_play(message: Message):
@@ -21675,6 +21689,9 @@ async def start_web_server():
     app.router.add_get("/api/kw/video", kw_api_video)
     app.router.add_post("/api/kw/watch", kw_api_watch)
     app.router.add_get("/botapp", botapp_page)
+    app.router.add_get("/eggapp", egg_page)
+    app.router.add_get("/api/egg/state", egg_state_api)
+    app.router.add_post("/api/egg/act", egg_act_api)
     app.router.add_get("/api/pub/info", pub_info)
     app.router.add_post("/api/pub/money/convert", pub_money_convert)
     app.router.add_post("/api/pub/translate", pub_translate)
@@ -26736,6 +26753,578 @@ async def pub_dl_send(request):
     DL_TASKS.add(t)
     t.add_done_callback(DL_TASKS.discard)
     return web.json_response({"ok": True}, headers=_NO_STORE)
+
+
+# ================= 🥚 TUXUM O'YINI MINI APP (/eggapp) =================
+def get_eggapp_url(bot_id) -> str:
+    """Tuxum o'yini mini app URL'i: https://<domen>/eggapp?b=<bot_id>"""
+    purl = get_kinopanel_url(bot_id)
+    return purl.replace("/kinopanel?", "/eggapp?") if purl else ""
+
+
+def eg_catalog() -> dict:
+    tot = {k: sum(w for _, w in e["pets"]) for k, e in EG_EGGS.items()}
+    return {
+        "eggs": [{"key": k, "name": e["name"], "emoji": e["emoji"], "price": e["price"],
+                  "pets": [{"pk": p, "pct": round(w * 100 / tot[k], 1)} for p, w in e["pets"]]} for k, e in EG_EGGS.items()],
+        "pets": {k: {"name": p["name"], "emoji": p["emoji"], "rar": p["rar"], "inc": p["inc"], "sell": eg_sell_price(k)} for k, p in EG_PETS.items()},
+        "rar": {k: [v[0], v[1]] for k, v in EG_RARITY.items()},
+    }
+
+
+def eg_state(info: dict, uid: int, u: dict, now=None) -> dict:
+    now = now if now is not None else _eg_time.time()
+    cfg = info["eg_cfg"]
+    dl = max(0, 24 * 3600 - (now - u["t_daily"])) if u["t_daily"] else 0
+    hl = max(0, int(cfg["hunt_min"]) * 60 - (now - u["t_hunt"])) if u["t_hunt"] else 0
+    rate = eg_rate(info, uid, u)
+    streak = u.get("streak", 0)
+    if u["t_daily"] and now - u["t_daily"] >= 48 * 3600:
+        streak = 0
+    return {"coins": int(u["coins"]), "rate": rate, "pending": eg_pending(info, uid, u, now), "cap_h": int(cfg["cap_h"]),
+            "pets": {k: int(n) for k, n in u["pets"].items() if k in EG_PETS}, "streak": streak,
+            "daily_left": int(dl), "hunt_left": int(hl), "premium": bool(is_premium_active(info, uid)),
+            "refs": u.get("refs", 0), "hatched": u.get("hatched", 0), "ref_bonus": int(cfg["ref"]),
+            "username": info.get("username", ""), "admin": bool(is_admin(info, uid)), "name": info.get("name", ""), "daily_base": int(cfg["daily"])}
+
+
+def eg_admin_view(info: dict) -> dict:
+    st = info["stats"]
+    us = list(info["eg_users"].values())
+    return {
+        "stats": {"users": len(info.get("users", [])), "players": len(us), "hatched": st.get("hatched", 0),
+                  "pets": sum(sum(int(x) for x in u["pets"].values()) for u in us), "coins": sum(int(u["coins"]) for u in us),
+                  "sold": st.get("sold", 0), "daily": st.get("daily_claims", 0), "hunts": st.get("hunts", 0),
+                  "promos": st.get("promos", 0), "blocked": len(info.get("blocked_users", []))},
+        "top": [{"id": r[0], "name": r[1], "rate": r[2], "pets": r[3], "coins": int(r[4])} for r in eg_top(info, 15)],
+        "promos": [{"code": c, "coins": p["coins"], "uses": p["uses"], "used": len(p["used"])} for c, p in list(info["eg_promos"].items())[-30:]],
+        "cfg": [{"key": k, "name": m[0], "min": m[1], "max": m[2], "value": info["eg_cfg"][k]} for k, m in EG_CFG_META.items()],
+        "maintenance": bool(info.get("maintenance_mode")),
+        "blocked_list": list(info.get("blocked_users", []))[-30:],
+    }
+
+
+async def egg_page(request):
+    return web.Response(
+        text=EGGAPP_HTML,
+        content_type="text/html",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache"},
+    )
+
+
+async def _egg_ctx(request, body=None):
+    token, info, uid, user, err = await pub_auth(request, body)
+    if err:
+        return None, None, None, None, err
+    if info.get("type") != "roblox":
+        return None, None, None, None, _pub_err("not_found", 404)
+    eg_init(info)
+    if info.get("maintenance_mode") and not is_admin(info, uid):
+        return None, None, None, None, _pub_err("maintenance", 503)
+    name = ("@" + user["username"]) if user.get("username") else (user.get("first_name") or "")
+    u = eg_user(info, uid, name=name)
+    return info, uid, u, token, None
+
+
+async def egg_state_api(request):
+    info, uid, u, token, err = await _egg_ctx(request)
+    if err:
+        return err
+    out = {"state": eg_state(info, uid, u), "catalog": eg_catalog()}
+    if is_admin(info, uid):
+        out["admin"] = eg_admin_view(info)
+    return web.json_response(out, headers=_NO_STORE)
+
+
+async def egg_act_api(request):
+    body = await _pub_body(request)
+    info, uid, u, token, err = await _egg_ctx(request, body)
+    if err:
+        return err
+    if not _pub_rate(token, uid, "egg", 150, 60):
+        return _pub_err("slow_down", 429)
+    a = str(body.get("a", ""))
+    now = _eg_time.time()
+    res = None
+    adm = is_admin(info, uid)
+
+    def done(extra=None):
+        save_data()
+        out = {"ok": True, "result": res, "state": eg_state(info, uid, u)}
+        if adm and a.startswith("admin"):
+            out["admin"] = eg_admin_view(info)
+        return web.json_response(out, headers=_NO_STORE)
+
+    if a == "hatch":
+        key = str(body.get("egg", ""))
+        try:
+            n = int(body.get("n", 1))
+        except (TypeError, ValueError):
+            n = 1
+        if key not in EG_EGGS or n not in (1, 3, 10):
+            return _pub_err("bad_value")
+        res = []
+        for _ in range(n):
+            before = dict(u["pets"])
+            pk = eg_hatch(info, uid, u, key, now)
+            if pk is None:
+                break
+            res.append({"pk": pk, "new": pk not in before})
+        if not res:
+            return _pub_err("no_coins", 402)
+        return done()
+    if a == "collect":
+        res = eg_collect(info, uid, u, now) if u["pets"] else 0
+        return done()
+    if a == "daily":
+        r = eg_daily(info, u, now)
+        if r[0] == "wait":
+            return _pub_err("wait", 429, left=int(r[1]))
+        res = {"bonus": r[1], "streak": r[2]}
+        return done()
+    if a == "hunt":
+        r = eg_hunt(info, u, now)
+        if r[0] == "wait":
+            return _pub_err("wait", 429, left=int(r[1]))
+        res = {"kind": r[0], "value": r[1]}
+        return done()
+    if a == "sell":
+        pk = str(body.get("pk", ""))
+        if pk not in EG_PETS:
+            return _pub_err("bad_value")
+        total = cnt = 0
+        times = max(0, int(u["pets"].get(pk, 0)) - 1) if body.get("extras") else 1
+        for _ in range(times):
+            p = eg_sell(info, uid, u, pk, now)
+            if p is None:
+                break
+            total += p
+            cnt += 1
+        if not cnt:
+            return _pub_err("no_pet", 400)
+        res = {"sold": cnt, "coins": total}
+        return done()
+    if a == "promo":
+        r = eg_promo(info, uid, u, str(body.get("code", ""))[:30])
+        if r[0] != "ok":
+            return _pub_err("promo_" + r[0], 400)
+        res = {"coins": r[1]}
+        return done()
+    if a == "top":
+        rows = [r for r in eg_top(info, 20) if r[2] > 0]
+        res = [{"name": r[1] or "—", "rate": r[2], "pets": r[3], "me": r[0] == uid} for r in rows]
+        return web.json_response({"ok": True, "result": res}, headers=_NO_STORE)
+    # ---- admin ----
+    if a.startswith("admin"):
+        if not adm:
+            return _pub_err("forbidden", 403)
+        if a == "admin_promo_add":
+            code = str(body.get("code", "")).strip().upper()
+            try:
+                coins, uses = int(body.get("coins")), int(body.get("uses"))
+            except (TypeError, ValueError):
+                return _pub_err("bad_value")
+            if not re.fullmatch(r"[A-Z0-9_]{3,20}", code) or not 1 <= coins <= 1_000_000 or not 1 <= uses <= 100000:
+                return _pub_err("bad_value")
+            info["eg_promos"][code] = {"coins": coins, "uses": uses, "used": []}
+            return done()
+        if a == "admin_promo_del":
+            info["eg_promos"].pop(str(body.get("code", "")).strip().upper(), None)
+            return done()
+        if a == "admin_give":
+            try:
+                tid, amt = int(str(body.get("id", "")).strip()), int(body.get("amount"))
+            except (TypeError, ValueError):
+                return _pub_err("bad_value")
+            tu = info["eg_users"].get(str(tid))
+            if tu is None or abs(amt) > 10_000_000:
+                return _pub_err("bad_value")
+            tu["coins"] = max(0, tu["coins"] + amt)
+            return done()
+        if a == "admin_cfg":
+            k = str(body.get("key", ""))
+            if k == "maintenance":
+                info["maintenance_mode"] = bool(body.get("value"))
+                return done()
+            if k not in EG_CFG_META:
+                return _pub_err("bad_value")
+            try:
+                v = int(body.get("value"))
+            except (TypeError, ValueError):
+                return _pub_err("bad_value")
+            if not EG_CFG_META[k][1] <= v <= EG_CFG_META[k][2]:
+                return _pub_err("bad_value")
+            info["eg_cfg"][k] = v
+            return done()
+        if a == "admin_block":
+            try:
+                tid = int(str(body.get("id", "")).strip())
+            except ValueError:
+                return _pub_err("bad_value")
+            if is_admin(info, tid):
+                return _pub_err("bad_value")
+            bl = info.setdefault("blocked_users", [])
+            if body.get("block", True):
+                if tid not in bl:
+                    bl.append(tid)
+            elif tid in bl:
+                bl.remove(tid)
+            return done()
+    return _pub_err("bad_value")
+
+
+EGGAPP_HTML = r"""<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Tuxum olami</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{--bg1:#1b1464;--bg2:#3a1c8f;--cd:rgba(255,255,255,.1);--bd:rgba(255,255,255,.16);--tx:#fff;--mu:#c3bdf0;--gold:#ffd23f;--gn:#3ddc84;--rd:#ff5470;--c-common:#9aa4b2;--c-rare:#3b9cff;--c-epic:#b25cff;--c-legend:#ffc21a}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none}
+html,body{margin:0;height:100%;color:var(--tx);font:16px/1.4 "Trebuchet MS",-apple-system,"Segoe UI",Roboto,sans-serif;background:linear-gradient(160deg,var(--bg1),var(--bg2) 60%,#6a2bd1);background-attachment:fixed;overflow-x:hidden}
+#app{max-width:520px;margin:0 auto;min-height:100%;padding:0 12px 92px}
+.top{position:sticky;top:0;z-index:20;padding:10px 0 8px;background:linear-gradient(180deg,rgba(27,20,100,.96),rgba(27,20,100,.7));backdrop-filter:blur(6px)}
+.row{display:flex;gap:8px;align-items:center}
+.pill{flex:1;background:rgba(0,0,0,.35);border:2px solid var(--bd);border-radius:999px;padding:7px 12px;font-weight:800;font-size:15px;white-space:nowrap}
+.pill small{display:block;font-size:10px;color:var(--mu);font-weight:600;letter-spacing:.5px;text-transform:uppercase}
+.btn{border:0;border-radius:14px;padding:13px 16px;font:inherit;font-weight:900;color:#1a1340;background:linear-gradient(180deg,#ffe566,#ffb800);box-shadow:0 4px 0 #b37d00,0 8px 16px rgba(0,0,0,.25);cursor:pointer}
+.btn:active{transform:translateY(3px);box-shadow:0 1px 0 #b37d00}
+.btn.gn{background:linear-gradient(180deg,#7bf0a8,#26c866);box-shadow:0 4px 0 #14803f,0 8px 16px rgba(0,0,0,.25);color:#06361b}
+.btn.bl{background:linear-gradient(180deg,#7cc4ff,#2f7cf0);box-shadow:0 4px 0 #1a4aa8,0 8px 16px rgba(0,0,0,.25);color:#06214d}
+.btn.rd{background:linear-gradient(180deg,#ff8aa0,#e8344f);box-shadow:0 4px 0 #9c1830;color:#fff}
+.btn.sm{padding:9px 12px;font-size:14px;border-radius:12px}
+.btn[disabled],.btn.off{filter:grayscale(.85) brightness(.7);pointer-events:none}
+.card{background:var(--cd);border:2px solid var(--bd);border-radius:18px;padding:14px;margin:12px 0}
+h2{margin:6px 0 10px;font-size:20px;font-weight:900}
+.mu{color:var(--mu);font-size:13px}
+.tabs{position:fixed;left:0;right:0;bottom:0;z-index:30;display:flex;justify-content:center;gap:4px;padding:8px 8px calc(8px + env(safe-area-inset-bottom));background:rgba(20,12,70,.95);border-top:2px solid var(--bd)}
+.tabs button{flex:1;max-width:100px;border:0;border-radius:14px;padding:8px 2px;background:transparent;color:var(--mu);font:inherit;font-size:11px;font-weight:800}
+.tabs button b{display:block;font-size:22px;line-height:1.1}
+.tabs button.on{background:rgba(255,255,255,.18);color:#fff}
+.stage{text-align:center;padding:6px 0}
+.egg{font-size:132px;line-height:1.05;display:inline-block;filter:drop-shadow(0 14px 18px rgba(0,0,0,.45));animation:bob 2.4s ease-in-out infinite;cursor:pointer}
+.plat{width:170px;height:22px;margin:-6px auto 6px;border-radius:50%;background:radial-gradient(ellipse,rgba(255,255,255,.45),rgba(255,255,255,0) 70%)}
+@keyframes bob{50%{transform:translateY(-10px) rotate(-2deg)}}
+.arrow{width:46px;height:46px;border-radius:50%;border:2px solid var(--bd);background:rgba(0,0,0,.3);color:#fff;font-size:22px;font-weight:900}
+.dots{display:flex;gap:6px;justify-content:center;margin:6px 0}
+.dots i{width:9px;height:9px;border-radius:50%;background:rgba(255,255,255,.3)}.dots i.on{background:var(--gold)}
+.drops{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.drop{display:flex;align-items:center;gap:8px;background:rgba(0,0,0,.28);border:2px solid var(--bd);border-radius:14px;padding:8px}
+.drop .e{font-size:28px}.drop b{display:block;font-size:13px}.drop span{font-size:11px;color:var(--mu)}
+.r-common{border-color:var(--c-common)}.r-rare{border-color:var(--c-rare)}.r-epic{border-color:var(--c-epic)}.r-legend{border-color:var(--c-legend);box-shadow:0 0 18px rgba(255,194,26,.45)}
+.hb{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:10px}
+.hb .btn{padding:11px 4px;font-size:14px}.hb .btn small{display:block;font-size:11px;opacity:.8}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.pet{position:relative;text-align:center;background:rgba(0,0,0,.28);border:2px solid var(--bd);border-radius:16px;padding:10px 4px}
+.pet .e{font-size:38px}.pet b{display:block;font-size:12px}.pet span{font-size:11px;color:var(--mu)}
+.pet.lock{opacity:.45}.pet.lock .e{filter:brightness(0)}
+.pet .n{position:absolute;top:4px;right:6px;font-size:12px;font-weight:900;background:#000a;border-radius:8px;padding:0 6px}
+.ov{position:fixed;inset:0;z-index:100;background:radial-gradient(circle at 50% 40%,rgba(80,40,200,.96),rgba(10,5,40,.98));display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px;text-align:center}
+.ov[hidden]{display:none}
+.ov .big{font-size:150px;line-height:1}
+.shake{animation:shake .5s ease-in-out infinite}
+.shake.hard{animation-duration:.18s}
+@keyframes shake{0%,100%{transform:rotate(0) scale(1)}25%{transform:rotate(-12deg) scale(1.05)}75%{transform:rotate(12deg) scale(1.05)}}
+.flash{animation:flash .35s ease-out forwards}
+@keyframes flash{0%{filter:brightness(1)}60%{filter:brightness(6) blur(2px);transform:scale(1.5)}100%{filter:brightness(10);transform:scale(2);opacity:0}}
+.res{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;max-width:420px}
+.rc{width:112px;background:rgba(255,255,255,.12);border:3px solid var(--bd);border-radius:18px;padding:12px 4px;animation:pop .45s cubic-bezier(.2,1.6,.4,1) both;position:relative}
+.rc .e{font-size:54px}.rc b{display:block;font-size:13px}.rc span{font-size:11px;color:var(--mu)}
+.rc .new{position:absolute;top:-10px;left:50%;transform:translateX(-50%);background:var(--rd);color:#fff;font-size:11px;font-weight:900;border-radius:8px;padding:1px 8px}
+.res.one .rc{width:190px;padding:20px 8px}.res.one .rc .e{font-size:96px}
+@keyframes pop{0%{transform:scale(0) rotate(-20deg)}100%{transform:scale(1) rotate(0)}}
+.sheet{position:fixed;left:0;right:0;bottom:0;z-index:60;background:#241670;border-top:3px solid var(--bd);border-radius:22px 22px 0 0;padding:16px 16px calc(18px + env(safe-area-inset-bottom));max-width:520px;margin:0 auto}
+.sheet[hidden]{display:none}
+.toast{position:fixed;left:50%;bottom:96px;transform:translateX(-50%);z-index:200;background:#000d;border:2px solid var(--bd);border-radius:14px;padding:10px 16px;font-weight:800;max-width:90%;text-align:center}
+.spots{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.spot{aspect-ratio:1;border-radius:18px;border:2px solid var(--bd);background:rgba(0,0,0,.25);font-size:44px;display:flex;align-items:center;justify-content:center;font-weight:900}
+.spot.hit{background:rgba(255,210,63,.25);border-color:var(--gold);animation:pop .4s both}
+.streak{display:flex;gap:6px;justify-content:space-between;margin:10px 0}
+.streak i{flex:1;text-align:center;font-style:normal;background:rgba(0,0,0,.3);border:2px solid var(--bd);border-radius:10px;padding:6px 0;font-size:12px;font-weight:800}
+.streak i.on{background:var(--gold);color:#3a2a00;border-color:var(--gold)}
+input{width:100%;padding:12px 14px;border-radius:12px;border:2px solid var(--bd);background:rgba(0,0,0,.3);color:#fff;font:inherit;outline:none;user-select:text;-webkit-user-select:text}
+.lb{display:flex;align-items:center;gap:10px;padding:10px 4px;border-bottom:1px solid var(--bd)}
+.lb .rk{width:34px;font-weight:900;font-size:18px;text-align:center}.lb .nm{flex:1;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.lb.me{background:rgba(255,210,63,.18);border-radius:12px}
+.stat{display:grid;grid-template-columns:1fr 1fr;gap:8px}.stat div{background:rgba(0,0,0,.28);border-radius:12px;padding:10px}.stat b{display:block;font-size:18px}.stat span{font-size:11px;color:var(--mu)}
+.ar{display:flex;gap:8px;margin:8px 0;align-items:center}.ar .grow{flex:1}
+.err{text-align:center;padding:40px 16px}.err .big{font-size:70px}
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="top"><div class="row">
+    <div class="pill"><small>Tanga</small>🪙 <span id="coins">0</span></div>
+    <div class="pill"><small>Daromad / soat</small>📈 <span id="rate">0</span></div>
+  </div>
+  <div class="row" style="margin-top:8px"><button class="btn gn" id="colBtn" style="flex:1">💰 Yig'ish: <span id="pend">0</span></button></div></div>
+  <main id="m"><div class="err"><div class="big">🥚</div><p class="mu">Yuklanmoqda...</p></div></main>
+</div>
+<div class="tabs" id="tabs"></div>
+<div class="ov" id="ov" hidden><div class="big" id="ovEgg">🥚</div><div class="res" id="ovRes"></div><div id="ovBtn" style="margin-top:18px"></div></div>
+<div class="sheet" id="sh" hidden></div>
+<div class="toast" id="toast" hidden></div>
+<script>
+var tg = window.Telegram && window.Telegram.WebApp;
+if (tg) { try { tg.ready(); tg.expand(); tg.setHeaderColor && tg.setHeaderColor("#1b1464"); tg.setBackgroundColor && tg.setBackgroundColor("#1b1464"); } catch (e) {} }
+var INIT = tg ? tg.initData : "";
+var BID = new URLSearchParams(location.search).get("b");
+var CAT = null, ST = null, ADM = null, T0 = 0, tab = "egg", eggIdx = 0, auto = false, autoN = 1, busy = false, TOP = null, hunted = null, tt = null;
+function $(id) { return document.getElementById(id); }
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+function fmt(n) { return String(Math.floor(n)).replace(/\B(?=(\d{3})+(?!\d))/g, " "); }
+function dur(s) { s = Math.max(0, Math.floor(s)); var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60; return h ? h + " soat " + m + " daq" : (m ? m + " daq " : "") + x + " s"; }
+function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+function hap(k) { try { if (tg && tg.HapticFeedback) { if (k === "ok") tg.HapticFeedback.notificationOccurred("success"); else tg.HapticFeedback.impactOccurred(k || "light"); } } catch (e) {} }
+function toast(t) { var e = $("toast"); e.textContent = t; e.hidden = false; clearTimeout(tt); tt = setTimeout(function () { e.hidden = true; }, 2400); }
+var ERR = { no_coins: "Tanga yetarli emas", wait: "Hali erta", slow_down: "Sekinroq 🙂", promo_none: "Bunday promokod yo'q", promo_used: "Bu promokoddan foydalangansiz", promo_over: "Promokod limiti tugagan", maintenance: "Texnik tanaffus. Birozdan keyin qayting", bad_value: "Noto'g'ri qiymat", no_pet: "Bu pet sizda yo'q", forbidden: "Ruxsat yo'q", invalid_init_data: "Mini appni bot ichidan oching", bot_not_found: "Bot topilmadi", net: "Aloqa xatosi" };
+async function api(method, path, body) {
+  var url = "/api/egg/" + path + "?b=" + encodeURIComponent(BID);
+  var opt = { method: method, headers: { "Content-Type": "application/json" } };
+  if (method === "GET") url += "&initData=" + encodeURIComponent(INIT); else opt.body = JSON.stringify(Object.assign({ initData: INIT }, body || {}));
+  var r = await fetch(url, opt);
+  var j = await r.json().catch(function () { return { error: "net" }; });
+  if (!r.ok) { var e = new Error(j.error || "net"); e.data = j; throw e; }
+  return j;
+}
+function setState(s, adm) { ST = s; T0 = Date.now(); if (adm) ADM = adm; render(); }
+function pend() {
+  if (!ST) return 0;
+  var mx = ST.rate * ST.cap_h, p = ST.pending + ST.rate * (Date.now() - T0) / 3600000;
+  return Math.min(mx, p);
+}
+function gateView(g) {
+  var h = '<div class="err"><div class="big">🔒</div>';
+  if (g && g.reason === "channels") {
+    h += "<h2>Avval kanallarga obuna bo'ling</h2>" + (g.channels || []).map(function (c) { return '<p><a style="color:#ffd23f" href="' + esc(c.url) + '">' + esc(c.title) + "</a></p>"; }).join("") + '<p class="mu">Obuna bo\'lgach, mini appni qayta oching.</p>';
+  } else if (g && g.reason === "blocked") h += "<h2>Siz bloklangansiz</h2>";
+  else if (g && g.reason === "premium") h += "<h2>Bu bot Premium obunachilar uchun</h2><p class=\"mu\">Botda 💎 Premium bo'limidan foydalaning.</p>";
+  else h += "<h2>Bot hozir faol emas</h2>";
+  $("m").innerHTML = h + "</div>";
+  $("tabs").innerHTML = "";
+}
+function fail(e) {
+  var d = e.data || {}, c = e.message;
+  if (c === "gate") { gateView(d.gate); return; }
+  if (c === "wait" && d.left) { toast("⏳ " + dur(d.left)); return; }
+  toast(ERR[c] || "Xatolik: " + c);
+}
+function rarCol(r) { return "r-" + r; }
+function petCard(pk, extra) {
+  var p = CAT.pets[pk], rr = CAT.rar[p.rar];
+  return '<div class="pet ' + rarCol(p.rar) + '">' + (extra && extra.n ? '<div class="n">×' + extra.n + "</div>" : "") + '<div class="e">' + p.emoji + "</div><b>" + esc(p.name) + "</b><span>" + rr[0] + " " + rr[1] + "<br>📈 " + fmt(p.inc) + "/s</span></div>";
+}
+function tabs() {
+  var t = [["egg", "🥚", "Tuxum"], ["pets", "🐾", "Petlar"], ["bonus", "🎁", "Bonus"], ["top", "🏆", "Reyting"]];
+  if (ST && ST.admin) t.push(["admin", "⚙️", "Admin"]);
+  $("tabs").innerHTML = t.map(function (x) { return '<button data-t="' + x[0] + '" class="' + (tab === x[0] ? "on" : "") + '"><b>' + x[1] + "</b>" + x[2] + "</button>"; }).join("");
+  Array.prototype.forEach.call($("tabs").querySelectorAll("button"), function (b) {
+    b.onclick = function () { tab = b.getAttribute("data-t"); hap("light"); if (tab === "top") loadTop(); render(); };
+  });
+}
+function head() {
+  if (!ST) return;
+  $("coins").textContent = fmt(ST.coins);
+  $("rate").textContent = fmt(ST.rate) + (ST.premium ? " 💎x2" : "");
+  var p = pend();
+  $("pend").textContent = fmt(p);
+  $("colBtn").className = "btn gn" + (p < 1 ? " off" : "");
+}
+function render() {
+  if (!CAT || !ST) return;
+  head(); tabs();
+  var m = $("m");
+  if (tab === "egg") viewEgg(m); else if (tab === "pets") viewPets(m); else if (tab === "bonus") viewBonus(m); else if (tab === "top") viewTop(m); else if (tab === "admin") viewAdmin(m);
+}
+// ---------- Tuxum ----------
+function viewEgg(m) {
+  var e = CAT.eggs[eggIdx], can = function (n) { return ST.coins >= e.price * n; };
+  m.innerHTML = '<div class="stage"><div class="row" style="justify-content:space-between"><button class="arrow" id="pv">‹</button><div><div class="egg" id="eggTap">' + e.emoji + '</div><div class="plat"></div></div><button class="arrow" id="nx">›</button></div>' +
+    "<h2>" + esc(e.name) + "</h2>" + '<div class="dots">' + CAT.eggs.map(function (x, i) { return '<i class="' + (i === eggIdx ? "on" : "") + '"></i>'; }).join("") + "</div>" +
+    '<div class="mu">Tuxumni bosing yoki pastdagi tugmalardan foydalaning</div></div>' +
+    '<div class="hb"><button class="btn ' + (can(1) ? "" : "off") + '" id="h1">Ochish ×1<small>🪙 ' + fmt(e.price) + '</small></button><button class="btn bl ' + (can(3) ? "" : "off") + '" id="h3">×3<small>🪙 ' + fmt(e.price * 3) + '</small></button><button class="btn gn ' + (can(10) ? "" : "off") + '" id="h10">×10<small>🪙 ' + fmt(e.price * 10) + "</small></button></div>" +
+    '<div class="ar"><div class="grow mu">Avto-ochish: tanga tugaguncha ketma-ket ochadi</div><button class="btn sm ' + (auto ? "rd" : "bl") + '" id="au">' + (auto ? "⏹ To'xtatish" : "▶ Avto ×" + autoN) + '</button><button class="btn sm" id="aun">×' + autoN + "</button></div>" +
+    '<div class="card"><b>Ichidan chiqishi mumkin:</b><div class="drops" style="margin-top:8px">' + e.pets.map(function (d) {
+      var p = CAT.pets[d.pk];
+      return '<div class="drop ' + rarCol(p.rar) + '"><div class="e">' + p.emoji + "</div><div><b>" + esc(p.name) + "</b><span>" + d.pct + "% · 📈 " + fmt(p.inc) + "/s</span></div></div>";
+    }).join("") + "</div></div>";
+  $("pv").onclick = function () { eggIdx = (eggIdx + CAT.eggs.length - 1) % CAT.eggs.length; hap("light"); render(); };
+  $("nx").onclick = function () { eggIdx = (eggIdx + 1) % CAT.eggs.length; hap("light"); render(); };
+  $("eggTap").onclick = function () { hatch(1); };
+  $("h1").onclick = function () { hatch(1); };
+  $("h3").onclick = function () { hatch(3); };
+  $("h10").onclick = function () { hatch(10); };
+  $("aun").onclick = function () { autoN = autoN === 1 ? 3 : (autoN === 3 ? 10 : 1); render(); };
+  $("au").onclick = function () { if (auto) { auto = false; render(); } else { auto = true; render(); autoLoop(); } };
+}
+async function autoLoop() {
+  while (auto) { var ok = await hatch(autoN, true); if (!ok) { auto = false; render(); break; } }
+}
+async function hatch(n, fromAuto) {
+  if (busy) return false;
+  var e = CAT.eggs[eggIdx];
+  if (ST.coins < e.price) { toast("Tanga yetarli emas 🪙"); return false; }
+  busy = true;
+  try {
+    var p = api("POST", "act", { a: "hatch", egg: e.key, n: n });
+    p.catch(function () {});
+    await shake(e.emoji);
+    var j = await p;
+    setState(j.state);
+    await reveal(j.result, fromAuto);
+    return true;
+  } catch (er) { hideOv(); fail(er); return false; } finally { busy = false; }
+}
+function hideOv() { $("ov").hidden = true; $("ovRes").innerHTML = ""; $("ovBtn").innerHTML = ""; }
+async function shake(emoji) {
+  var ov = $("ov"), eg = $("ovEgg");
+  $("ovRes").innerHTML = ""; $("ovBtn").innerHTML = "";
+  eg.textContent = emoji; eg.className = "big shake"; eg.style.display = ""; ov.hidden = false; hap("light");
+  await sleep(auto ? 650 : 950); eg.className = "big shake hard"; hap("medium");
+  await sleep(auto ? 350 : 650); eg.className = "big flash"; hap("heavy");
+  await sleep(330); eg.style.display = "none";
+}
+function reveal(res, fromAuto) {
+  var one = res.length === 1;
+  $("ovRes").className = "res" + (one ? " one" : "");
+  $("ovRes").innerHTML = res.map(function (r, i) {
+    var p = CAT.pets[r.pk], rr = CAT.rar[p.rar];
+    return '<div class="rc ' + rarCol(p.rar) + '" style="animation-delay:' + (i * 90) + 'ms">' + (r.new ? '<div class="new">YANGI!</div>' : "") + '<div class="e">' + p.emoji + "</div><b>" + esc(p.name) + "</b><span>" + rr[0] + " " + rr[1] + "<br>📈 " + fmt(p.inc) + "/soat</span></div>";
+  }).join("");
+  var best = res.some(function (r) { return CAT.pets[r.pk].rar === "legend"; });
+  hap(best ? "ok" : "light");
+  return new Promise(function (resolve) {
+    var done = function () { hideOv(); resolve(); };
+    if (fromAuto && auto) {
+      $("ovBtn").innerHTML = '<button class="btn rd" id="ovStop">⏹ To\'xtatish</button>';
+      $("ovStop").onclick = function () { auto = false; };
+      setTimeout(done, best ? 2200 : 1300);
+    } else {
+      $("ovBtn").innerHTML = '<button class="btn" id="ovOk">Davom etish</button>';
+      $("ovOk").onclick = done;
+    }
+  });
+}
+// ---------- Petlar ----------
+function viewPets(m) {
+  var keys = Object.keys(CAT.pets), have = keys.filter(function (k) { return ST.pets[k]; }).length;
+  keys.sort(function (a, b) { return CAT.pets[a].inc - CAT.pets[b].inc; });
+  m.innerHTML = '<div class="card"><b>📖 Kolleksiya: ' + have + "/" + keys.length + '</b><div class="mu">Jami petlar: ' + fmt(Object.keys(ST.pets).reduce(function (s, k) { return s + ST.pets[k]; }, 0)) + " · ochilgan tuxumlar: " + fmt(ST.hatched) + '</div></div><div class="grid">' +
+    keys.map(function (k) {
+      if (!ST.pets[k]) return '<div class="pet lock"><div class="e">' + CAT.pets[k].emoji + "</div><b>???</b><span>" + CAT.rar[CAT.pets[k].rar][0] + " " + CAT.rar[CAT.pets[k].rar][1] + "</span></div>";
+      return '<div data-k="' + k + '">' + petCard(k, { n: ST.pets[k] }) + "</div>";
+    }).join("") + "</div>";
+  Array.prototype.forEach.call(m.querySelectorAll("[data-k]"), function (d) { d.onclick = function () { petSheet(d.getAttribute("data-k")); }; });
+}
+function petSheet(k) {
+  var p = CAT.pets[k], n = ST.pets[k] || 0, rr = CAT.rar[p.rar], sh = $("sh");
+  sh.innerHTML = '<div class="row"><div style="font-size:64px">' + p.emoji + '</div><div style="flex:1"><b style="font-size:18px">' + esc(p.name) + "</b><div class=\"mu\">" + rr[0] + " " + rr[1] + " · ×" + n + "<br>📈 " + fmt(p.inc) + "/soat (bittasi)</div></div></div>" +
+    '<div class="ar"><button class="btn rd" id="s1" style="flex:1">Sotish +' + fmt(p.sell) + '</button>' + (n > 1 ? '<button class="btn rd" id="sx" style="flex:1">Takrorlarni sotish +' + fmt(p.sell * (n - 1)) + "</button>" : "") + '</div><button class="btn bl" id="sc" style="width:100%">Yopish</button>';
+  sh.hidden = false;
+  $("sc").onclick = function () { sh.hidden = true; };
+  var sell = function (extras) {
+    var go = async function () {
+      try { var j = await api("POST", "act", { a: "sell", pk: k, extras: extras }); sh.hidden = true; setState(j.state); toast("💰 +" + fmt(j.result.coins) + " 🪙"); hap("ok"); } catch (e) { fail(e); }
+    };
+    var q = extras ? "Takroriy petlarni sotasizmi? (1 tasi qoladi)" : p.name + " sotilsinmi?";
+    if (tg && tg.showConfirm) tg.showConfirm(q, function (ok) { if (ok) go(); }); else if (confirm(q)) go();
+  };
+  $("s1").onclick = function () { sell(false); };
+  if ($("sx")) $("sx").onclick = function () { sell(true); };
+}
+// ---------- Bonus ----------
+function viewBonus(m) {
+  var left = ST.daily_left - (Date.now() - T0) / 1000, can = left <= 0;
+  var days = [1, 2, 3, 4, 5, 6, 7].map(function (d) { return '<i class="' + (d <= ST.streak ? "on" : "") + '">' + d + "</i>"; }).join("");
+  var hl = ST.hunt_left - (Date.now() - T0) / 1000, hc = hl <= 0;
+  var spots = "";
+  for (var i = 0; i < 9; i++) spots += '<div class="spot' + (hunted && hunted.i === i ? " hit" : "") + '" data-i="' + i + '">' + (hunted && hunted.i === i ? hunted.t : (hc ? "🌿" : "💤")) + "</div>";
+  m.innerHTML = '<div class="card"><h2>🎁 Kunlik bonus</h2><div class="mu">Ketma-ket kunlarda bonus oshadi (7 kungacha). Seriya: ' + ST.streak + ' kun</div><div class="streak">' + days + '</div><button class="btn ' + (can ? "" : "off") + '" id="dl" style="width:100%">' + (can ? "🎁 Bonusni olish" : "⏳ " + dur(left)) + "</button></div>" +
+    '<div class="card"><h2>🔍 Tuxum ovi</h2><div class="mu">' + (hc ? "Biror butani tanlang — ichida tanga yoki bepul tuxum bo'lishi mumkin!" : "Keyingi ovgacha: " + dur(hl)) + '</div><div class="spots" style="margin-top:10px">' + spots + "</div></div>" +
+    '<div class="card"><h2>🎟 Promokod</h2><div class="ar"><input id="pc" maxlength="20" placeholder="KOD" autocapitalize="characters"><button class="btn sm" id="pb">OK</button></div></div>' +
+    '<div class="card"><h2>👥 Do\'st taklif qilish</h2><div class="mu">Har bir do\'st uchun ikkalangizga +' + fmt(ST.ref_bonus) + ' 🪙. Takliflar: ' + ST.refs + '</div><button class="btn bl" id="inv" style="width:100%;margin-top:10px">📨 Havolani ulashish</button></div>';
+  $("dl").onclick = async function () {
+    try { var j = await api("POST", "act", { a: "daily" }); setState(j.state); toast("🎁 +" + fmt(j.result.bonus) + " 🪙"); hap("ok"); } catch (e) { fail(e); }
+  };
+  Array.prototype.forEach.call(m.querySelectorAll(".spot"), function (s) {
+    s.onclick = async function () {
+      if (!hc || hunted) return;
+      var i = parseInt(s.getAttribute("data-i"), 10);
+      try {
+        var j = await api("POST", "act", { a: "hunt" });
+        hunted = { i: i, t: j.result.kind === "egg" ? CAT.pets[j.result.value].emoji : "🪙" };
+        toast(j.result.kind === "egg" ? "🎉 Tuxum topdingiz: " + CAT.pets[j.result.value].name + "!" : "🪙 +" + fmt(j.result.value));
+        hap("ok"); setState(j.state);
+        setTimeout(function () { hunted = null; if (tab === "bonus") render(); }, 2500);
+      } catch (e) { fail(e); }
+    };
+  });
+  $("pb").onclick = async function () {
+    var c = $("pc").value.trim(); if (!c) return;
+    try { var j = await api("POST", "act", { a: "promo", code: c }); setState(j.state); toast("🎟 +" + fmt(j.result.coins) + " 🪙"); hap("ok"); } catch (e) { fail(e); }
+  };
+  $("inv").onclick = function () {
+    var link = "https://t.me/" + ST.username + "?start=ref_" + (tg && tg.initDataUnsafe && tg.initDataUnsafe.user ? tg.initDataUnsafe.user.id : "");
+    var txt = "🥚 Men bilan tuxum o'ynang! Petlar yig'ing va tanga ishlang:";
+    var u = "https://t.me/share/url?url=" + encodeURIComponent(link) + "&text=" + encodeURIComponent(txt);
+    if (tg && tg.openTelegramLink) tg.openTelegramLink(u); else window.open(u, "_blank");
+  };
+}
+// ---------- Reyting ----------
+async function loadTop() {
+  try { var j = await api("POST", "act", { a: "top" }); TOP = j.result; } catch (e) { TOP = []; }
+  if (tab === "top") render();
+}
+function viewTop(m) {
+  if (TOP == null) { m.innerHTML = '<div class="err"><div class="big">🏆</div><p class="mu">Yuklanmoqda...</p></div>'; return; }
+  var md = ["🥇", "🥈", "🥉"];
+  m.innerHTML = '<div class="card"><h2>🏆 Eng kuchli o\'yinchilar</h2>' + (TOP.length ? TOP.map(function (r, i) {
+    return '<div class="lb' + (r.me ? " me" : "") + '"><div class="rk">' + (md[i] || (i + 1)) + '</div><div class="nm">' + esc(r.name) + (r.me ? " (siz)" : "") + '</div><div class="mu">📈 ' + fmt(r.rate) + "/s · 🐾 " + r.pets + "</div></div>";
+  }).join("") : '<p class="mu">Hali reyting bo\'sh. Birinchi bo\'ling!</p>') + "</div>";
+}
+// ---------- Admin ----------
+function viewAdmin(m) {
+  var a = ADM; if (!a) { m.innerHTML = ""; return; }
+  var s = a.stats;
+  var st = [["O'yinchilar", s.players], ["Foydalanuvchilar", s.users], ["Ochilgan tuxum", s.hatched], ["Petlar", s.pets], ["Aylanmadagi tanga", s.coins], ["Sotilgan petlar", s.sold], ["Kunlik bonus", s.daily], ["Tuxum ovlari", s.hunts], ["Promokod ishlatilgan", s.promos], ["Bloklangan", s.blocked]];
+  m.innerHTML = '<div class="card"><h2>📊 Statistika</h2><div class="stat">' + st.map(function (x) { return "<div><b>" + fmt(x[1]) + "</b><span>" + x[0] + "</span></div>"; }).join("") + "</div></div>" +
+    '<div class="card"><h2>🏆 Top o\'yinchilar</h2>' + (a.top.map(function (r, i) { return '<div class="lb"><div class="rk">' + (i + 1) + '</div><div class="nm">' + esc(r.name || "—") + ' <span class="mu">' + r.id + '</span></div><div class="mu">📈 ' + fmt(r.rate) + " · 🪙 " + fmt(r.coins) + "</div></div>"; }).join("") || '<p class="mu">Hali yo\'q</p>') + "</div>" +
+    '<div class="card"><h2>🎁 Promokodlar</h2>' + (a.promos.map(function (p) { return '<div class="ar"><div class="grow"><b>' + esc(p.code) + '</b> <span class="mu">🪙 ' + fmt(p.coins) + " · " + p.used + "/" + p.uses + '</span></div><button class="btn rd sm" data-pd="' + esc(p.code) + '">🗑</button></div>'; }).join("") || '<p class="mu">Hali yo\'q</p>') +
+    '<div class="ar"><input id="pcode" placeholder="KOD" maxlength="20"><input id="pcoin" type="number" placeholder="Tanga" style="max-width:100px"><input id="puse" type="number" placeholder="Soni" style="max-width:80px"></div><button class="btn" id="padd" style="width:100%">➕ Promokod yaratish</button></div>' +
+    '<div class="card"><h2>🪙 Tanga berish</h2><div class="ar"><input id="gid" type="number" placeholder="Foydalanuvchi ID"><input id="gam" type="number" placeholder="± miqdor" style="max-width:120px"></div><button class="btn" id="gbtn" style="width:100%">Yuborish</button></div>' +
+    '<div class="card"><h2>🚫 Bloklash</h2><div class="mu">Bloklanganlar: ' + (a.blocked_list.join(", ") || "yo'q") + '</div><div class="ar"><input id="bid" type="number" placeholder="Foydalanuvchi ID"></div><div class="ar"><button class="btn rd" id="bb" style="flex:1">Bloklash</button><button class="btn gn" id="bu" style="flex:1">Ochish</button></div></div>' +
+    '<div class="card"><h2>⚙️ Sozlamalar</h2>' + a.cfg.map(function (c) { return '<div class="ar"><div class="grow">' + esc(c.name) + '</div><input data-ck="' + c.key + '" type="number" value="' + c.value + '" style="max-width:110px"><button class="btn sm" data-cs="' + c.key + '">OK</button></div>'; }).join("") +
+    '<div class="ar"><div class="grow">🛠 Texnik tanaffus</div><button class="btn sm ' + (a.maintenance ? "rd" : "gn") + '" id="mt">' + (a.maintenance ? "Yoqilgan" : "O'chiq") + "</button></div></div>";
+  var act = async function (body, msg) {
+    try { var j = await api("POST", "act", body); ADM = j.admin || ADM; setState(j.state, j.admin); toast(msg || "✅ Saqlandi"); hap("ok"); } catch (e) { fail(e); }
+  };
+  Array.prototype.forEach.call(m.querySelectorAll("[data-pd]"), function (b) { b.onclick = function () { act({ a: "admin_promo_del", code: b.getAttribute("data-pd") }, "🗑 O'chirildi"); }; });
+  $("padd").onclick = function () { act({ a: "admin_promo_add", code: $("pcode").value, coins: $("pcoin").value, uses: $("puse").value }); };
+  $("gbtn").onclick = function () { act({ a: "admin_give", id: $("gid").value, amount: $("gam").value }); };
+  $("bb").onclick = function () { act({ a: "admin_block", id: $("bid").value, block: true }, "🚫 Bloklandi"); };
+  $("bu").onclick = function () { act({ a: "admin_block", id: $("bid").value, block: false }, "✅ Blokdan chiqarildi"); };
+  $("mt").onclick = function () { act({ a: "admin_cfg", key: "maintenance", value: !a.maintenance }); };
+  Array.prototype.forEach.call(m.querySelectorAll("[data-cs]"), function (b) {
+    b.onclick = function () { var k = b.getAttribute("data-cs"), inp = m.querySelector('[data-ck="' + k + '"]'); act({ a: "admin_cfg", key: k, value: inp.value }); };
+  });
+}
+$("colBtn").onclick = async function () {
+  if (!ST || pend() < 1) { toast("Hali yig'ilgan tanga yo'q"); return; }
+  try { var j = await api("POST", "act", { a: "collect" }); setState(j.state); toast("💰 +" + fmt(j.result) + " 🪙"); hap("ok"); } catch (e) { fail(e); }
+};
+async function start() {
+  try {
+    var j = await api("GET", "state");
+    CAT = j.catalog; setState(j.state, j.admin);
+  } catch (e) { fail(e); if (e.message !== "gate") $("m").innerHTML = '<div class="err"><div class="big">⚠️</div><p>' + esc(ERR[e.message] || "Xatolik") + "</p></div>"; }
+}
+setInterval(function () { if (ST && !busy) { head(); if (tab === "bonus" && !hunted) { var d = $("dl"); if (d) { var left = ST.daily_left - (Date.now() - T0) / 1000; if (left <= 0) render(); else d.textContent = "⏳ " + dur(left); } } } }, 1000);
+start();
+</script>
+</body>
+</html>
+"""
 
 
 async def botapp_page(request):
