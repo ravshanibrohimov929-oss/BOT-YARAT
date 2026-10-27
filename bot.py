@@ -27485,12 +27485,17 @@ var G3 = (function () {
       var facing = (nx * -fc[0] + ny * -fc[1] + nz * -fc[2]) > 0, inner = false;
       if (!facing) { if (!shell) continue; inner = true; nx = -nx; ny = -ny; nz = -nz; }
       var lam = Math.max(0, nx * LD[0] + ny * LD[1] + nz * LD[2]);
-      var kk = emis ? 1.15 : 0.5 + 0.62 * lam;
+      var kk = emis ? 1.15 : 0.56 + 0.58 * lam;
       var base = pl.col; if (inner) base = part.inner || [255, 244, 214];
-      var fill = rgb(base, kk), pts = [], zz = 0, cl = clipNear(v, -0.7);
+      var pts = [], zz = 0, cl = clipNear(v, -0.7);
       if (cl.length < 3) continue;
       for (var q = 0; q < cl.length; q++) { var pp = pr(cl[q]); pts.push(pp[0], pp[1]); zz += cl[q][2]; }
-      var rec = { z: zz / cl.length + (inner ? -0.02 : 0), p: pts, c: fill, s: part.type === "box" ? rgb(base, kk * 0.62) : fill, lw: part.type === "box" ? 1.1 : 1, a: alpha };
+      var dep = -zz / cl.length, fillC = [base[0] * kk, base[1] * kk, base[2] * kk], strC = [base[0] * kk * 0.9, base[1] * kk * 0.9, base[2] * kk * 0.9], tf = 0;
+      if (this.fog) { tf = clamp((dep - this.fog.n) / (this.fog.f - this.fog.n), 0, 1) * 0.92; }
+      if (tf > 0) { var fc2 = this.fog.c; for (var ci = 0; ci < 3; ci++) { fillC[ci] += (fc2[ci] - fillC[ci]) * tf; strC[ci] += (fc2[ci] - strC[ci]) * tf; } }
+      var soft = part.type === "box" && !part.hard, lw = 1;
+      if (soft) { var av = 0, np = pts.length / 2; for (var e1 = 0; e1 < np; e1++) { var e2 = (e1 + 1) % np; av += Math.sqrt((pts[2 * e1] - pts[2 * e2]) * (pts[2 * e1] - pts[2 * e2]) + (pts[2 * e1 + 1] - pts[2 * e2 + 1]) * (pts[2 * e1 + 1] - pts[2 * e2 + 1])); } lw = clamp(av / np * 0.15 / this.dpr, 0.9, 9); }
+      var rec = { z: zz / cl.length + (inner ? -0.02 : 0), p: pts, c: rgb(fillC, 1), s: soft ? rgb(strC, 1) : rgb(fillC, 1), lw: lw, a: alpha };
       if (part.under) { (out.under = out.under || []).push(rec); } else out.push(rec);
     }
   };
@@ -28056,7 +28061,7 @@ function buildFarmWorld(sc, uid) {
   var CL = function (o, r) { o.cullR = r; W.cull.push(o); return o; };
   W.floor = { parts: [], cullR: 9999, pos: [0, 0, 0] }; W.fc = {}; sc.add(W.floor);
   // butun maydonni o'rab turgan to'siq
-  var fe = CL({ parts: [] }, 26), WD = [170, 118, 64], seg = 4;
+  var fe = CL({ parts: [] }, 26), WD = [186, 128, 70], seg = 4;
   for (x = -HX + seg / 2; x < HX; x += seg) { fe.parts.push(B3([x, 0.45, -HZ - 0.2], [seg - 0.1, 0.7, 0.18], WD), B3([x, 0.45, HZ + 0.2], [seg - 0.1, 0.7, 0.18], WD)); }
   for (z = -HZ + seg / 2; z < HZ; z += seg) { fe.parts.push(B3([-HX - 0.2, 0.45, z], [0.18, 0.7, seg - 0.1], WD), B3([HX + 0.2, 0.45, z], [0.18, 0.7, seg - 0.1], WD)); }
   for (x = -HX; x <= HX; x += seg) { fe.parts.push(B3([x, 0.6, -HZ - 0.2], [0.34, 1.2, 0.34], [140, 92, 48]), B3([x, 0.6, HZ + 0.2], [0.34, 1.2, 0.34], [140, 92, 48])); }
@@ -28075,11 +28080,11 @@ function buildFarmWorld(sc, uid) {
   for (z = -HZ + 3; z <= HZ - 3; z += 6) { tp.push([-HX - 3.2, z]); tp.push([HX + 3.2, z]); }
   tp.push([-12, -20], [12, -9], [-11, 3], [11, 14]);
   var rs = 11; for (i = 0; i < 70; i++) { rs = (rs * 9301 + 49297) % 233280; var rx = (rs / 233280 - 0.5) * (FW.w - 8); rs = (rs * 9301 + 49297) % 233280; var rz = (rs / 233280 - 0.5) * (FW.d - 8); if (Math.abs(rx) < 14 && rz > -45 && rz < 40) continue; tp.push([rx, rz]); }
-  tp.forEach(function (p, k) { var h = 2.0 + (k % 3) * 0.5; tr.parts.push(B3([p[0], h / 2, p[1]], [0.7, h, 0.7], [120, 80, 46]), B3([p[0], h + 0.7, p[1]], [2.2, 1.4, 2.2], [60, 150, 70]), B3([p[0], h + 1.8, p[1]], [1.4, 0.9, 1.4], [78, 172, 84])); });
+  tp.forEach(function (p, k) { var h = 2.0 + (k % 3) * 0.5; tr.parts.push(B3([p[0], h / 2, p[1]], [0.7, h, 0.7], [120, 80, 46]), B3([p[0], h + 0.7, p[1]], [2.2, 1.4, 2.2], [56, 176, 86]), B3([p[0], h + 1.8, p[1]], [1.4, 0.9, 1.4], [96, 206, 108])); });
   sc.add(tr);
   var fl = CL({ parts: [] }, 26), FC = [[255, 90, 120], [255, 214, 70], [255, 255, 255], [170, 120, 255]], sd = 7;
   for (i = 0; i < 700; i++) { sd = (sd * 9301 + 49297) % 233280; var fx = (sd / 233280 - 0.5) * (FW.w - 3); sd = (sd * 9301 + 49297) % 233280; var fz = (sd / 233280 - 0.5) * (FW.d - 3); if (Math.abs(fx) < 4.2 && fz > -34 || (Math.abs(fx) <= hm.w / 2 + 1 && fz > hm.z - hm.d / 2 - 1 && fz < hm.z + hm.d / 2 + 1)) continue; fl.parts.push(B3([fx, 0.18, fz], [0.16, 0.36, 0.16], [60, 140, 60]), B3([fx, 0.44, fz], [0.34, 0.2, 0.34], FC[i % 4])); }
-  sc.add(fl);
+  sc.add(fl); W.fl = fl;
   // tovuq uyalari
   CAT.farm.chickens.forEach(function (c, idx) {
     var pen = CL({ parts: [], pos: [c.x, 0, c.z] }, 24), s = 1.55;
@@ -28093,7 +28098,7 @@ function buildFarmWorld(sc, uid) {
   // uydagi tuxum javonlari
   FKINDS.forEach(function (kd, q) {
     var sx = hm.x + (q - 1.5) * 3.4 - 2.2, sz = hm.z + 0.7;
-    var base = CL({ parts: [B3([0, 0.18, 0], [2.8, 0.36, 2.4], [170, 118, 64]), B3([0, 0.4, 0], [2.4, 0.1, 2.0], [225, 190, 90])], pos: [sx, 0, sz] }, 30); sc.add(base);
+    var base = CL({ parts: [B3([0, 0.18, 0], [2.8, 0.36, 2.4], [186, 128, 70]), B3([0, 0.4, 0], [2.4, 0.1, 2.0], [225, 190, 90])], pos: [sx, 0, sz] }, 30); sc.add(base);
     var eggs = [];
     [[-0.5, 0.35], [0.5, 0.35], [0, -0.45]].forEach(function (p, j) { var e = CL(G3M.makeEgg(kd, true), 30); e.sc = [0.42, 0.42, 0.42]; e.pos = [sx + p[0], 0.82, sz + p[1]]; e.hidden = true; sc.add(e); eggs.push(e); });
     W.stands.push({ kind: kd, x: sx, z: sz, eggs: eggs });
@@ -28103,8 +28108,8 @@ function buildFarmWorld(sc, uid) {
   return W;
 }
 function farmFloor(f) {
-  var sc = f.sc, W = f.W, hm = CAT.farm.home, R = f.over ? 70 : Math.min(44, Math.max(26, sc.cam.d * 1.3)), tile = f.over ? 6 : (R > 30 ? 4 : 2);
-  var cx = Math.round(sc.cam.t[0] / tile), cz = Math.round(sc.cam.t[2] / tile), key = tile + "|" + cx + "|" + cz + "|" + Math.round(R / 4);
+  var sc = f.sc, W = f.W, hm = CAT.farm.home, R = Math.min(300, Math.ceil(Math.max(26, sc.cam.d * 1.45) / 12) * 12), tile = 2; while ((2 * R / tile) * (2 * R / tile) * 0.8 > 1400) tile *= 2;
+  var cx = Math.round(sc.cam.t[0] / tile), cz = Math.round(sc.cam.t[2] / tile), key = tile + "|" + cx + "|" + cz + "|" + R;
   if (key === W.floorKey) return; W.floorKey = key;
   var HX = FW.w / 2, HZ = FW.d / 2, n = Math.ceil(R / tile) + 1, out = [], i, j;
   for (i = cx - n; i <= cx + n; i++) for (j = cz - n; j <= cz + n; j++) {
@@ -28112,7 +28117,7 @@ function farmFloor(f) {
     var ck = tile + "|" + i + "|" + j, part = W.fc[ck];
     if (!part) {
       var chk = ((i + j) & 1) === 0, col, inH = Math.abs(x - hm.x) <= hm.w / 2 && Math.abs(z - hm.z) <= hm.d / 2, path = Math.abs(x) <= 3 && z <= hm.z - hm.d / 2 && z > -34;
-      if (inH) col = chk ? [86, 190, 255] : [64, 160, 235]; else if (path) col = chk ? [214, 178, 120] : [200, 164, 106]; else col = chk ? [112, 196, 92] : [100, 182, 80];
+      if (inH) col = chk ? [104, 212, 246] : [82, 190, 232]; else if (path) col = chk ? [240, 208, 146] : [228, 194, 130]; else col = chk ? [128, 212, 92] : [112, 196, 78];
       part = W.fc[ck] = { type: "quad", c: [x, 0, z], s: [tile, tile], col: col, under: true };
     }
     out.push(part);
@@ -28121,12 +28126,12 @@ function farmFloor(f) {
 }
 function farmCarryKey(key, W) { if (W.carryKey === key) return; W.carryKey = key; var sc = FM.sc, idx = sc.objs.indexOf(W.carry); var n = G3M.makeEgg(key || "common", true); n.sc = [0.38, 0.38, 0.38]; n.hidden = !key; sc.objs[idx] = n; W.carry = n; }
 function startFarm() {
-  var cv = $("fCv"), sc = new G3.Scene(cv, { d: 21, pitch: 0.92, f: 1.35 });
-  sc.bg = function (ctx, w, h) { var g = ctx.createLinearGradient(0, 0, 0, h); g.addColorStop(0, "#5aa84e"); g.addColorStop(1, "#6fbf5c"); ctx.fillStyle = g; ctx.fillRect(0, 0, w, h); };
+  var cv = $("fCv"), sc = new G3.Scene(cv, { d: 46, pitch: 0.92, f: 1.35 });
+  sc.bg = function (ctx, w, h) { var g = ctx.createLinearGradient(0, 0, 0, h); g.addColorStop(0, "#9bd8f5"); g.addColorStop(1, "#b9e7f6"); ctx.fillStyle = g; ctx.fillRect(0, 0, w, h); };
   var uid = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) ? tg.initDataUnsafe.user.id : 1;
   var W = buildFarmWorld(sc, uid), hm = CAT.farm.home;
   var sp = FP || { x: hm.x, z: hm.z - 3, yaw: 0, face: Math.PI };
-  FM = { cv: cv, sc: sc, W: W, P: { x: sp.x, z: sp.z }, face: sp.face, yaw: sp.yaw, pitch: 0.92, dist: 21, over: false, pan: { x: sp.x, z: sp.z }, now0: performance.now(), last: performance.now(), joy: { x: 0, y: 0 }, hold: null, F: null, readyAt: [], carry: null, speed: ST.farm_speed || 10, stunUntil: 0, fly: null, depBusy: 0, syncAt: 0, near: -1, msgT: 0, parts: [], petsAt: 0, petInit: false, mapAt: 0, sheet: false };
+  FM = { cv: cv, sc: sc, W: W, P: { x: sp.x, z: sp.z }, face: sp.face, yaw: sp.yaw, pitch: 0.92, dist: 46, over: false, pan: { x: sp.x, z: sp.z }, now0: performance.now(), last: performance.now(), joy: { x: 0, y: 0 }, hold: null, F: null, readyAt: [], carry: null, speed: ST.farm_speed || 10, stunUntil: 0, fly: null, depBusy: 0, syncAt: 0, near: -1, msgT: 0, parts: [], petsAt: 0, petInit: false, mapAt: 0, sheet: false };
   sc.cam.t = [sp.x, 0.8, sp.z]; sc.cam.yaw = sp.yaw;
   var joy = $("fJoy"), knob = $("fKnob"), R = 52;
   var jp = function (ev) { var r = joy.getBoundingClientRect(), dx = ev.clientX - (r.left + r.width / 2), dy = ev.clientY - (r.top + r.height / 2), l = Math.sqrt(dx * dx + dy * dy) || 1, k = Math.min(1, l / R); FM.joy = { x: dx / l * k, y: dy / l * k }; knob.style.transform = "translate(" + (dx / l * k * R) + "px," + (dy / l * k * R) + "px)"; };
@@ -28135,18 +28140,18 @@ function startFarm() {
   var jend = function () { if (!FM) return; FM.jOn = false; FM.joy = { x: 0, y: 0 }; knob.style.transform = ""; };
   joy.onpointerup = jend; joy.onpointercancel = jend;
   // PUBG kabi: ekranni surish — kamerani aylantirish; ikki barmoq — yaqinlashtirish
-  var ptr = {}, pd0 = 0, dist0 = 21;
+  var ptr = {}, pd0 = 0, dist0 = 46;
   var pdist = function () { var k = Object.keys(ptr); if (k.length < 2) return 0; var a = ptr[k[0]], b = ptr[k[1]]; return Math.sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y)) || 1; };
   cv.onpointerdown = function (ev) { ev.preventDefault(); try { cv.setPointerCapture(ev.pointerId); } catch (e) {} ptr[ev.pointerId] = { x: ev.clientX, y: ev.clientY }; if (Object.keys(ptr).length === 2) { pd0 = pdist(); dist0 = FM.dist; } };
   cv.onpointermove = function (ev) {
     var p = ptr[ev.pointerId]; if (!p || !FM) return; var dx = ev.clientX - p.x, dy = ev.clientY - p.y; p.x = ev.clientX; p.y = ev.clientY;
-    if (Object.keys(ptr).length >= 2) { var dn = pdist(); if (dn && pd0) FM.dist = Math.max(12, Math.min(38, dist0 * pd0 / dn)); return; }
+    if (Object.keys(ptr).length >= 2) { var dn = pdist(); if (dn && pd0) FM.dist = Math.max(12, Math.min(210, dist0 * pd0 / dn)); return; }
     if (FM.over) { var k = FM.sc.cam.d / ((cv.clientHeight || 600) * 1.35), v = G3.rotV([-dx * k, 0, -dy * k * 1.3], 0, FM.yaw, 0); FM.pan.x = Math.max(-FW.w / 2, Math.min(FW.w / 2, FM.pan.x + v[0])); FM.pan.z = Math.max(-FW.d / 2, Math.min(FW.d / 2, FM.pan.z + v[2])); }
     else { FM.yaw -= dx * 0.0075; FM.pitch = Math.max(0.5, Math.min(1.3, FM.pitch + dy * 0.004)); }
   };
   var pend = function (ev) { delete ptr[ev.pointerId]; };
   cv.onpointerup = pend; cv.onpointercancel = pend;
-  cv.onwheel = function (ev) { ev.preventDefault(); FM.dist = Math.max(12, Math.min(38, FM.dist * (ev.deltaY > 0 ? 1.08 : 0.93))); };
+  cv.onwheel = function (ev) { ev.preventDefault(); FM.dist = Math.max(12, Math.min(210, FM.dist * (ev.deltaY > 0 ? 1.1 : 0.9))); };
   $("fOv").onclick = function () { FM.over = !FM.over; FM.pan = { x: FM.P.x, z: FM.P.z }; if (FM.over) { FM.pitch0 = FM.pitch; farmMsg("🔭 Xarita: barmoq bilan suring", 2200); } else FM.pitch = FM.pitch0 || 0.92; };
   var btn = $("fBtn");
   btn.onpointerdown = function (ev) { ev.preventDefault(); farmPress(); };
@@ -28308,12 +28313,15 @@ function farmTick(now) {
     W.pl.rot = stunned ? [0.2, f.face, 0.3 * Math.sin(now / 90)] : [0, f.face, 0];
   }
   // kamera
-  var dTarget = f.over ? 54 : f.dist, pTarget = f.over ? 1.22 : f.pitch, kk = Math.min(1, dt * (f.fly ? 10 : 7));
+  var dTarget = f.over ? 150 : f.dist, pTarget = f.over ? 1.22 : f.pitch, kk = Math.min(1, dt * (f.fly ? 10 : 7));
   sc.cam.d += (dTarget - sc.cam.d) * Math.min(1, dt * 6); sc.cam.pitch += (pTarget - sc.cam.pitch) * Math.min(1, dt * 6); sc.cam.yaw = f.yaw;
   var tx = f.over ? f.pan.x : P.x, tz = f.over ? f.pan.z : P.z;
   sc.cam.t[0] += (tx - sc.cam.t[0]) * kk; sc.cam.t[2] += (tz - sc.cam.t[2]) * kk;
   farmFloor(f);
-  var cr = f.over ? 120 : Math.max(24, sc.cam.d * 1.25); for (var q0 = 0; q0 < W.cull.length; q0++) W.cull[q0].cullR = cr;
+  var cr = Math.max(24, sc.cam.d * 1.5); for (var q0 = 0; q0 < W.cull.length; q0++) W.cull[q0].cullR = cr;
+  W.fl.cullR = Math.min(cr, 34);
+  for (var pk0 in W.pets) W.pets[pk0].ob.cullR = cr;
+  sc.fog = { c: [160, 219, 246], n: sc.cam.d * 1.0, f: sc.cam.d * 2.1 };
   FP = { x: P.x, z: P.z, yaw: f.yaw, face: f.face };
   // uyga yetkazish
   if (f.carry && !f.fly && inHome(P)) farmDeposit();
