@@ -18129,7 +18129,7 @@ def eg_top(info: dict, n: int = 10):
 EG_FARM_REQS = [10, 150_000, 2_000_000, 25_000_000, 300_000_000, 4_000_000_000, 50_000_000_000, 600_000_000_000]
 EG_FARM = [(i, i + 1, 0, round(14 - 6.2 * i, 1)) for i in range(8)]   # (id, tier, x, z)
 EG_FARM_EGG = {1: "common", 2: "common", 3: "rare", 4: "rare", 5: "epic", 6: "epic", 7: "legend", 8: "legend"}
-EG_FARM_HOME = {"x": 0, "z": 26, "w": 24, "d": 10}
+EG_FARM_HOME = {"x": 0, "z": 36, "w": 72, "d": 30}
 EG_FARM_FIELD = {"w": 100, "d": 200}
 EG_FARM_HOLD = 3.0
 EG_FARM_MAXSPD = 10 ** 13
@@ -18231,9 +18231,9 @@ def eg_farm_deposit(info: dict, uid, u: dict, now=None):
     if not c:
         return ("err", "no_carry")
     ch = EG_FARM[c["i"]]
-    d = ((ch[2] - EG_FARM_HOME["x"]) ** 2 + (ch[3] - EG_FARM_HOME["z"]) ** 2) ** 0.5
+    d = max(0.0, (EG_FARM_HOME["z"] - EG_FARM_HOME["d"] / 2) - ch[3])   # uy chetigacha masofa
     v = eg_move_speed(eg_farm_speed(info, uid, u)) * 1.35
-    if now - c["t"] < max(0.0, (d - 6) / v - 1.0):
+    if now - c["t"] < max(0.0, d / v - 1.0):
         return ("err", "too_fast")
     u["eggs"][c["egg"]] = int(u["eggs"].get(c["egg"], 0)) + 1
     u["carry"] = None
@@ -27419,6 +27419,26 @@ var G3 = (function () {
     }
     if (this.flash > 0.01) { ctx.fillStyle = "rgba(255,255,255," + clamp(this.flash, 0, 1) + ")"; ctx.fillRect(0, 0, W, H); this.flash *= 0.86; }
   };
+  Scene.prototype.toCamPt = function (p) {
+    var c = this.cam, t = c.t || [0, 0, 0], q = [p[0] - t[0], p[1] - t[1], p[2] - t[2]];
+    if (c.yaw) q = rotV(q, 0, -c.yaw, 0);
+    q = rotV(q, c.pitch, 0, 0); q[2] -= c.d; return q;
+  };
+  // yer ko'pburchagi yo'li (kamera orqasidagi qismi kesiladi); false — ko'rinmaydi
+  Scene.prototype.polyPath = function (ctx, pts) {
+    var self = this, v = clipNear(pts.map(function (p) { return self.toCamPt(p); }), -0.7);
+    if (v.length < 3) return false;
+    ctx.beginPath();
+    for (var i = 0; i < v.length; i++) { var k = this.H * this.cam.f / (-v[i][2]), x = this.W / 2 + v[i][0] * k, y = this.H * 0.52 - v[i][1] * k; if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y); }
+    ctx.closePath(); return true;
+  };
+  // ekran nuqtasi -> yer (y=0) dagi dunyo koordinatasi
+  Scene.prototype.groundAt = function (px, py) {
+    var c = this.cam, t = c.t || [0, 0, 0], W = this.W, H = this.H, sp = sin(c.pitch), cp = cos(c.pitch);
+    var X = (px - W / 2) / (H * c.f), Y = (H * 0.52 - py) / (H * c.f), den = sp - Y * cp; if (den <= 0.02) return null;
+    var s = (t[1] + c.d * sp) / den, rx = s * X, ry = s * Y, rz = c.d - s, z2 = -ry * sp + rz * cp, yw = c.yaw || 0;
+    return [rx * cos(yw) + z2 * sin(yw) + t[0], -rx * sin(yw) + z2 * cos(yw) + t[2], s];
+  };
   Scene.prototype.drawRays = function (ctx, t) {
     var R = this.rays, p = this.project(R.pos), n = 14, rad = this.H * 0.75 * R.k;
     ctx.save(); ctx.translate(p[0], p[1]); ctx.rotate(t * 0.0007);
@@ -28059,7 +28079,6 @@ function buildFarmWorld(sc, uid) {
   FW = CAT.farm.field || FW;
   var HX = FW.w / 2, HZ = FW.d / 2;
   var CL = function (o, r) { o.cullR = r; W.cull.push(o); return o; };
-  W.floor = { parts: [], cullR: 9999, pos: [0, 0, 0] }; W.fc = {}; sc.add(W.floor);
   // butun maydonni o'rab turgan to'siq
   var fe = CL({ parts: [] }, 26), WD = [186, 128, 70], seg = 4;
   for (x = -HX + seg / 2; x < HX; x += seg) { fe.parts.push(B3([x, 0.45, -HZ - 0.2], [seg - 0.1, 0.7, 0.18], WD), B3([x, 0.45, HZ + 0.2], [seg - 0.1, 0.7, 0.18], WD)); }
@@ -28068,18 +28087,17 @@ function buildFarmWorld(sc, uid) {
   for (z = -HZ + seg; z < HZ; z += seg) { fe.parts.push(B3([-HX - 0.2, 0.6, z], [0.34, 1.2, 0.34], [140, 92, 48]), B3([HX + 0.2, 0.6, z], [0.34, 1.2, 0.34], [140, 92, 48])); }
   sc.add(fe);
   // uy zonasi: sariq chegara ustunlari, uy binosi
-  var hz = CL({ parts: [] }, 30), hx0 = hm.x - hm.w / 2, hx1 = hm.x + hm.w / 2, hz0 = hm.z - hm.d / 2;
+  var hz = CL({ parts: [] }, 60), hx0 = hm.x - hm.w / 2, hx1 = hm.x + hm.w / 2, hz0 = hm.z - hm.d / 2;
   for (x = hx0; x <= hx1; x += 3) hz.parts.push(B3([x, 0.45, hz0], [0.35, 0.9, 0.35], [235, 200, 60], { emit: 0.4 }));
-  var hbz = hm.z + hm.d / 2 - 1.7, hbx = hm.x + hm.w / 2 - 3.4;
-  hz.parts.push(B3([hbx, 1.2, hbz], [6, 2.4, 2.6], [240, 225, 190]), B3([hbx, 2.65, hbz], [6.8, 0.5, 3.4], [200, 60, 60]), B3([hbx, 3.15, hbz], [5.2, 0.5, 2.8], [214, 74, 70]), B3([hbx, 3.65, hbz], [3.6, 0.5, 2.2], [226, 90, 80]),
-    B3([hbx, 0.9, hbz - 1.35], [1.1, 1.8, 0.1], [110, 70, 40]), B3([hbx - 2.0, 1.5, hbz - 1.35], [0.9, 0.9, 0.1], [120, 200, 255], { emit: 0.3 }), B3([hbx + 2.0, 1.5, hbz - 1.35], [0.9, 0.9, 0.1], [120, 200, 255], { emit: 0.3 }));
+  var hbz = hm.z + hm.d / 2 - 4, hbx = hm.x + hm.w / 2 - 8, hs = CL({ parts: [B3([0, 1.2, 0], [6, 2.4, 2.6], [244, 226, 186]), B3([0, 2.65, 0], [6.8, 0.5, 3.4], [214, 62, 62]), B3([0, 3.15, 0], [5.2, 0.5, 2.8], [230, 80, 78]), B3([0, 3.65, 0], [3.6, 0.5, 2.2], [242, 100, 92]),
+    B3([0, 0.9, -1.35], [1.1, 1.8, 0.1], [110, 70, 40]), B3([-2.0, 1.5, -1.35], [0.9, 0.9, 0.1], [130, 210, 255], { emit: 0.3 }), B3([2.0, 1.5, -1.35], [0.9, 0.9, 0.1], [130, 210, 255], { emit: 0.3 })], pos: [hbx, 0, hbz], sc: [1.8, 1.8, 1.8] }, 60); sc.add(hs); W.house = { x: hbx, z: hbz };
   sc.add(hz);
   // daraxtlar va gullar
   var tr = CL({ parts: [] }, 30), tp = [];
   for (x = -HX + 2; x <= HX - 2; x += 6) { tp.push([x, -HZ - 3.2]); tp.push([x, HZ + 3.2]); }
   for (z = -HZ + 3; z <= HZ - 3; z += 6) { tp.push([-HX - 3.2, z]); tp.push([HX + 3.2, z]); }
   tp.push([-12, -20], [12, -9], [-11, 3], [11, 14]);
-  var rs = 11; for (i = 0; i < 70; i++) { rs = (rs * 9301 + 49297) % 233280; var rx = (rs / 233280 - 0.5) * (FW.w - 8); rs = (rs * 9301 + 49297) % 233280; var rz = (rs / 233280 - 0.5) * (FW.d - 8); if (Math.abs(rx) < 14 && rz > -45 && rz < 40) continue; tp.push([rx, rz]); }
+  var rs = 11; for (i = 0; i < 70; i++) { rs = (rs * 9301 + 49297) % 233280; var rx = (rs / 233280 - 0.5) * (FW.w - 8); rs = (rs * 9301 + 49297) % 233280; var rz = (rs / 233280 - 0.5) * (FW.d - 8); if ((Math.abs(rx) < 14 && rz > -45 && rz < 40) || (Math.abs(rx) < hm.w / 2 + 4 && rz > hm.z - hm.d / 2 - 3 && rz < hm.z + hm.d / 2 + 4)) continue; tp.push([rx, rz]); }
   tp.forEach(function (p, k) { var h = 2.0 + (k % 3) * 0.5; tr.parts.push(B3([p[0], h / 2, p[1]], [0.7, h, 0.7], [120, 80, 46]), B3([p[0], h + 0.7, p[1]], [2.2, 1.4, 2.2], [56, 176, 86]), B3([p[0], h + 1.8, p[1]], [1.4, 0.9, 1.4], [96, 206, 108])); });
   sc.add(tr);
   var fl = CL({ parts: [] }, 26), FC = [[255, 90, 120], [255, 214, 70], [255, 255, 255], [170, 120, 255]], sd = 7;
@@ -28097,40 +28115,60 @@ function buildFarmWorld(sc, uid) {
   });
   // uydagi tuxum javonlari
   FKINDS.forEach(function (kd, q) {
-    var sx = hm.x + (q - 1.5) * 3.4 - 2.2, sz = hm.z + 0.7;
-    var base = CL({ parts: [B3([0, 0.18, 0], [2.8, 0.36, 2.4], [186, 128, 70]), B3([0, 0.4, 0], [2.4, 0.1, 2.0], [225, 190, 90])], pos: [sx, 0, sz] }, 30); sc.add(base);
+    var sx = hm.x + (q - 1.5) * 6 - 6, sz = hm.z - hm.d / 2 + 9, K = 1.5;
+    var base = CL({ parts: [B3([0, 0.18, 0], [2.8, 0.36, 2.4], [186, 128, 70]), B3([0, 0.4, 0], [2.4, 0.1, 2.0], [236, 200, 104])], pos: [sx, 0, sz], sc: [K, K, K] }, 80); sc.add(base);
     var eggs = [];
-    [[-0.5, 0.35], [0.5, 0.35], [0, -0.45]].forEach(function (p, j) { var e = CL(G3M.makeEgg(kd, true), 30); e.sc = [0.42, 0.42, 0.42]; e.pos = [sx + p[0], 0.82, sz + p[1]]; e.hidden = true; sc.add(e); eggs.push(e); });
+    [[-0.5, 0.35], [0.5, 0.35], [0, -0.45]].forEach(function (p, j) { var e = CL(G3M.makeEgg(kd, true), 80); e.sc = [0.62, 0.62, 0.62]; e.pos = [sx + p[0] * K, 1.2, sz + p[1] * K]; e.hidden = true; sc.add(e); eggs.push(e); });
     W.stands.push({ kind: kd, x: sx, z: sz, eggs: eggs });
   });
-  W.pl = sc.add(makeHuman(uid)); W.pl.pos = [0, 0, 23]; W.pl.rot = [0, Math.PI, 0];
-  W.carry = sc.add(G3M.makeEgg("common", true)); W.carry.sc = [0.38, 0.38, 0.38]; W.carry.hidden = true;
+  W.pl = sc.add(makeHuman(uid)); W.pl.sc = [2, 2, 2]; W.pl.pos = [0, 0, hm.z - hm.d / 2 + 3]; W.pl.rot = [0, Math.PI, 0];
+  W.carry = sc.add(G3M.makeEgg("common", true)); W.carry.sc = [0.7, 0.7, 0.7]; W.carry.hidden = true;
   return W;
 }
-function farmFloor(f) {
-  var sc = f.sc, W = f.W, hm = CAT.farm.home, R = Math.min(300, Math.ceil(Math.max(26, sc.cam.d * 1.45) / 12) * 12), tile = 2; while ((2 * R / tile) * (2 * R / tile) * 0.8 > 1400) tile *= 2;
-  var cx = Math.round(sc.cam.t[0] / tile), cz = Math.round(sc.cam.t[2] / tile), key = tile + "|" + cx + "|" + cz + "|" + R;
-  if (key === W.floorKey) return; W.floorKey = key;
-  var HX = FW.w / 2, HZ = FW.d / 2, n = Math.ceil(R / tile) + 1, out = [], i, j;
-  for (i = cx - n; i <= cx + n; i++) for (j = cz - n; j <= cz + n; j++) {
-    var x = i * tile, z = j * tile; if (x < -HX || x > HX || z < -HZ || z > HZ) continue;
-    var ck = tile + "|" + i + "|" + j, part = W.fc[ck];
-    if (!part) {
-      var chk = ((i + j) & 1) === 0, col, inH = Math.abs(x - hm.x) <= hm.w / 2 && Math.abs(z - hm.z) <= hm.d / 2, path = Math.abs(x) <= 3 && z <= hm.z - hm.d / 2 && z > -34;
-      if (inH) col = chk ? [104, 212, 246] : [82, 190, 232]; else if (path) col = chk ? [240, 208, 146] : [228, 194, 130]; else col = chk ? [128, 212, 92] : [112, 196, 78];
-      part = W.fc[ck] = { type: "quad", c: [x, 0, z], s: [tile, tile], col: col, under: true };
+
+var FPAT = null;
+function farmGround(sc, ctx, W, H) {
+  var c = sc.cam, t = c.t || [0, 0, 0], sp = Math.sin(c.pitch), cp = Math.cos(c.pitch), d = c.d, f = c.f, fg = sc.fog ? sc.fog.c : [160, 219, 246], hm = CAT.farm.home, HX = FW.w / 2, HZ = FW.d / 2;
+  var g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, "rgb(" + (fg[0] - 18) + "," + (fg[1] - 8) + "," + fg[2] + ")"); g.addColorStop(1, "rgb(" + fg[0] + "," + fg[1] + "," + fg[2] + ")"); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  var poly = function (pts, col) { if (sc.polyPath(ctx, pts)) { ctx.fillStyle = col; ctx.fill(); } };
+  var R = function (x0, z0, x1, z1) { return [[x0, 0, z0], [x1, 0, z0], [x1, 0, z1], [x0, 0, z1]]; };
+  var field = R(-HX, -HZ, HX, HZ), PATH0 = -34;
+  poly(field, "rgb(122,208,88)"); poly(R(-3, PATH0, 3, hm.z - hm.d / 2), "rgb(238,206,142)"); poly(R(hm.x - hm.w / 2, hm.z - hm.d / 2, hm.x + hm.w / 2, hm.z + hm.d / 2), "rgb(100,208,242)");
+  // 5 baravar mayda katak: yer ustiga tekislangan to'r (pattern) — chuqurlik bo'yicha yupqa chiziqlarda
+  if (!FPAT) { var pc = document.createElement("canvas"); pc.width = pc.height = 64; var px = pc.getContext("2d"); px.fillStyle = "rgba(255,255,255,0.17)"; px.fillRect(0, 0, 32, 32); px.fillRect(32, 32, 32, 32); px.fillStyle = "rgba(0,0,0,0.10)"; px.fillRect(32, 0, 32, 32); px.fillRect(0, 32, 32, 32); FPAT = ctx.createPattern(pc, "repeat"); }
+  var fade = Math.max(0, Math.min(1, 1 - (d - 55) / 55));
+  if (FPAT && FPAT.setTransform && fade > 0.02 && typeof DOMMatrix !== "undefined") {
+    ctx.save();
+    if (sc.polyPath(ctx, field)) {
+      ctx.clip(); var yh = H * (0.52 - f * sp / cp), y0 = Math.max(0, Math.ceil(yh) + 1), BH = Math.max(3, Math.round(H / 260)), TS = 80;
+      ctx.globalAlpha = fade;
+      for (var y = y0; y < H; y += BH) {
+        var yc = y + BH / 2, A = sc.groundAt(0, yc), B = sc.groundAt(W, yc), C = sc.groundAt(W / 2, yc), D = sc.groundAt(W / 2, yc + 4);
+        if (!A || !B || !C || !D) continue;
+        if (sc.fog && A[2] > sc.fog.f) continue;
+        var j00 = (B[0] - A[0]) / W, j10 = (B[1] - A[1]) / W, j01 = (D[0] - C[0]) / 4, j11 = (D[1] - C[1]) / 4, det = j00 * j11 - j01 * j10;
+        if (Math.abs(det) < 1e-9) continue;
+        var i00 = j11 / det, i01 = -j01 / det, i10 = -j10 / det, i11 = j00 / det, ex = -(i00 * A[0] + i01 * A[1]), ey = yc - (i10 * A[0] + i11 * A[1]);
+        FPAT.setTransform(new DOMMatrix([i00 / TS, i10 / TS, i01 / TS, i11 / TS, ex, ey]));
+        ctx.fillStyle = FPAT; ctx.fillRect(0, y, W, BH + 1);
+      }
     }
-    out.push(part);
+    ctx.restore();
   }
-  W.floor.parts = out;
+  // uzoqlashgan sari osmonga singib ketish (ob'ektlardagi tuman bilan bir xil)
+  if (sc.fog) {
+    var yH = Math.max(0, H * (0.52 - f * sp / cp)), gr = ctx.createLinearGradient(0, yH, 0, H), n = 14;
+    for (var k = 0; k <= n; k++) { var yy = yH + (H - yH) * k / n, Yv = (H * 0.52 - yy) / (H * f), den = sp - Yv * cp, s2 = den > 0.02 ? (t[1] + d * sp) / den : 1e9, a = Math.max(0, Math.min(1, (s2 - sc.fog.n) / (sc.fog.f - sc.fog.n))) * 0.92; gr.addColorStop(k / n, "rgba(" + fg[0] + "," + fg[1] + "," + fg[2] + "," + a + ")"); }
+    ctx.fillStyle = gr; ctx.fillRect(0, yH, W, H - yH);
+  }
 }
-function farmCarryKey(key, W) { if (W.carryKey === key) return; W.carryKey = key; var sc = FM.sc, idx = sc.objs.indexOf(W.carry); var n = G3M.makeEgg(key || "common", true); n.sc = [0.38, 0.38, 0.38]; n.hidden = !key; sc.objs[idx] = n; W.carry = n; }
+function farmCarryKey(key, W) { if (W.carryKey === key) return; W.carryKey = key; var sc = FM.sc, idx = sc.objs.indexOf(W.carry); var n = G3M.makeEgg(key || "common", true); n.sc = [0.7, 0.7, 0.7]; n.hidden = !key; sc.objs[idx] = n; W.carry = n; }
 function startFarm() {
   var cv = $("fCv"), sc = new G3.Scene(cv, { d: 46, pitch: 0.92, f: 1.35 });
-  sc.bg = function (ctx, w, h) { var g = ctx.createLinearGradient(0, 0, 0, h); g.addColorStop(0, "#9bd8f5"); g.addColorStop(1, "#b9e7f6"); ctx.fillStyle = g; ctx.fillRect(0, 0, w, h); };
+  sc.bg = function (ctx, w, h) { farmGround(sc, ctx, w, h); };
   var uid = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) ? tg.initDataUnsafe.user.id : 1;
   var W = buildFarmWorld(sc, uid), hm = CAT.farm.home;
-  var sp = FP || { x: hm.x, z: hm.z - 3, yaw: 0, face: Math.PI };
+  var sp = FP || { x: hm.x, z: hm.z - hm.d / 2 + 3, yaw: 0, face: Math.PI };
   FM = { cv: cv, sc: sc, W: W, P: { x: sp.x, z: sp.z }, face: sp.face, yaw: sp.yaw, pitch: 0.92, dist: 46, over: false, pan: { x: sp.x, z: sp.z }, now0: performance.now(), last: performance.now(), joy: { x: 0, y: 0 }, hold: null, F: null, readyAt: [], carry: null, speed: ST.farm_speed || 10, stunUntil: 0, fly: null, depBusy: 0, syncAt: 0, near: -1, msgT: 0, parts: [], petsAt: 0, petInit: false, mapAt: 0, sheet: false };
   sc.cam.t = [sp.x, 0.8, sp.z]; sc.cam.yaw = sp.yaw;
   var joy = $("fJoy"), knob = $("fKnob"), R = 52;
@@ -28205,7 +28243,7 @@ async function farmFinish(i) {
   } catch (e) { FM && (FM.hold = null); if (e.message === "farm_too_fast" || e.message === "farm_no_steal") farmMsg("Qayta urinib ko'ring"); else fail(e); }
 }
 function farmKick(i, req) {
-  var f = FM, hm = CAT.farm.home, tx = hm.x + (Math.random() - 0.5) * (hm.w - 6), tz = hm.z - hm.d / 2 + 1.2 + Math.random() * 3;
+  var f = FM, hm = CAT.farm.home, tx = hm.x + (Math.random() - 0.5) * 24, tz = hm.z - hm.d / 2 + 2 + Math.random() * 4;
   var dd = Math.sqrt((tx - f.P.x) * (tx - f.P.x) + (tz - f.P.z) * (tz - f.P.z));
   f.W.ch[i].kick = performance.now();
   f.fly = { t0: performance.now(), fx: f.P.x, fz: f.P.z, tx: tx, tz: tz, dur: Math.min(2600, 1100 + dd * 30), hh: Math.min(16, 5 + dd * 0.22) };
@@ -28217,7 +28255,7 @@ async function farmDeposit() {
     var j = await api("POST", "act", { a: "farm_deposit" }); if (!FM) return;
     applyView(j.result.view); setState(j.state); hap("ok");
     farmMsg("🏠 Tuxum uyga yetkazildi! Uyda «OCHISH» tugmasini bosing", 3600);
-    var st = FM.W.stands[Math.max(0, FKINDS.indexOf(j.result.egg))]; FM.sc.burst([st.x, 1.4, st.z], ["#ffd23f", "#8fe9ff", "#fff"], 40);
+    var st = FM.W.stands[Math.max(0, FKINDS.indexOf(j.result.egg))]; FM.sc.burst([st.x, 2.0, st.z], ["#ffd23f", "#8fe9ff", "#fff"], 40);
   } catch (e) { if (e.message !== "farm_too_fast" && e.message !== "farm_no_carry") fail(e); else if (e.message === "farm_no_carry") farmSync(); }
 }
 function farmStand() {
@@ -28267,7 +28305,7 @@ function farmPets() {
   var f = FM, W = f.W, sc = f.sc, hm = CAT.farm.home, have = ST.pets || {}, k;
   for (k in have) if (have[k] > 0 && !W.pets[k] && CAT.pets[k]) {
     var ob = G3M.makePet(k); ob.sc = [0.62, 0.62, 0.62]; var fresh = f.petInit, st = W.stands[2];
-    ob.pos = fresh ? [st.x, 0.65, st.z - 1.6] : [hm.x + (Math.random() - 0.5) * (hm.w - 3), 0.65, hm.z - hm.d / 2 + 1 + Math.random() * 3.6]; ob.rot = [0, Math.random() * 6, 0]; ob.cullR = 40; sc.add(ob);
+    ob.pos = fresh ? [st.x, 0.65, st.z - 3.2] : [hm.x + (Math.random() - 0.5) * (hm.w - 6), 0.65, hm.z - hm.d / 2 + 2 + Math.random() * 14]; ob.rot = [0, Math.random() * 6, 0]; ob.cullR = 40; sc.add(ob);
     W.pets[k] = { ob: ob, tx: ob.pos[0], tz: ob.pos[2], wait: 0, born: fresh ? performance.now() : 0, k: k };
     if (fresh) { sc.burst([ob.pos[0], 1.5, ob.pos[2]], ["#ffd23f", "#fff", "#ff8fd8", "#8fe9ff"], 44); farmMsg("🎉 Yangi hayvon uyda: " + CAT.pets[k].emoji + " " + CAT.pets[k].name, 3200); }
   }
@@ -28285,6 +28323,7 @@ function farmMap(now) {
 }
 function farmTick(now) {
   var f = FM; if (!f || $("fCv") !== f.cv || tab !== "farm") { if (f && $("fCv") !== f.cv) { FM = null; try { tg && tg.enableVerticalSwipes && tg.enableVerticalSwipes(); } catch (e) {} } return false; }
+  now = performance.now();   // rAF vaqti performance.now() dan orqada qolishi mumkin — shu sabab «Bekor qilindi» xatosi bo'lardi
   var dt = Math.min(0.05, (now - f.last) / 1000); f.last = now; var W = f.W, P = f.P, sc = f.sc, cfg = CAT.farm, hm = cfg.home, HX = FW.w / 2, HZ = FW.d / 2;
   if (now - f.syncAt > 4000) { f.syncAt = now + 99999; farmSync(); }
   if (f.cv.clientWidth !== f.cw || f.cv.clientHeight !== f.ch) { f.cw = f.cv.clientWidth; f.ch = f.cv.clientHeight; sc.resize(); }
@@ -28303,7 +28342,7 @@ function farmTick(now) {
     if (moving) {
       var wv = G3.rotV([jx, 0, jy], 0, f.yaw, 0), wx = wv[0], wz = wv[2];
       var nx = P.x + wx * v * dt, nz = P.z + wz * v * dt;
-      for (var ci = 0; ci < cfg.chickens.length; ci++) { var c = cfg.chickens[ci], dx = nx - c.x, dz = nz - c.z, d2 = dx * dx + dz * dz; if (d2 < 2.0 * 2.0) { var d = Math.sqrt(d2) || 0.01; nx = c.x + dx / d * 2.0; nz = c.z + dz / d * 2.0; } }
+      for (var ci = 0; ci < cfg.chickens.length; ci++) { var c = cfg.chickens[ci], dx = nx - c.x, dz = nz - c.z, d2 = dx * dx + dz * dz; if (d2 < 2.8 * 2.8) { var d = Math.sqrt(d2) || 0.01; nx = c.x + dx / d * 2.8; nz = c.z + dz / d * 2.8; } }
       P.x = Math.max(-HX + 0.8, Math.min(HX - 0.8, nx)); P.z = Math.max(-HZ + 0.8, Math.min(HZ - 0.8, nz));
       var ta = Math.atan2(wx, wz), da = ta - f.face; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI; f.face += da * Math.min(1, dt * 14);
       W.pl.ph += v * dt * 1.5;
@@ -28317,7 +28356,6 @@ function farmTick(now) {
   sc.cam.d += (dTarget - sc.cam.d) * Math.min(1, dt * 6); sc.cam.pitch += (pTarget - sc.cam.pitch) * Math.min(1, dt * 6); sc.cam.yaw = f.yaw;
   var tx = f.over ? f.pan.x : P.x, tz = f.over ? f.pan.z : P.z;
   sc.cam.t[0] += (tx - sc.cam.t[0]) * kk; sc.cam.t[2] += (tz - sc.cam.t[2]) * kk;
-  farmFloor(f);
   var cr = Math.max(24, sc.cam.d * 1.5); for (var q0 = 0; q0 < W.cull.length; q0++) W.cull[q0].cullR = cr;
   W.fl.cullR = Math.min(cr, 34);
   for (var pk0 in W.pets) W.pets[pk0].ob.cullR = cr;
@@ -28326,14 +28364,14 @@ function farmTick(now) {
   // uyga yetkazish
   if (f.carry && !f.fly && inHome(P)) farmDeposit();
   // yaqin tovuq
-  var best = -1, bd = 3.7 * 3.7;
+  var best = -1, bd = 5.4 * 5.4;
   for (var i = 0; i < cfg.chickens.length; i++) { var c2 = cfg.chickens[i], ready = (f.readyAt[i] || 0) <= now; if (!ready) continue; var ddx = P.x - c2.x, ddz = P.z - c2.z, dd = ddx * ddx + ddz * ddz; if (dd < bd) { bd = dd; best = i; } }
   f.near = best;
   // 3 soniyalik olish
   var h = f.hold, prog = 0;
   if (h) {
     var c3 = cfg.chickens[h.i], hx = P.x - c3.x, hz = P.z - c3.z;
-    if (hx * hx + hz * hz > 4.8 * 4.8 || stunned || f.fly || (f.readyAt[h.i] || 0) > now + 1500) { f.hold = null; farmMsg("Bekor qilindi"); }
+    if (hx * hx + hz * hz > 6.6 * 6.6 || stunned || f.fly || (f.readyAt[h.i] || 0) > now + 1500) { f.hold = null; farmMsg("Bekor qilindi"); }
     else if (!h.done) { prog = Math.min(1, (now - h.t0) / (cfg.hold * 1000)); W.pl.rot = [W.pl.rot[0], Math.atan2(c3.x - P.x, c3.z - P.z), W.pl.rot[2]]; if (prog >= 1 && h.begun) farmFinish(h.i); }
     else prog = 1;
   }
@@ -28355,22 +28393,22 @@ function farmTick(now) {
       if (kc < 1) sc.labels.push({ pos: [c4.x, top + 1.2, c4.z], text: "💢", size: 22 });
     }
   }
-  if (f.carry) { farmCarryKey(f.carry, W); W.carry.hidden = false; W.carry.pos = [W.pl.pos[0], W.pl.pos[1] + 3.2 + Math.sin(now / 250) * 0.08, W.pl.pos[2]]; W.carry.rot = [0, now / 500, 0]; }
+  if (f.carry) { farmCarryKey(f.carry, W); W.carry.hidden = false; W.carry.pos = [W.pl.pos[0], W.pl.pos[1] + 6.2 + Math.sin(now / 250) * 0.15, W.pl.pos[2]]; W.carry.rot = [0, now / 500, 0]; }
   else if (W.carry) W.carry.hidden = true;
   // uydagi tuxum javonlari
   var inv = ST.eggs || {}, sel = inHome(P) && !f.carry ? farmStand() : null;
   W.stands.forEach(function (s) {
     var n = inv[s.kind] || 0;
-    s.eggs.forEach(function (e, j) { e.hidden = j >= Math.min(3, n); e.rot = [0, now / 800 + j, 0]; e.pos = [e.pos[0], 0.82 + Math.sin(now / 500 + j * 2) * 0.04, e.pos[2]]; });
-    sc.labels.push({ pos: [s.x, 1.9, s.z], text: n ? FICON[s.kind] + " ×" + n : "bo'sh", col: n ? "#fff" : "#9fb4c9", size: n ? 14 : 11 });
-    if (sel === s) sc.labels.push({ pos: [s.x, 2.6, s.z], text: "▼ OCHISH", col: "#ffd23f", size: 14 });
+    s.eggs.forEach(function (e, j) { e.hidden = j >= Math.min(3, n); e.rot = [0, now / 800 + j, 0]; e.pos = [e.pos[0], 1.2 + Math.sin(now / 500 + j * 2) * 0.05, e.pos[2]]; });
+    sc.labels.push({ pos: [s.x, 3.0, s.z], text: n ? FICON[s.kind] + " ×" + n : "bo'sh", col: n ? "#fff" : "#9fb4c9", size: n ? 14 : 11 });
+    if (sel === s) sc.labels.push({ pos: [s.x, 3.9, s.z], text: "▼ OCHISH", col: "#ffd23f", size: 14 });
   });
-  sc.labels.push({ pos: [hm.x + hm.w / 2 - 3.4, 5.0, hm.z + hm.d / 2 - 1.7], text: "🏠 UY", col: "#fff", size: 17 });
-  if (f.carry) sc.labels.push({ pos: [W.pl.pos[0], 4.2, W.pl.pos[2]], text: "🏠 Uyga!", col: "#ffd23f", size: 13 });
-  if (stunned) sc.labels.push({ pos: [W.pl.pos[0], 3.2, W.pl.pos[2]], text: "😵 " + Math.ceil((f.stunUntil - now) / 1000) + "s", size: 16 });
+  sc.labels.push({ pos: [W.house.x, 9.2, W.house.z], text: "🏠 UY", col: "#fff", size: 17 });
+  if (f.carry) sc.labels.push({ pos: [W.pl.pos[0], 8, W.pl.pos[2]], text: "🏠 Uyga!", col: "#ffd23f", size: 13 });
+  if (stunned) sc.labels.push({ pos: [W.pl.pos[0], 6.4, W.pl.pos[2]], text: "😵 " + Math.ceil((f.stunUntil - now) / 1000) + "s", size: 16 });
   // uydagi hayvonlar — o'zlari yurib yuradi
   if (now - f.petsAt > 600) { f.petsAt = now; farmPets(); }
-  var x0 = hm.x - hm.w / 2 + 1, x1 = hm.x + hm.w / 2 - 1, z0 = hm.z - hm.d / 2 + 1, z1 = hm.z - 0.9;
+  var x0 = hm.x - hm.w / 2 + 1, x1 = hm.x + hm.w / 2 - 1, z0 = hm.z - hm.d / 2 + 1.5, z1 = hm.z + hm.d / 2 - 9;
   f.lbl = 0;
   for (var pk in W.pets) {
     var pe = W.pets[pk], po = pe.ob, pdx = pe.tx - po.pos[0], pdz = pe.tz - po.pos[2], pdl = Math.sqrt(pdx * pdx + pdz * pdz), mv = pdl > 0.15;
