@@ -17951,13 +17951,14 @@ EG_EGGS = {
     "legend": {"name": "Afsonaviy tuxum", "emoji": "👑", "price": 15000, "pets": [("robo", 45), ("alien", 30), ("rainbow", 17), ("king", 8)]},
 }
 EG_SELL_HOURS = 6          # pet sotilganda: soatlik daromad x 6 tanga
-EG_CFG_DEFAULTS = {"start": 300, "daily": 200, "hunt_min": 30, "cap_h": 8, "ref": 300}
+EG_CFG_DEFAULTS = {"start": 300, "daily": 200, "hunt_min": 30, "cap_h": 8, "ref": 300, "farm_cd": 100}
 EG_CFG_META = {
     "start": ("🎁 Boshlang'ich tanga", 0, 1_000_000),
     "daily": ("📅 Kunlik bonus", 0, 1_000_000),
     "hunt_min": ("🔍 Tuxum ovi pauzasi (daqiqa)", 1, 1440),
     "cap_h": ("⏳ Daromad yig'ilish chegarasi (soat)", 1, 72),
     "ref": ("👥 Taklif bonusi", 0, 1_000_000),
+    "farm_cd": ("🐔 Tovuq tuxum tug'ish tezligi (% — kichik = tezroq)", 20, 1000),
 }
 EG_BUSY = set()
 
@@ -17970,7 +17971,7 @@ def eg_init(info: dict):
         cfg.setdefault(k, v)
     info.setdefault("blocked_users", [])
     info.setdefault("maintenance_mode", False)
-    for k in ("hatched", "hunts", "daily_claims", "promos", "sold"):
+    for k in ("hatched", "hunts", "daily_claims", "promos", "sold", "stolen"):
         info["stats"].setdefault(k, 0)
 
 
@@ -18120,6 +18121,137 @@ def eg_top(info: dict, n: int = 10):
         rows.append((int(k), u.get("name") or "", eg_base_rate(u), sum(int(x) for x in u.get("pets", {}).values()), u.get("coins", 0)))
     rows.sort(key=lambda r: (-r[2], -r[4]))
     return rows[:n]
+
+
+# ---------- 🐔 DALA: tuxum o'g'irlash o'yini (3D kub dunyo) ----------
+# Dunyo koordinatalari: x — o'ngga, z — pastga (o'yinchiga qarab). Uy pastda (z>0), baland darajali tovuqlar uzoqda (z<0).
+EG_FARM = [
+    # (id, tovuq darajasi, x, z)
+    (0, 1, -7, 8), (1, 1, 7, 8), (2, 2, -13, 3), (3, 2, 13, 3), (4, 3, -5, -2), (5, 3, 5, -2),
+    (6, 4, -14, -8), (7, 4, 14, -8), (8, 5, -8, -13), (9, 6, 8, -13), (10, 7, -14, -18), (11, 8, 0, -19),
+]
+EG_FARM_EGG = {1: "common", 2: "common", 3: "rare", 4: "rare", 5: "epic", 6: "epic", 7: "legend", 8: "legend"}
+EG_FARM_HOME = {"x": 0, "z": 16.5, "w": 14, "d": 7}
+EG_FARM_HOLD = 3.0
+EG_FARM_MAXLVL = 20
+
+
+def eg_farm_u(u: dict) -> dict:
+    u.setdefault("speed", 1)
+    u.setdefault("eggs", {})
+    u.setdefault("carry", None)
+    u.setdefault("steal", None)
+    u.setdefault("stun", 0)
+    u.setdefault("stolen", 0)
+    u.setdefault("kicked", 0)
+    return u
+
+
+def eg_farm_req(lv: int) -> int:
+    return 10 + 4 * (lv - 1)
+
+
+def eg_farm_speed(info: dict, uid, u: dict) -> float:
+    base = 10 + 2 * (int(u.get("speed", 1)) - 1)
+    return round(base * (1.2 if is_premium_active(info, uid) else 1), 1)
+
+
+def eg_move_speed(sp: float) -> float:
+    """Dunyo birligi/soniya — mijozda ham aynan shu formula."""
+    return 2.6 + 0.17 * sp
+
+
+def eg_farm_cd(info: dict, lv: int) -> int:
+    return max(5, int((30 + 25 * lv) * int(info["eg_cfg"].get("farm_cd", 100)) / 100))
+
+
+def eg_farm_upcost(u: dict) -> int:
+    return int(120 * (1.45 ** (int(u.get("speed", 1)) - 1)))
+
+
+def eg_farm_view(info: dict, uid, u: dict, now=None) -> dict:
+    now = now if now is not None else _eg_time.time()
+    eg_farm_u(u)
+    field = info.setdefault("eg_field", {})
+    c = u["carry"]
+    if c and now - c["t"] > 900:
+        u["carry"] = c = None
+    return {
+        "ready_in": [max(0, int(field.get(str(i), {}).get("ready_at", 0) - now + 0.999)) for i, *_ in EG_FARM],
+        "speed": eg_farm_speed(info, uid, u), "speed_lvl": int(u["speed"]), "up_cost": eg_farm_upcost(u) if u["speed"] < EG_FARM_MAXLVL else 0,
+        "carry": c["egg"] if c else None, "stun_left": max(0, round(u["stun"] - now, 1)), "stolen": u["stolen"],
+    }
+
+
+def eg_farm_begin(info: dict, uid, u: dict, i: int, now=None):
+    now = now if now is not None else _eg_time.time()
+    eg_farm_u(u)
+    if not 0 <= i < len(EG_FARM):
+        return ("err", "bad_value")
+    if u["carry"]:
+        return ("err", "carrying")
+    if u["stun"] > now:
+        return ("err", "stun")
+    if info.setdefault("eg_field", {}).get(str(i), {}).get("ready_at", 0) > now:
+        return ("err", "gone")
+    u["steal"] = {"i": i, "t": now}
+    return ("ok", eg_farm_req(EG_FARM[i][1]))
+
+
+def eg_farm_end(info: dict, uid, u: dict, i: int, now=None):
+    now = now if now is not None else _eg_time.time()
+    eg_farm_u(u)
+    st = u["steal"]
+    if not st or st["i"] != i:
+        return ("err", "no_steal")
+    u["steal"] = None
+    el = now - st["t"]
+    if el < EG_FARM_HOLD - 0.45:
+        return ("err", "too_fast")
+    if el > 40:
+        return ("err", "expired")
+    field = info.setdefault("eg_field", {})
+    if field.get(str(i), {}).get("ready_at", 0) > now:
+        return ("gone",)
+    lv = EG_FARM[i][1]
+    sp = eg_farm_speed(info, uid, u)
+    if sp >= eg_farm_req(lv):
+        field[str(i)] = {"ready_at": now + eg_farm_cd(info, lv)}
+        u["carry"] = {"egg": EG_FARM_EGG[lv], "t": now, "i": i}
+        return ("ok", EG_FARM_EGG[lv])
+    u["stun"] = now + 4
+    u["kicked"] += 1
+    return ("kick", eg_farm_req(lv))
+
+
+def eg_farm_deposit(info: dict, uid, u: dict, now=None):
+    now = now if now is not None else _eg_time.time()
+    eg_farm_u(u)
+    c = u["carry"]
+    if not c:
+        return ("err", "no_carry")
+    ch = EG_FARM[c["i"]]
+    d = ((ch[2] - EG_FARM_HOME["x"]) ** 2 + (ch[3] - EG_FARM_HOME["z"]) ** 2) ** 0.5
+    v = eg_move_speed(eg_farm_speed(info, uid, u)) * 1.3
+    if now - c["t"] < max(0.0, (d - 5) / v - 1.0):
+        return ("err", "too_fast")
+    u["eggs"][c["egg"]] = int(u["eggs"].get(c["egg"], 0)) + 1
+    u["carry"] = None
+    u["stolen"] += 1
+    info["stats"]["stolen"] = info["stats"].get("stolen", 0) + 1
+    return ("ok", c["egg"])
+
+
+def eg_farm_upgrade(info: dict, uid, u: dict):
+    eg_farm_u(u)
+    if u["speed"] >= EG_FARM_MAXLVL:
+        return ("err", "max")
+    cost = eg_farm_upcost(u)
+    if u["coins"] < cost:
+        return ("err", "no_coins")
+    u["coins"] -= cost
+    u["speed"] += 1
+    return ("ok", u["speed"])
 
 
 def eg_pet_line(pk: str, n: int = 0) -> str:
@@ -26777,6 +26909,7 @@ def eg_catalog() -> dict:
                   "pets": [{"pk": p, "pct": round(w * 100 / tot[k], 1)} for p, w in e["pets"]]} for k, e in EG_EGGS.items()],
         "pets": {k: {"name": p["name"], "emoji": p["emoji"], "rar": p["rar"], "inc": p["inc"], "sell": eg_sell_price(k)} for k, p in EG_PETS.items()},
         "rar": {k: [v[0], v[1]] for k, v in EG_RARITY.items()},
+        "farm": {"chickens": [{"i": i, "lv": lv, "x": x, "z": z, "req": eg_farm_req(lv), "egg": EG_FARM_EGG[lv]} for i, lv, x, z in EG_FARM], "home": EG_FARM_HOME, "hold": EG_FARM_HOLD},
     }
 
 
@@ -26793,7 +26926,8 @@ def eg_state(info: dict, uid: int, u: dict, now=None) -> dict:
             "pets": {k: int(n) for k, n in u["pets"].items() if k in EG_PETS}, "streak": streak,
             "daily_left": int(dl), "hunt_left": int(hl), "premium": bool(is_premium_active(info, uid)),
             "refs": u.get("refs", 0), "hatched": u.get("hatched", 0), "ref_bonus": int(cfg["ref"]),
-            "username": info.get("username", ""), "admin": bool(is_admin(info, uid)), "name": info.get("name", ""), "daily_base": int(cfg["daily"])}
+            "username": info.get("username", ""), "admin": bool(is_admin(info, uid)), "name": info.get("name", ""), "daily_base": int(cfg["daily"]),
+            "eggs": {k: int(n) for k, n in (u.get("eggs") or {}).items() if n}}
 
 
 def eg_admin_view(info: dict) -> dict:
@@ -26872,9 +27006,16 @@ async def egg_act_api(request):
         if key not in EG_EGGS or n not in (1, 3, 10):
             return _pub_err("bad_value")
         res = []
+        eg_farm_u(u)
         for _ in range(n):
             before = dict(u["pets"])
-            pk = eg_hatch(info, uid, u, key, now)
+            if u["eggs"].get(key, 0) > 0:      # o'g'irlangan tuxum — bepul ochiladi
+                eg_collect(info, uid, u, now)
+                u["eggs"][key] -= 1
+                pk = eg_roll(key)
+                eg_give_pet(info, u, pk)
+            else:
+                pk = eg_hatch(info, uid, u, key, now)
             if pk is None:
                 break
             res.append({"pk": pk, "new": pk not in before})
@@ -26918,6 +27059,44 @@ async def egg_act_api(request):
             return _pub_err("promo_" + r[0], 400)
         res = {"coins": r[1]}
         return done()
+    if a.startswith("farm_"):
+        eg_farm_u(u)
+        if a == "farm_sync":
+            res = eg_farm_view(info, uid, u, now)
+            return done()
+        if a == "farm_begin":
+            try:
+                i = int(body.get("i"))
+            except (TypeError, ValueError):
+                return _pub_err("bad_value")
+            r = eg_farm_begin(info, uid, u, i, now)
+            if r[0] != "ok":
+                return _pub_err("farm_" + r[1], 409, left=max(0, round(u["stun"] - now, 1)))
+            res = {"req": r[1], "hold": EG_FARM_HOLD}
+            return done()
+        if a == "farm_end":
+            try:
+                i = int(body.get("i"))
+            except (TypeError, ValueError):
+                return _pub_err("bad_value")
+            r = eg_farm_end(info, uid, u, i, now)
+            if r[0] == "err":
+                return _pub_err("farm_" + r[1], 409)
+            res = {"result": r[0], "egg": r[1] if r[0] == "ok" else None, "req": r[1] if r[0] == "kick" else None, "view": eg_farm_view(info, uid, u, now)}
+            return done()
+        if a == "farm_deposit":
+            r = eg_farm_deposit(info, uid, u, now)
+            if r[0] != "ok":
+                return _pub_err("farm_" + r[1], 409)
+            res = {"egg": r[1], "view": eg_farm_view(info, uid, u, now)}
+            return done()
+        if a == "farm_upgrade":
+            r = eg_farm_upgrade(info, uid, u)
+            if r[0] != "ok":
+                return _pub_err("farm_" + r[1], 402 if r[1] == "no_coins" else 409)
+            res = eg_farm_view(info, uid, u, now)
+            return done()
+        return _pub_err("bad_value")
     if a == "top":
         rows = [r for r in eg_top(info, 20) if r[2] > 0]
         res = [{"name": r[1] or "—", "rate": r[2], "pets": r[3], "me": r[0] == uid} for r in rows]
@@ -27066,6 +27245,16 @@ img.pi{width:100%;max-width:84px;height:auto;display:block;margin:0 auto;pointer
 .ovcv{display:none;width:100%;max-width:560px;height:44vh}
 .sh3{display:block;width:130px;height:130px;flex:none}
 .ov{overflow-y:auto}.ov .res.many{gap:6px}.ov .rc.sm{width:62px;padding:6px 2px;border-width:2px}.ov .rc.sm img.pi{width:46px}.ov .rc.sm b{font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fm{position:relative;width:100%;border-radius:18px;overflow:hidden;border:2px solid var(--bd);background:#7ec8ff;touch-action:none;margin-top:6px}
+#fCv{width:100%;height:100%;display:block}
+.fhud{position:absolute;top:8px;background:rgba(0,0,0,.5);border-radius:12px;padding:6px 10px;font-size:13px;font-weight:800;z-index:2;max-width:55%}.fhud.tl{left:8px}.fhud.tr{right:8px;text-align:right}
+.fhud .btn.sm{margin-left:6px;padding:4px 8px;font-size:12px;border-radius:9px;box-shadow:0 2px 0 #b37d00}
+.joy{position:absolute;left:14px;bottom:14px;width:124px;height:124px;border-radius:50%;background:rgba(255,255,255,.22);border:3px solid rgba(255,255,255,.5);touch-action:none;z-index:3}
+.knob{position:absolute;left:50%;top:50%;width:54px;height:54px;margin:-27px 0 0 -27px;border-radius:50%;background:rgba(255,255,255,.78);box-shadow:0 3px 8px rgba(0,0,0,.35)}
+.fbtn{position:absolute;right:14px;bottom:22px;width:118px;height:118px;border-radius:50%;border:4px solid #fff;background:rgba(40,160,80,.92);color:#fff;font:inherit;font-weight:900;font-size:14px;z-index:3;touch-action:none;padding:6px}
+.fbtn.off{background:rgba(0,0,0,.5);color:#ddd;border-color:#bbb}.fbtn.go{background:#ff9d1a;animation:pulse 1s infinite}
+@keyframes pulse{50%{transform:scale(1.07)}}
+.fmsg{position:absolute;left:10px;right:10px;top:56px;text-align:center;background:rgba(0,0,0,.7);border-radius:12px;padding:8px;font-weight:800;font-size:14px;z-index:4}
 .err{text-align:center;padding:40px 16px}.err .big{font-size:70px}
 </style>
 </head>
@@ -27128,7 +27317,9 @@ var G3 = (function () {
     cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); this.W = cv.width; this.H = cv.height; this.dpr = dpr;
   };
   Scene.prototype.project = function (p) {
-    var c = this.cam, q = rotV(p, c.pitch, 0, 0); q[2] -= c.d;
+    var c = this.cam, t = c.t || [0, 0, 0], q = [p[0] - t[0], p[1] - t[1], p[2] - t[2]];
+    if (c.yaw) q = rotV(q, 0, -c.yaw, 0);
+    q = rotV(q, c.pitch, 0, 0); q[2] -= c.d;
     var k = this.H * c.f / (-q[2]);
     return [this.W / 2 + q[0] * k, this.H * 0.52 - q[1] * k, q];
   };
@@ -27150,9 +27341,16 @@ var G3 = (function () {
         var gr = ctx.createRadialGradient(0, 0, 0, 0, 0, sr); gr.addColorStop(0, "rgba(0,0,0,.45)"); gr.addColorStop(1, "rgba(0,0,0,0)");
         ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(0, 0, sr, 0, 2 * PI); ctx.fill(); ctx.restore();
       }
-      for (pi = 0; pi < o.parts.length; pi++) this.partFaces(o, o.parts[pi], t, faces);
+      var ct = this.cam.t;
+      for (pi = 0; pi < o.parts.length; pi++) {
+        var pt = o.parts[pi];
+        if (o.cullR && ct) { var cx = o.pos[0] + (pt.c ? pt.c[0] : 0) - ct[0], cz = o.pos[2] + (pt.c ? pt.c[2] : 0) - ct[2]; if (cx * cx + cz * cz > o.cullR * o.cullR) continue; }
+        this.partFaces(o, pt, t, faces);
+      }
     }
-    faces.sort(function (a, b) { return a.z - b.z; });
+    var under = faces.under || [];
+    under.sort(function (a, b) { return a.z - b.z; });
+    faces = under.concat(faces.sort(function (a, b) { return a.z - b.z; }));
     ctx.lineJoin = "round";
     for (var i = 0; i < faces.length; i++) {
       var f = faces[i], p = f.p;
@@ -27176,6 +27374,15 @@ var G3 = (function () {
       ctx.closePath(); ctx.fill(); ctx.restore();
     }
     ctx.globalAlpha = 1;
+    if (this.labels) {
+      ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.lineJoin = "round";
+      for (var li = 0; li < this.labels.length; li++) {
+        var lb = this.labels[li], lp = this.project(lb.pos); if (lp[2][2] > -1) continue;
+        var fs = (lb.size || 14) * this.dpr; ctx.font = "800 " + fs + "px Trebuchet MS,sans-serif";
+        ctx.lineWidth = fs * 0.28; ctx.strokeStyle = "rgba(0,0,0,.7)"; ctx.strokeText(lb.text, lp[0], lp[1]);
+        ctx.fillStyle = lb.col || "#fff"; ctx.fillText(lb.text, lp[0], lp[1]);
+      }
+    }
     if (this.flash > 0.01) { ctx.fillStyle = "rgba(255,255,255," + clamp(this.flash, 0, 1) + ")"; ctx.fillRect(0, 0, W, H); this.flash *= 0.86; }
   };
   Scene.prototype.drawRays = function (ctx, t) {
@@ -27198,13 +27405,16 @@ var G3 = (function () {
     var ctx = this.ctx, an = part.anim ? part.anim(t, o) : null, off = an && an.o || [0, 0, 0], prot = an && an.r || part.rot || [0, 0, 0];
     var c = part.c || [0, 0, 0], self = this, cam = this.cam, W = this.W, H = this.H;
     var cc = [c[0] + off[0], c[1] + off[1], c[2] + off[2]];
+    var pv = part.pv;
     var toCam = function (v) {
-      var p = rotV(v, prot[0], prot[1], prot[2]);
+      var p = pv ? rotV([v[0] + pv[0], v[1] + pv[1], v[2] + pv[2]], prot[0], prot[1], prot[2]) : rotV(v, prot[0], prot[1], prot[2]);
       p = [p[0] + cc[0], p[1] + cc[1], p[2] + cc[2]];
       if (part.world) { p = part.world(p, o, t); }
       p = [p[0] * o.sc[0], p[1] * o.sc[1], p[2] * o.sc[2]];
       p = rotV(p, o.rot[0], o.rot[1], o.rot[2]);
       p = [p[0] + o.pos[0], p[1] + o.pos[1], p[2] + o.pos[2]];
+      var ct = cam.t; if (ct) { p = [p[0] - ct[0], p[1] - ct[1], p[2] - ct[2]]; }
+      if (cam.yaw) p = rotV(p, 0, -cam.yaw, 0);
       p = rotV(p, cam.pitch, 0, 0); p[2] -= cam.d; return p;
     };
     var ctr = toCam([0, 0, 0]), k;
@@ -27212,7 +27422,10 @@ var G3 = (function () {
     var alpha = (part.alpha == null ? 1 : (typeof part.alpha === "function" ? part.alpha(o, t) : part.alpha)) * (o.alpha == null ? 1 : o.alpha);
     var emis = part.emit || 0;
     var polys = [];
-    if (part.type === "box") {
+    if (part.type === "quad") {
+      var hw = part.s[0] / 2, hd = part.s[1] / 2;
+      polys.push({ v: [toCam([-hw, 0, hd]), toCam([hw, 0, hd]), toCam([hw, 0, -hd]), toCam([-hw, 0, -hd])], col: part.col, flat: true });
+    } else if (part.type === "box") {
       if (!part._v) { part._v = BOX_V.map(function (v) { return [v[0] * part.s[0] / 2, v[1] * part.s[1] / 2, v[2] * part.s[2] / 2]; }); }
       var vs = part._v.map(toCam);
       for (var i = 0; i < 6; i++) { var f = BOX_F[i]; polys.push({ v: [vs[f[0]], vs[f[1]], vs[f[2]], vs[f[3]]], col: part.col }); }
@@ -27233,7 +27446,7 @@ var G3 = (function () {
       var nx = d1[1] * d2[2] - d1[2] * d2[1], ny = d1[2] * d2[0] - d1[0] * d2[2], nz = d1[0] * d2[1] - d1[1] * d2[0];
       var fc = [(v[0][0] + v[2][0]) / 2, (v[0][1] + v[2][1]) / 2, (v[0][2] + v[2][2]) / 2];
       var dx = fc[0] - ctr[0], dy = fc[1] - ctr[1], dz = fc[2] - ctr[2];
-      if (nx * dx + ny * dy + nz * dz < 0) { nx = -nx; ny = -ny; nz = -nz; }
+      if (!pl.flat && nx * dx + ny * dy + nz * dz < 0) { nx = -nx; ny = -ny; nz = -nz; }
       var nl = sqrt(nx * nx + ny * ny + nz * nz) || 1; nx /= nl; ny /= nl; nz /= nl;
       var facing = (nx * -fc[0] + ny * -fc[1] + nz * -fc[2]) > 0, inner = false;
       if (!facing) { if (!shell) continue; inner = true; nx = -nx; ny = -ny; nz = -nz; }
@@ -27242,7 +27455,8 @@ var G3 = (function () {
       var base = pl.col; if (inner) base = part.inner || [255, 244, 214];
       var fill = rgb(base, kk), pts = [], zz = 0;
       for (var q = 0; q < 4; q++) { var pp = pr(v[q]); pts.push(pp[0], pp[1]); zz += v[q][2]; }
-      out.push({ z: zz / 4 + (inner ? -0.02 : 0), p: pts, c: fill, s: part.type === "box" ? rgb(base, kk * 0.62) : fill, lw: part.type === "box" ? 1.1 : 1, a: alpha });
+      var rec = { z: zz / 4 + (inner ? -0.02 : 0), p: pts, c: fill, s: part.type === "box" ? rgb(base, kk * 0.62) : fill, lw: part.type === "box" ? 1.1 : 1, a: alpha };
+      if (part.under) { (out.under = out.under || []).push(rec); } else out.push(rec);
     }
   };
   return { Scene: Scene, rotV: rotV, rgb: rgb };
@@ -27380,7 +27594,7 @@ var tg = window.Telegram && window.Telegram.WebApp;
 if (tg) { try { tg.ready(); tg.expand(); tg.setHeaderColor && tg.setHeaderColor("#1b1464"); tg.setBackgroundColor && tg.setBackgroundColor("#1b1464"); } catch (e) {} }
 var INIT = tg ? tg.initData : "";
 var BID = new URLSearchParams(location.search).get("b");
-var CAT = null, ST = null, ADM = null, T0 = 0, tab = "egg", eggIdx = 0, auto = false, autoN = 1, busy = false, TOP = null, hunted = null, tt = null;
+var CAT = null, ST = null, ADM = null, T0 = 0, tab = "farm", eggIdx = 0, auto = false, autoN = 1, busy = false, TOP = null, hunted = null, tt = null;
 function $(id) { return document.getElementById(id); }
 function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
 function fmt(n) { return String(Math.floor(n)).replace(/\B(?=(\d{3})+(?!\d))/g, " "); }
@@ -27437,7 +27651,7 @@ function petCard(pk, extra) {
   return '<div class="pet ' + rarCol(p.rar) + '">' + (extra && extra.n ? '<div class="n">×' + extra.n + "</div>" : "") + petImg(pk) + "<b>" + esc(p.name) + "</b><span>" + rr[0] + " " + rr[1] + "<br>📈 " + fmt(p.inc) + "/s</span></div>";
 }
 function tabs() {
-  var t = [["egg", "🥚", "Tuxum"], ["pets", "🐾", "Petlar"], ["bonus", "🎁", "Bonus"], ["top", "🏆", "Reyting"]];
+  var t = [["farm", "🐔", "Dala"], ["egg", "🥚", "Tuxum"], ["pets", "🐾", "Petlar"], ["bonus", "🎁", "Bonus"], ["top", "🏆", "Reyting"]];
   if (ST && ST.admin) t.push(["admin", "⚙️", "Admin"]);
   $("tabs").innerHTML = t.map(function (x) { return '<button data-t="' + x[0] + '" class="' + (tab === x[0] ? "on" : "") + '"><b>' + x[1] + "</b>" + x[2] + "</button>"; }).join("");
   Array.prototype.forEach.call($("tabs").querySelectorAll("button"), function (b) {
@@ -27456,15 +27670,16 @@ function render() {
   if (!CAT || !ST) return;
   head(); tabs();
   var m = $("m");
-  if (tab === "egg") viewEgg(m); else if (tab === "pets") viewPets(m); else if (tab === "bonus") viewBonus(m); else if (tab === "top") viewTop(m); else if (tab === "admin") viewAdmin(m);
+  if (tab === "farm" && FM && $("fCv") === FM.cv) return;
+  if (tab === "farm") viewFarm(m); else if (tab === "egg") viewEgg(m); else if (tab === "pets") viewPets(m); else if (tab === "bonus") viewBonus(m); else if (tab === "top") viewTop(m); else if (tab === "admin") viewAdmin(m);
 }
 // ---------- Tuxum ----------
 function viewEgg(m) {
-  var e = CAT.eggs[eggIdx], can = function (n) { return ST.coins >= e.price * n; };
+  var e = CAT.eggs[eggIdx], fr = (ST.eggs || {})[e.key] || 0, can = function (n) { return ST.coins >= e.price * Math.max(0, n - fr); }, lab = function (n) { var paid = Math.max(0, n - fr); return paid ? "🪙 " + fmt(e.price * paid) : "🎁 bepul"; };
   m.innerHTML = '<div class="stage"><div class="row" style="justify-content:space-between"><button class="arrow" id="pv">‹</button><div style="flex:1;min-width:0">' + (has3d() ? '<canvas class="cv" id="eggCv"></canvas>' : '<div class="egg" id="eggTap">' + e.emoji + '</div><div class="plat"></div>') + '</div><button class="arrow" id="nx">›</button></div>' +
     "<h2>" + esc(e.name) + "</h2>" + '<div class="dots">' + CAT.eggs.map(function (x, i) { return '<i class="' + (i === eggIdx ? "on" : "") + '"></i>'; }).join("") + "</div>" +
     '<div class="mu">Tuxumni bosing yoki pastdagi tugmalardan foydalaning</div></div>' +
-    '<div class="hb"><button class="btn ' + (can(1) ? "" : "off") + '" id="h1">Ochish ×1<small>🪙 ' + fmt(e.price) + '</small></button><button class="btn bl ' + (can(3) ? "" : "off") + '" id="h3">×3<small>🪙 ' + fmt(e.price * 3) + '</small></button><button class="btn gn ' + (can(10) ? "" : "off") + '" id="h10">×10<small>🪙 ' + fmt(e.price * 10) + "</small></button></div>" +
+    '<div class="hb"><button class="btn ' + (can(1) ? "" : "off") + '" id="h1">Ochish ×1<small>' + lab(1) + '</small></button><button class="btn bl ' + (can(3) ? "" : "off") + '" id="h3">×3<small>' + lab(3) + '</small></button><button class="btn gn ' + (can(10) ? "" : "off") + '" id="h10">×10<small>' + lab(10) + "</small></button></div>" + (fr ? '<div class="mu" style="text-align:center;margin-top:6px">🎒 O\'g\'irlangan tuxumlar: <b>' + fr + " ta</b> — bepul ochiladi</div>" : "") +
     '<div class="ar"><div class="grow mu">Avto-ochish: tanga tugaguncha ketma-ket ochadi</div><button class="btn sm ' + (auto ? "rd" : "bl") + '" id="au">' + (auto ? "⏹ To'xtatish" : "▶ Avto ×" + autoN) + '</button><button class="btn sm" id="aun">×' + autoN + "</button></div>" +
     '<div class="card"><b>Ichidan chiqishi mumkin:</b><div class="drops" style="margin-top:8px">' + e.pets.map(function (d) {
       var p = CAT.pets[d.pk];
@@ -27486,7 +27701,8 @@ async function autoLoop() {
 async function hatch(n, fromAuto) {
   if (busy) return false;
   var e = CAT.eggs[eggIdx];
-  if (ST.coins < e.price) { toast("Tanga yetarli emas 🪙"); return false; }
+  var frE = (ST.eggs || {})[e.key] || 0;
+  if (ST.coins < e.price * Math.max(0, n - frE)) { toast("Tanga yetarli emas 🪙"); return false; }
   busy = true;
   try {
     var p = api("POST", "act", { a: "hatch", egg: e.key, n: n });
@@ -27546,7 +27762,7 @@ var HS = null, STG = null, SHT = null, RAF = 0;
 function kick() { if (!RAF) RAF = requestAnimationFrame(frame); }
 function frame(now) {
   RAF = 0; var live = false;
-  try { live = stageTick(now) || live; live = hatchTick(now) || live; live = sheetTick(now) || live; } catch (e) { live = false; if (window.console) console.error(e); }
+  try { live = stageTick(now) || live; live = hatchTick(now) || live; live = sheetTick(now) || live; live = farmTick(now) || live; } catch (e) { live = false; if (window.console) console.error(e); }
   if (live) kick();
 }
 function startStage() {
@@ -27743,6 +27959,250 @@ function viewAdmin(m) {
     b.onclick = function () { var k = b.getAttribute("data-cs"), inp = m.querySelector('[data-ck="' + k + '"]'); act({ a: "admin_cfg", key: k, value: inp.value }); };
   });
 }
+// ---------- 🐔 DALA: tuxum o'g'irlash o'yini ----------
+var FM = null;
+var KEYS = {};
+window.addEventListener("keydown", function (e) { KEYS[e.key.toLowerCase()] = true; });
+window.addEventListener("keyup", function (e) { KEYS[e.key.toLowerCase()] = false; });
+function viewFarm(m) {
+  FM = null;
+  m.innerHTML = '<div class="fm" id="fm"><canvas id="fCv"></canvas><div class="fhud tl" id="fHudL"></div><div class="fhud tr" id="fHudR"></div>' +
+    '<div class="joy" id="fJoy"><div class="knob" id="fKnob"></div></div><button class="fbtn" id="fBtn"></button><div class="fmsg" id="fMsg" hidden></div></div>';
+  if (!has3d() || !CAT.farm) { m.innerHTML = '<div class="err"><div class="big">🐔</div><p class="mu">3D o\'yin bu qurilmada ishlamaydi. «Tuxum» bo\'limidan foydalaning.</p></div>'; return; }
+  var box = $("fm"), top = box.getBoundingClientRect().top;
+  box.style.height = Math.max(320, (window.innerHeight || 700) - top - 96) + "px";
+  startFarm();
+}
+function B3(c, s, col, x) { var p = { type: "box", c: c, s: s, col: col }; if (x) for (var k in x) p[k] = x[k]; return p; }
+function hashCol(n) { var C = [[230, 70, 70], [70, 150, 240], [80, 200, 120], [250, 170, 50], [170, 100, 230], [240, 110, 180]]; return C[Math.abs(n | 0) % C.length]; }
+function makeHuman(uid) {
+  var shirt = hashCol(uid), skin = [255, 206, 160], leg = [58, 68, 150];
+  var sw = function (side, k) { return function (t, o) { return { r: [Math.sin(o.ph || 0) * 0.9 * (o.mv || 0) * side * k, 0, side * 0.04] }; }; };
+  var P = [
+    B3([0, 1.95, 0], [0.64, 0.64, 0.64], skin), B3([0, 2.32, -0.02], [0.68, 0.22, 0.68], [60, 40, 30]),
+    B3([-0.16, 2.0, 0.33], [0.1, 0.14, 0.04], [30, 30, 40]), B3([0.16, 2.0, 0.33], [0.1, 0.14, 0.04], [30, 30, 40]),
+    B3([0, 1.2, 0], [0.82, 0.95, 0.44], shirt),
+    B3([-0.56, 1.62, 0], [0.26, 0.9, 0.3], shirt, { pv: [0, -0.34, 0], anim: sw(-1, 1) }), B3([0.56, 1.62, 0], [0.26, 0.9, 0.3], shirt, { pv: [0, -0.34, 0], anim: sw(1, 1) }),
+    B3([-0.21, 0.78, 0], [0.36, 0.8, 0.38], leg, { pv: [0, -0.34, 0], anim: sw(1, 1) }), B3([0.21, 0.78, 0], [0.36, 0.8, 0.38], leg, { pv: [0, -0.34, 0], anim: sw(-1, 1) })
+  ];
+  return { parts: P, shadow: { y: 0, r: 0.9 }, ph: 0, mv: 0 };
+}
+function makeChickenModel(lv) {
+  var body = lv >= 7 ? [255, 205, 60] : (lv >= 5 ? [170, 210, 255] : (lv >= 3 ? [255, 236, 150] : [250, 250, 250])), comb = lv >= 7 ? [255, 90, 40] : [235, 60, 60], OR = [250, 160, 40];
+  var awake = function (o) { return o.awake ? 1 : 0; }, asleep = function (o) { return o.awake ? 0 : 1; };
+  var P = [
+    B3([0, 0.62, 0], [0.95, 0.8, 1.05], body), B3([0, 0.55, -0.62], [0.4, 0.5, 0.25], body), B3([-0.52, 0.62, 0], [0.12, 0.5, 0.7], [body[0] - 25, body[1] - 25, body[2] - 25]), B3([0.52, 0.62, 0], [0.12, 0.5, 0.7], [body[0] - 25, body[1] - 25, body[2] - 25]),
+    B3([0, 1.12, 0.52], [0.55, 0.52, 0.5], body, { anim: function (t, o) { return { o: [0, o.awake ? Math.abs(Math.sin(t / 220)) * -0.05 : -0.22, o.awake ? 0 : 0.05] }; } }),
+    B3([0, 1.5, 0.52], [0.16, 0.2, 0.3], comb, { anim: function (t, o) { return { o: [0, o.awake ? 0 : -0.22, 0] }; } }),
+    B3([0, 1.05, 0.86], [0.2, 0.14, 0.2], OR, { anim: function (t, o) { return { o: [0, o.awake ? 0 : -0.22, 0] }; } }),
+    B3([-0.16, 1.2, 0.78], [0.08, 0.1, 0.05], [20, 20, 25], { alpha: awake }), B3([0.16, 1.2, 0.78], [0.08, 0.1, 0.05], [20, 20, 25], { alpha: awake }),
+    B3([-0.16, 0.96, 0.78], [0.12, 0.03, 0.05], [20, 20, 25], { alpha: asleep }), B3([0.16, 0.96, 0.78], [0.12, 0.03, 0.05], [20, 20, 25], { alpha: asleep }),
+    B3([-0.22, 0.13, 0.05], [0.1, 0.3, 0.1], OR, { alpha: awake }), B3([0.22, 0.13, 0.05], [0.1, 0.3, 0.1], OR, { alpha: awake })
+  ];
+  if (lv >= 7) P.push(B3([0, 1.85, 0.52], [0.5, 0.14, 0.3], [255, 215, 60], { emit: 0.3 }), B3([-0.18, 2.0, 0.52], [0.1, 0.18, 0.1], [255, 215, 60]), B3([0, 2.04, 0.52], [0.1, 0.22, 0.1], [255, 215, 60]), B3([0.18, 2.0, 0.52], [0.1, 0.18, 0.1], [255, 215, 60]));
+  return { parts: P, shadow: { y: 0, r: 0.9 }, awake: false };
+}
+function buildFarmWorld(sc, uid) {
+  var W = { ch: [], pens: [] }, i, x, z;
+  var gd = { parts: [], cullR: 19 };
+  for (x = -24; x <= 24; x += 2) for (z = -26; z <= 24; z += 2) {
+    var chk = ((x / 2 + z / 2) & 1) === 0, col;
+    var inHome = Math.abs(x) <= 6 && z >= 14 && z <= 20, path = Math.abs(x) <= 1 && z <= 13 && z >= -26;
+    if (inHome) col = chk ? [86, 190, 255] : [64, 160, 235]; else if (path) col = chk ? [214, 178, 120] : [200, 164, 106]; else col = chk ? [112, 196, 92] : [100, 182, 80];
+    gd.parts.push({ type: "quad", c: [x, 0, z], s: [2, 2], col: col, under: true });
+  }
+  sc.add(gd);
+  // uy: ko'k maydon chegarasi + uy binosi
+  var hz = { parts: [], cullR: 24 };
+  [[-7, 17, 0.3, 7], [7, 17, 0.3, 7]].forEach(function (f) { hz.parts.push(B3([f[0], 0.35, f[1]], [f[2], 0.7, f[3] + 0.2], [180, 130, 70])); });
+  hz.parts.push(B3([0, 0.35, 20.2], [14.3, 0.7, 0.3], [180, 130, 70]));
+  for (x = -6; x <= 6; x += 3) hz.parts.push(B3([x, 0.5, 13.4], [0.35, 1.0, 0.35], [235, 200, 60], { emit: 0.4 }));
+  hz.parts.push(B3([-10.5, 1.3, 17], [4, 2.6, 4], [240, 225, 190]), B3([-10.5, 3.0, 17], [4.6, 0.5, 4.6], [200, 60, 60]), B3([-10.5, 3.5, 17], [3.4, 0.5, 3.4], [214, 74, 70]), B3([-10.5, 4.0, 17], [2.2, 0.5, 2.2], [226, 90, 80]), B3([-8.45, 0.95, 17], [0.1, 1.9, 1.0], [110, 70, 40]), B3([-8.45, 1.6, 15.7], [0.1, 0.8, 0.8], [120, 200, 255], { emit: 0.3 }));
+  sc.add(hz);
+  // daraxtlar
+  var tr = { parts: [], cullR: 26 }, tp = [];
+  for (x = -22; x <= 22; x += 4) { tp.push([x, -25]); tp.push([x, 23]); }
+  for (z = -22; z <= 20; z += 4) { tp.push([-23, z]); tp.push([23, z]); }
+  tp.push([-17, 11], [17, 11], [-18, -4], [18, -3], [-10, -7], [11, -6], [-3, -16], [4, -21]);
+  tp.forEach(function (p, k) { var h = 2.2 + (k % 3) * 0.6; tr.parts.push(B3([p[0], h / 2, p[1]], [0.7, h, 0.7], [120, 80, 46]), B3([p[0], h + 0.8, p[1]], [2.4, 1.6, 2.4], [60, 150, 70]), B3([p[0], h + 2.0, p[1]], [1.5, 1.0, 1.5], [78, 172, 84])); });
+  sc.add(tr);
+  // tovuq uyalari
+  CAT.farm.chickens.forEach(function (c, idx) {
+    var pen = { parts: [], pos: [c.x, 0, c.z], cullR: 20 }, s = 1.55;
+    pen.parts.push(B3([0, 0.06, 0], [2.6, 0.12, 2.6], [225, 190, 90], { under: false }));
+    [[-s, 0], [s, 0]].forEach(function (p) { pen.parts.push(B3([p[0], 0.3, p[1]], [0.14, 0.6, 3.2], [160, 110, 60])); });
+    [[0, -s]].forEach(function (p) { pen.parts.push(B3([p[0], 0.3, p[1]], [3.2, 0.6, 0.14], [160, 110, 60])); });
+    sc.add(pen);
+    var ob = makeChickenModel(c.lv); ob.pos = [c.x, 0, c.z]; ob.rot = [0, 0, 0]; ob.sc = [1, 1, 1]; ob.cullR = 20; sc.add(ob);
+    var eg = G3M.makeEgg(c.egg, true); eg.sc = [0.3, 0.3, 0.3]; eg.pos = [c.x, 0.42, c.z + 1.05]; eg.cullR = 20; sc.add(eg);
+    W.ch.push({ c: c, ob: ob, eg: eg, kick: 0 });
+  });
+  W.pl = sc.add(makeHuman(uid)); W.pl.pos = [0, 0, 15]; W.pl.rot = [0, Math.PI, 0];
+  W.carry = sc.add(G3M.makeEgg("common", true)); W.carry.sc = [0.38, 0.38, 0.38]; W.carry.hidden = true;
+  return W;
+}
+function farmCarryKey(key, W) { if (W.carryKey === key) return; W.carryKey = key; var sc = FM.sc, idx = sc.objs.indexOf(W.carry); var n = G3M.makeEgg(key || "common", true); n.sc = [0.38, 0.38, 0.38]; n.hidden = !key; sc.objs[idx] = n; W.carry = n; }
+function startFarm() {
+  var cv = $("fCv"), sc = new G3.Scene(cv, { d: 21, pitch: 0.92, f: 1.35 });
+  var uid = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) ? tg.initDataUnsafe.user.id : 1;
+  var W = buildFarmWorld(sc, uid);
+  FM = { cv: cv, sc: sc, W: W, P: { x: 0, z: 15 }, face: Math.PI, now0: performance.now(), last: performance.now(), joy: { x: 0, y: 0 }, hold: null, F: null, readyAt: [], carry: null, speed: ST.farm_speed || 10, stunUntil: 0, fly: null, depBusy: 0, syncAt: 0, near: -1, msgT: 0, parts: [] };
+  sc.cam.t = [0, 0.8, 15];
+  var joy = $("fJoy"), knob = $("fKnob"), R = 52;
+  var jp = function (ev) { var r = joy.getBoundingClientRect(), dx = ev.clientX - (r.left + r.width / 2), dy = ev.clientY - (r.top + r.height / 2), l = Math.sqrt(dx * dx + dy * dy) || 1, k = Math.min(1, l / R); FM.joy = { x: dx / l * k, y: dy / l * k }; knob.style.transform = "translate(" + (dx / l * k * R) + "px," + (dy / l * k * R) + "px)"; };
+  joy.onpointerdown = function (ev) { try { joy.setPointerCapture(ev.pointerId); } catch (e) {} FM.jOn = true; jp(ev); };
+  joy.onpointermove = function (ev) { if (FM && FM.jOn) jp(ev); };
+  var jend = function () { if (!FM) return; FM.jOn = false; FM.joy = { x: 0, y: 0 }; knob.style.transform = ""; };
+  joy.onpointerup = jend; joy.onpointercancel = jend;
+  var btn = $("fBtn");
+  btn.onpointerdown = function (ev) { try { btn.setPointerCapture(ev.pointerId); } catch (e) {} farmPress(); };
+  btn.onpointerup = farmRelease; btn.onpointercancel = farmRelease;
+  farmSync(); kick();
+}
+function farmMsg(t, ms) { var e = $("fMsg"); if (!e) return; e.textContent = t; e.hidden = false; FM && (FM.msgT = performance.now() + (ms || 2600)); }
+async function farmSync() {
+  if (!FM) return;
+  try { var j = await api("POST", "act", { a: "farm_sync" }); applyView(j.result); setState(j.state); } catch (e) { if (e.message === "gate") fail(e); }
+}
+function applyView(v) {
+  if (!FM || !v) return;
+  var now = performance.now(); FM.F = v; FM.speed = v.speed; FM.carry = v.carry; FM.stunUntil = now + v.stun_left * 1000;
+  v.ready_in.forEach(function (s, i) { FM.readyAt[i] = now + s * 1000; }); FM.syncAt = now;
+  ST.farm_speed = v.speed;
+}
+function inHome(P) { var h = CAT.farm.home; return Math.abs(P.x - h.x) <= h.w / 2 && Math.abs(P.z - h.z) <= h.d / 2; }
+async function farmPress() {
+  var f = FM; if (!f || f.hold || f.fly) return; var now = performance.now();
+  if (now < f.stunUntil || f.carry || f.near < 0) { if (f.carry) farmMsg("🏠 Avval tuxumni uyga olib boring!"); return; }
+  var i = f.near; f.hold = { i: i, t0: 0, ok: false, cancel: false }; var h = f.hold;
+  try { await api("POST", "act", { a: "farm_begin", i: i }); } catch (e) {
+    f.hold = null; var c = e.message;
+    if (c === "farm_gone") { farmMsg("😴 Tuxum allaqachon olingan"); farmSync(); } else if (c === "farm_stun") farmMsg("😵 Hali o'zingizga kelmadingiz"); else if (c === "farm_carrying") farmMsg("🏠 Avval tuxumni uyga olib boring!"); else fail(e);
+    return;
+  }
+  if (f.hold !== h) return;
+  h.ok = true; h.t0 = performance.now(); hap("medium");
+}
+function farmRelease() { var f = FM; if (f && f.hold && !f.hold.done) { f.hold = null; } }
+async function farmFinish(i) {
+  var f = FM; if (!f) return; var h = f.hold; if (h) h.done = true;
+  try {
+    var j = await api("POST", "act", { a: "farm_end", i: i }); if (!FM) return;
+    var r = j.result; applyView(r.view); FM.hold = null; setState(j.state);
+    if (r.result === "ok") { hap("ok"); farmMsg("🥚 Tuxum olindi! Tezroq uyga olib boring 🏠", 3200); FM.sc.burst([f.W.pl.pos[0], 2.4, f.W.pl.pos[2]], ["#ffd23f", "#fff"], 24); }
+    else if (r.result === "kick") { hap("heavy"); farmKick(i, r.req); }
+    else { farmMsg("😴 Tuxum allaqachon olingan"); }
+  } catch (e) { FM && (FM.hold = null); if (e.message === "farm_too_fast" || e.message === "farm_no_steal") farmMsg("Qayta urinib ko'ring"); else fail(e); }
+}
+function farmKick(i, req) {
+  var f = FM, hm = CAT.farm.home, tx = hm.x + (Math.random() - 0.5) * 6, tz = hm.z + (Math.random() - 0.5) * 3;
+  f.W.ch[i].kick = performance.now();
+  f.fly = { t0: performance.now(), fx: f.P.x, fz: f.P.z, tx: tx, tz: tz, dur: 1300 };
+  farmMsg("💥 Tovuq sizni tepdi! Tezlik yetmadi: kerak ⚡" + req + ", sizda ⚡" + f.speed, 3600);
+}
+async function farmDeposit() {
+  var f = FM; if (!f || f.depBusy > performance.now()) return; f.depBusy = performance.now() + 1500;
+  try {
+    var j = await api("POST", "act", { a: "farm_deposit" }); if (!FM) return;
+    applyView(j.result.view); setState(j.state); hap("ok");
+    farmMsg("🏠 Tuxum yetkazildi! «Tuxum» bo'limida bepul oching 🥚", 3600);
+    FM.sc.burst([FM.W.pl.pos[0], 2, FM.W.pl.pos[2]], ["#ffd23f", "#8fe9ff", "#fff"], 40);
+  } catch (e) { if (e.message !== "farm_too_fast" && e.message !== "farm_no_carry") fail(e); else if (e.message === "farm_no_carry") farmSync(); }
+}
+async function farmUpgrade() {
+  try { var j = await api("POST", "act", { a: "farm_upgrade" }); applyView(j.result); setState(j.state); hap("ok"); farmMsg("⚡ Tezlik oshdi: " + j.result.speed, 1800); } catch (e) { if (e.message === "farm_no_coins") toast("Tanga yetarli emas 🪙"); else if (e.message === "farm_max") toast("Maksimal daraja"); else fail(e); }
+}
+function farmHud() {
+  var f = FM; if (!f || !f.F) return;
+  var l = $("fHudL"), r = $("fHudR"); if (!l) return;
+  var v = f.F, inv = ST.eggs || {}, ic = { common: "🥚", rare: "🪺", epic: "🔮", legend: "👑" };
+  l.innerHTML = "⚡ Tezlik: <b>" + v.speed + "</b> <span class=\"mu\">(Lv" + v.speed_lvl + ")</span>" + (v.up_cost ? '<button class="btn sm' + (ST.coins >= v.up_cost ? "" : " off") + '" id="fUp">⬆ 🪙' + fmt(v.up_cost) + "</button>" : "");
+  var iv = Object.keys(inv).map(function (k) { return ic[k] + "×" + inv[k]; }).join(" ");
+  r.innerHTML = (f.carry ? "🥚 Tuxum ko'tarilgan!<br><span class=\"mu\">Uyga olib boring 🏠</span>" : "🎒 " + (iv || "tuxum yo'q"));
+  if ($("fUp")) $("fUp").onpointerdown = function (ev) { ev.stopPropagation(); farmUpgrade(); };
+}
+function fmtT(ms) { var s = Math.max(0, Math.ceil(ms / 1000)); return Math.floor(s / 60) + ":" + (s % 60 < 10 ? "0" : "") + (s % 60); }
+function farmTick(now) {
+  var f = FM; if (!f || $("fCv") !== f.cv || tab !== "farm") { if (f && $("fCv") !== f.cv) FM = null; return false; }
+  var dt = Math.min(0.05, (now - f.last) / 1000); f.last = now; var W = f.W, P = f.P, sc = f.sc, cfg = CAT.farm;
+  if (now - f.syncAt > 3500) { f.syncAt = now + 99999; farmSync(); }
+  var stunned = now < f.stunUntil;
+  // harakat
+  var jx = f.joy.x, jy = f.joy.y;
+  if (KEYS["a"] || KEYS["arrowleft"]) jx -= 1; if (KEYS["d"] || KEYS["arrowright"]) jx += 1; if (KEYS["w"] || KEYS["arrowup"]) jy -= 1; if (KEYS["s"] || KEYS["arrowdown"]) jy += 1;
+  var jl = Math.sqrt(jx * jx + jy * jy); if (jl > 1) { jx /= jl; jy /= jl; jl = 1; }
+  var moving = jl > 0.12 && !stunned && !f.fly, v = 2.6 + 0.17 * f.speed * (f.carry ? 0.92 : 1);
+  if (f.fly) {
+    var k = Math.min(1, (now - f.fly.t0) / f.fly.dur), e = k;
+    P.x = f.fly.fx + (f.fly.tx - f.fly.fx) * e; P.z = f.fly.fz + (f.fly.tz - f.fly.fz) * e;
+    W.pl.pos = [P.x, Math.sin(k * Math.PI) * 6, P.z]; W.pl.rot = [k * 9, f.face + k * 12, k * 4];
+    if (k >= 1) { f.fly = null; W.pl.rot = [0, f.face, 0]; farmMsg("😵 Hushingizga keling...", 2200); }
+  } else {
+    if (moving) {
+      var nx = P.x + jx * v * dt, nz = P.z + jy * v * dt;
+      for (var ci = 0; ci < cfg.chickens.length; ci++) { var c = cfg.chickens[ci], dx = nx - c.x, dz = nz - c.z, d2 = dx * dx + dz * dz; if (d2 < 1.9 * 1.9) { var d = Math.sqrt(d2) || 0.01; nx = c.x + dx / d * 1.9; nz = c.z + dz / d * 1.9; } }
+      P.x = Math.max(-21, Math.min(21, nx)); P.z = Math.max(-24, Math.min(22, nz));
+      var ta = Math.atan2(jx, jy), da = ta - f.face; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI; f.face += da * Math.min(1, dt * 14);
+      W.pl.ph += v * dt * 2.4;
+    }
+    W.pl.mv += ((moving ? 1 : 0) - W.pl.mv) * Math.min(1, dt * 10);
+    W.pl.pos = [P.x, Math.abs(Math.sin(W.pl.ph)) * 0.08 * W.pl.mv, P.z];
+    W.pl.rot = stunned ? [0.2, f.face, 0.3 * Math.sin(now / 90)] : [0, f.face, 0];
+  }
+  sc.cam.t[0] += (P.x - sc.cam.t[0]) * Math.min(1, dt * 7); sc.cam.t[2] += (P.z - sc.cam.t[2]) * Math.min(1, dt * 7);
+  // uyga yetkazish
+  if (f.carry && !f.fly && inHome(P)) farmDeposit();
+  // yaqin tovuq
+  var best = -1, bd = 2.9 * 2.9;
+  for (var i = 0; i < cfg.chickens.length; i++) { var c2 = cfg.chickens[i], ready = (f.readyAt[i] || 0) <= now; if (!ready) continue; var ddx = P.x - c2.x, ddz = P.z - c2.z, dd = ddx * ddx + ddz * ddz; if (dd < bd) { bd = dd; best = i; } }
+  f.near = best;
+  // ushlab turish
+  var h = f.hold, prog = 0;
+  if (h && h.ok) {
+    var c3 = cfg.chickens[h.i], hx = P.x - c3.x, hz = P.z - c3.z;
+    if (hx * hx + hz * hz > 3.6 * 3.6 || stunned || (f.readyAt[h.i] || 0) > now + 1500) { f.hold = null; farmMsg("Bekor qilindi"); }
+    else { prog = (now - h.t0) / (cfg.hold * 1000); W.pl.rot = [W.pl.rot[0], Math.atan2(c3.x - P.x, c3.z - P.z), W.pl.rot[2]]; if (prog >= 1 && !h.done) farmFinish(h.i); }
+  }
+  // tovuqlar
+  sc.labels = [];
+  for (var q = 0; q < W.ch.length; q++) {
+    var cc = W.ch[q], c4 = cc.c, ob = cc.ob, ra = f.readyAt[q] || 0, asleep = ra <= now;
+    ob.awake = !asleep;
+    var kk = cc.kick ? (now - cc.kick) / 700 : 2;
+    if (asleep) { ob.pos = [c4.x, Math.sin(now / 600 + q) * 0.04, c4.z]; ob.rot = [0, 0, 0]; ob.sc = [1, 1 + Math.sin(now / 600 + q) * 0.03, 1]; }
+    else { var a = now / 1100 + q * 1.7; ob.pos = [c4.x + Math.cos(a) * 0.7, Math.abs(Math.sin(now / 120 + q)) * 0.06, c4.z + Math.sin(a) * 0.7]; ob.rot = [0, -a + Math.PI, 0]; ob.sc = [1, 1, 1]; }
+    if (kk < 1) { ob.pos = [ob.pos[0], ob.pos[1] + Math.sin(kk * Math.PI * 3) * 0.5, ob.pos[2]]; ob.rot = [0, ob.rot[1], Math.sin(kk * 30) * 0.3]; }
+    cc.eg.hidden = !asleep; cc.eg.rot = [0, now / 700, 0]; cc.eg.pos = [c4.x, 0.45 + Math.sin(now / 400 + q) * 0.05, c4.z + 1.0];
+    var near = Math.abs(P.x - c4.x) < 11 && Math.abs(P.z - c4.z) < 13;
+    if (near || true) {
+      var ok = f.speed >= c4.req, tcol = ok ? "#7dff9b" : "#ff7b7b";
+      sc.labels.push({ pos: [c4.x, 2.75, c4.z], text: "Lv" + c4.lv + "  ⚡" + c4.req, col: tcol, size: 13 });
+      if (asleep) sc.labels.push({ pos: [c4.x, 2.3, c4.z], text: "💤 Zzz", col: "#cfe3ff", size: 12 }); else sc.labels.push({ pos: [c4.x, 2.3, c4.z], text: "⏳ " + fmtT(ra - now), col: "#ffe08a", size: 12 });
+      if (kk < 1) sc.labels.push({ pos: [c4.x, 3.4, c4.z], text: "💢", size: 22 });
+    }
+  }
+  if (f.carry) { farmCarryKey(f.carry, W); W.carry.hidden = false; W.carry.pos = [W.pl.pos[0], W.pl.pos[1] + 3.2 + Math.sin(now / 250) * 0.08, W.pl.pos[2]]; W.carry.rot = [0, now / 500, 0]; }
+  else if (W.carry) W.carry.hidden = true;
+  sc.labels.push({ pos: [cfg.home.x, 3.2, cfg.home.z + 3.2], text: "🏠 UY", col: "#fff", size: 16 });
+  if (f.carry) sc.labels.push({ pos: [W.pl.pos[0], 4.2, W.pl.pos[2]], text: "🏠 Uyga!", col: "#ffd23f", size: 13 });
+  if (stunned) sc.labels.push({ pos: [W.pl.pos[0], 3.2, W.pl.pos[2]], text: "😵 " + Math.ceil((f.stunUntil - now) / 1000) + "s", size: 16 });
+  sc.render(now);
+  // tugma va xabar
+  var btn = $("fBtn");
+  if (btn) {
+    var txt, dis = false;
+    if (stunned) { txt = "😵 " + Math.ceil((f.stunUntil - now) / 1000) + "s"; dis = true; }
+    else if (f.carry) { txt = "🏠 Uyga olib boring"; dis = true; }
+    else if (f.near >= 0) { txt = h && h.ok ? "Ushlab turing..." : "🥚 OLISH"; }
+    else { txt = "🐔 Tovuqqa yaqinlashing"; dis = true; }
+    if (btn._t !== txt || btn._d !== dis) { btn.textContent = txt; btn.className = "fbtn" + (dis ? " off" : "") + (f.near >= 0 && !dis ? " go" : ""); btn._t = txt; btn._d = dis; }
+    btn.style.background = prog > 0 ? "conic-gradient(#ffd23f " + Math.min(100, prog * 100) + "%, rgba(0,0,0,.45) 0)" : "";
+  }
+  if (f.msgT && now > f.msgT) { var mm = $("fMsg"); if (mm) mm.hidden = true; f.msgT = 0; }
+  if (now - (f.hudT || 0) > 400) { f.hudT = now; farmHud(); }
+  return true;
+}
+
 $("colBtn").onclick = async function () {
   if (!ST || pend() < 1) { toast("Hali yig'ilgan tanga yo'q"); return; }
   try { var j = await api("POST", "act", { a: "collect" }); setState(j.state); toast("💰 +" + fmt(j.result) + " 🪙"); hap("ok"); } catch (e) { fail(e); }
