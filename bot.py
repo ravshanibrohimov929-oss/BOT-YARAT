@@ -17951,7 +17951,7 @@ EG_EGGS = {
     "legend": {"name": "Afsonaviy tuxum", "emoji": "👑", "price": 15000, "pets": [("robo", 45), ("alien", 30), ("rainbow", 17), ("king", 8)]},
 }
 EG_SELL_HOURS = 6          # pet sotilganda: soatlik daromad x 6 tanga
-EG_CFG_DEFAULTS = {"start": 300, "daily": 200, "hunt_min": 30, "cap_h": 8, "ref": 300, "farm_cd": 100}
+EG_CFG_DEFAULTS = {"start": 300, "daily": 200, "hunt_min": 30, "cap_h": 8, "ref": 300, "farm_cd": 100, "spd_cost": 2}
 EG_CFG_META = {
     "start": ("🎁 Boshlang'ich tanga", 0, 1_000_000),
     "daily": ("📅 Kunlik bonus", 0, 1_000_000),
@@ -17959,6 +17959,7 @@ EG_CFG_META = {
     "cap_h": ("⏳ Daromad yig'ilish chegarasi (soat)", 1, 72),
     "ref": ("👥 Taklif bonusi", 0, 1_000_000),
     "farm_cd": ("🐔 Tovuq tuxum tug'ish tezligi (% — kichik = tezroq)", 20, 1000),
+    "spd_cost": ("⚡ 1 tezlik narxi (tanga)", 1, 1_000_000),
 }
 EG_BUSY = set()
 
@@ -18123,21 +18124,20 @@ def eg_top(info: dict, n: int = 10):
     return rows[:n]
 
 
-# ---------- 🐔 DALA: tuxum o'g'irlash o'yini (3D kub dunyo) ----------
-# Dunyo koordinatalari: x — o'ngga, z — pastga (o'yinchiga qarab). Uy pastda (z>0), baland darajali tovuqlar uzoqda (z<0).
-EG_FARM = [
-    # (id, tovuq darajasi, x, z)
-    (0, 1, -7, 8), (1, 1, 7, 8), (2, 2, -13, 3), (3, 2, 13, 3), (4, 3, -5, -2), (5, 3, 5, -2),
-    (6, 4, -14, -8), (7, 4, 14, -8), (8, 5, -8, -13), (9, 6, 8, -13), (10, 7, -14, -18), (11, 8, 0, -19),
-]
+# ---------- 🐔 DALA: tuxum o'g'irlash o'yini (3D kub dunyo, 1:2 maydon) ----------
+# Dunyo: x — o'ngga (-16..16), z — pastga (-32..32). Uy pastda (z>0), tovuqlar ustun bo'ylab uzoqlashadi.
+EG_FARM_REQS = [10, 150_000, 2_000_000, 25_000_000, 300_000_000, 4_000_000_000, 50_000_000_000, 600_000_000_000]
+EG_FARM = [(i, i + 1, 0, round(14 - 6.2 * i, 1)) for i in range(8)]   # (id, tier, x, z)
 EG_FARM_EGG = {1: "common", 2: "common", 3: "rare", 4: "rare", 5: "epic", 6: "epic", 7: "legend", 8: "legend"}
-EG_FARM_HOME = {"x": 0, "z": 16.5, "w": 14, "d": 7}
+EG_FARM_HOME = {"x": 0, "z": 26, "w": 24, "d": 10}
+EG_FARM_FIELD = {"w": 32, "d": 64}
 EG_FARM_HOLD = 3.0
-EG_FARM_MAXLVL = 20
+EG_FARM_MAXSPD = 10 ** 13
 
 
 def eg_farm_u(u: dict) -> dict:
-    u.setdefault("speed", 1)
+    if "spd" not in u:       # eski «daraja» tizimidan o'tkazish
+        u["spd"] = 10 + 2 * (int(u.get("speed", 1)) - 1)
     u.setdefault("eggs", {})
     u.setdefault("carry", None)
     u.setdefault("steal", None)
@@ -18147,26 +18147,26 @@ def eg_farm_u(u: dict) -> dict:
     return u
 
 
-def eg_farm_req(lv: int) -> int:
-    return 10 + 4 * (lv - 1)
+def eg_farm_req(tier: int) -> int:
+    return EG_FARM_REQS[max(1, min(len(EG_FARM_REQS), int(tier))) - 1]
 
 
-def eg_farm_speed(info: dict, uid, u: dict) -> float:
-    base = 10 + 2 * (int(u.get("speed", 1)) - 1)
-    return round(base * (1.2 if is_premium_active(info, uid) else 1), 1)
+def eg_farm_speed(info: dict, uid, u: dict) -> int:
+    return int(int(u.get("spd", 10)) * (1.2 if is_premium_active(info, uid) else 1))
 
 
 def eg_move_speed(sp: float) -> float:
-    """Dunyo birligi/soniya — mijozda ham aynan shu formula."""
-    return 2.6 + 0.17 * sp
+    """Dunyo birligi/soniya — mijozda ham aynan shu formula (tezlik katta bo'lgani uchun logarifmik)."""
+    import math as _m
+    return min(14.0, 3.5 + 1.5 * _m.log10(max(1.0, sp) + 1))
 
 
 def eg_farm_cd(info: dict, lv: int) -> int:
     return max(5, int((30 + 25 * lv) * int(info["eg_cfg"].get("farm_cd", 100)) / 100))
 
 
-def eg_farm_upcost(u: dict) -> int:
-    return int(120 * (1.45 ** (int(u.get("speed", 1)) - 1)))
+def eg_farm_price(info: dict) -> int:
+    return max(1, int(info["eg_cfg"].get("spd_cost", 2)))
 
 
 def eg_farm_view(info: dict, uid, u: dict, now=None) -> dict:
@@ -18178,7 +18178,7 @@ def eg_farm_view(info: dict, uid, u: dict, now=None) -> dict:
         u["carry"] = c = None
     return {
         "ready_in": [max(0, int(field.get(str(i), {}).get("ready_at", 0) - now + 0.999)) for i, *_ in EG_FARM],
-        "speed": eg_farm_speed(info, uid, u), "speed_lvl": int(u["speed"]), "up_cost": eg_farm_upcost(u) if u["speed"] < EG_FARM_MAXLVL else 0,
+        "speed": eg_farm_speed(info, uid, u), "base": int(u["spd"]), "price": eg_farm_price(info),
         "carry": c["egg"] if c else None, "stun_left": max(0, round(u["stun"] - now, 1)), "stolen": u["stolen"],
     }
 
@@ -18232,8 +18232,8 @@ def eg_farm_deposit(info: dict, uid, u: dict, now=None):
         return ("err", "no_carry")
     ch = EG_FARM[c["i"]]
     d = ((ch[2] - EG_FARM_HOME["x"]) ** 2 + (ch[3] - EG_FARM_HOME["z"]) ** 2) ** 0.5
-    v = eg_move_speed(eg_farm_speed(info, uid, u)) * 1.3
-    if now - c["t"] < max(0.0, (d - 5) / v - 1.0):
+    v = eg_move_speed(eg_farm_speed(info, uid, u)) * 1.35
+    if now - c["t"] < max(0.0, (d - 6) / v - 1.0):
         return ("err", "too_fast")
     u["eggs"][c["egg"]] = int(u["eggs"].get(c["egg"], 0)) + 1
     u["carry"] = None
@@ -18242,16 +18242,21 @@ def eg_farm_deposit(info: dict, uid, u: dict, now=None):
     return ("ok", c["egg"])
 
 
-def eg_farm_upgrade(info: dict, uid, u: dict):
+def eg_farm_upgrade(info: dict, uid, u: dict, n=1):
+    """n — sotib olinadigan tezlik; n<=0 → hamyonga yetgancha."""
     eg_farm_u(u)
-    if u["speed"] >= EG_FARM_MAXLVL:
+    price = eg_farm_price(info)
+    room = EG_FARM_MAXSPD - int(u["spd"])
+    if room <= 0:
         return ("err", "max")
-    cost = eg_farm_upcost(u)
-    if u["coins"] < cost:
+    if n <= 0:
+        n = int(u["coins"]) // price
+    n = min(int(n), room)
+    if n <= 0 or int(u["coins"]) < n * price:
         return ("err", "no_coins")
-    u["coins"] -= cost
-    u["speed"] += 1
-    return ("ok", u["speed"])
+    u["coins"] -= n * price
+    u["spd"] = int(u["spd"]) + n
+    return ("ok", n)
 
 
 def eg_pet_line(pk: str, n: int = 0) -> str:
@@ -26909,7 +26914,7 @@ def eg_catalog() -> dict:
                   "pets": [{"pk": p, "pct": round(w * 100 / tot[k], 1)} for p, w in e["pets"]]} for k, e in EG_EGGS.items()],
         "pets": {k: {"name": p["name"], "emoji": p["emoji"], "rar": p["rar"], "inc": p["inc"], "sell": eg_sell_price(k)} for k, p in EG_PETS.items()},
         "rar": {k: [v[0], v[1]] for k, v in EG_RARITY.items()},
-        "farm": {"chickens": [{"i": i, "lv": lv, "x": x, "z": z, "req": eg_farm_req(lv), "egg": EG_FARM_EGG[lv]} for i, lv, x, z in EG_FARM], "home": EG_FARM_HOME, "hold": EG_FARM_HOLD},
+        "farm": {"chickens": [{"i": i, "lv": lv, "x": x, "z": z, "req": eg_farm_req(lv), "egg": EG_FARM_EGG[lv]} for i, lv, x, z in EG_FARM], "home": EG_FARM_HOME, "field": EG_FARM_FIELD, "hold": EG_FARM_HOLD},
     }
 
 
@@ -27091,7 +27096,14 @@ async def egg_act_api(request):
             res = {"egg": r[1], "view": eg_farm_view(info, uid, u, now)}
             return done()
         if a == "farm_upgrade":
-            r = eg_farm_upgrade(info, uid, u)
+            try:
+                nn = body.get("n", 1)
+                nn = -1 if nn == "max" else int(nn)
+            except (TypeError, ValueError):
+                return _pub_err("bad_value")
+            if nn > EG_FARM_MAXSPD:
+                return _pub_err("bad_value")
+            r = eg_farm_upgrade(info, uid, u, nn)
             if r[0] != "ok":
                 return _pub_err("farm_" + r[1], 402 if r[1] == "no_coins" else 409)
             res = eg_farm_view(info, uid, u, now)
@@ -27255,6 +27267,15 @@ img.pi{width:100%;max-width:84px;height:auto;display:block;margin:0 auto;pointer
 .fbtn.off{background:rgba(0,0,0,.5);color:#ddd;border-color:#bbb}.fbtn.go{background:#ff9d1a;animation:pulse 1s infinite}
 @keyframes pulse{50%{transform:scale(1.07)}}
 .fmsg{position:absolute;left:10px;right:10px;top:56px;text-align:center;background:rgba(0,0,0,.7);border-radius:12px;padding:8px;font-weight:800;font-size:14px;z-index:4}
+#fCv{touch-action:none}
+.fmap{position:absolute;right:8px;top:72px;width:46px;height:92px;border-radius:8px;border:2px solid rgba(255,255,255,.65);z-index:2;pointer-events:none}
+.fico{position:absolute;right:8px;top:172px;width:46px;height:40px;border-radius:12px;border:2px solid rgba(255,255,255,.65);background:rgba(0,0,0,.45);color:#fff;font-size:20px;z-index:3;padding:0}
+.fsh{position:absolute;left:0;right:0;top:0;bottom:0;background:rgba(18,14,70,.96);z-index:6;overflow:auto;padding:12px 12px 20px;-webkit-overflow-scrolling:touch;touch-action:pan-y}
+.fsht{display:flex;justify-content:space-between;align-items:center;font-size:17px;margin-bottom:8px}.fx{background:rgba(255,255,255,.15);border:0;color:#fff;border-radius:10px;width:36px;height:36px;font-size:16px}
+.fsr{background:rgba(0,0,0,.28);border-radius:12px;padding:10px;margin:8px 0;font-size:14px}
+.fgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+.fb{border:0;border-radius:12px;padding:9px 6px;background:linear-gradient(#ffd23f,#ff9d1a);color:#3a2200;font:inherit;font-weight:900;font-size:15px;box-shadow:0 3px 0 #b37d00;display:flex;flex-direction:column;align-items:center;gap:2px}
+.fb span{font-size:12px;font-weight:800}.fb.wide{grid-column:1/3;width:100%}.fb.off{filter:grayscale(1);opacity:.5}
 .err{text-align:center;padding:40px 16px}.err .big{font-size:70px}
 </style>
 </head>
@@ -27959,18 +27980,29 @@ function viewAdmin(m) {
     b.onclick = function () { var k = b.getAttribute("data-cs"), inp = m.querySelector('[data-ck="' + k + '"]'); act({ a: "admin_cfg", key: k, value: inp.value }); };
   });
 }
-// ---------- 🐔 DALA: tuxum o'g'irlash o'yini ----------
-var FM = null;
+// ---------- 🐔 DALA: tuxum o'g'irlash o'yini (1:2 maydon, PUBG kabi kamera) ----------
+var FM = null, FP = null;
 var KEYS = {};
 window.addEventListener("keydown", function (e) { KEYS[e.key.toLowerCase()] = true; });
 window.addEventListener("keyup", function (e) { KEYS[e.key.toLowerCase()] = false; });
+var FKINDS = ["common", "rare", "epic", "legend"], FICON = { common: "🥚", rare: "🪺", epic: "🔮", legend: "👑" };
+function fmtS(n) {
+  n = Math.floor(n || 0);
+  var U = [[1e12, "T"], [1e9, "B"], [1e6, "M"], [1e3, "K"]];
+  for (var i = 0; i < U.length; i++) if (n >= U[i][0]) { var x = n / U[i][0]; return (x >= 100 ? Math.round(x) : Math.round(x * 10) / 10) + U[i][1]; }
+  return String(n);
+}
+function fMoveSpeed(sp) { return Math.min(14, 3.5 + 1.5 * Math.log(Math.max(1, sp) + 1) / Math.LN10); }
 function viewFarm(m) {
   FM = null;
-  m.innerHTML = '<div class="fm" id="fm"><canvas id="fCv"></canvas><div class="fhud tl" id="fHudL"></div><div class="fhud tr" id="fHudR"></div>' +
-    '<div class="joy" id="fJoy"><div class="knob" id="fKnob"></div></div><button class="fbtn" id="fBtn"></button><div class="fmsg" id="fMsg" hidden></div></div>';
+  m.innerHTML = '<div class="fm" id="fm"><canvas id="fCv"></canvas>' +
+    '<div class="fhud tl" id="fHudL"><div>⚡ <b id="fSp">0</b> <button class="btn sm" id="fUp">⬆ Tezlik</button></div><div class="mu" id="fNx"></div></div>' +
+    '<div class="fhud tr" id="fHudR"></div><canvas class="fmap" id="fMap" width="46" height="92"></canvas><button class="fico" id="fOv">🔭</button>' +
+    '<div class="joy" id="fJoy"><div class="knob" id="fKnob"></div></div><button class="fbtn" id="fBtn"></button><div class="fmsg" id="fMsg" hidden></div><div class="fsh" id="fSh" hidden></div></div>';
   if (!has3d() || !CAT.farm) { m.innerHTML = '<div class="err"><div class="big">🐔</div><p class="mu">3D o\'yin bu qurilmada ishlamaydi. «Tuxum» bo\'limidan foydalaning.</p></div>'; return; }
   var box = $("fm"), top = box.getBoundingClientRect().top;
   box.style.height = Math.max(320, (window.innerHeight || 700) - top - 96) + "px";
+  try { tg && tg.disableVerticalSwipes && tg.disableVerticalSwipes(); } catch (e) {}
   startFarm();
 }
 function B3(c, s, col, x) { var p = { type: "box", c: c, s: s, col: col }; if (x) for (var k in x) p[k] = x[k]; return p; }
@@ -27989,7 +28021,7 @@ function makeHuman(uid) {
 }
 function makeChickenModel(lv) {
   var body = lv >= 7 ? [255, 205, 60] : (lv >= 5 ? [170, 210, 255] : (lv >= 3 ? [255, 236, 150] : [250, 250, 250])), comb = lv >= 7 ? [255, 90, 40] : [235, 60, 60], OR = [250, 160, 40];
-  var awake = function (o) { return o.awake ? 1 : 0; }, asleep = function (o) { return o.awake ? 0 : 1; };
+  var awake = function (t, o) { return o.awake ? 1 : 0; }, asleep = function (t, o) { return o.awake ? 0 : 1; };
   var P = [
     B3([0, 0.62, 0], [0.95, 0.8, 1.05], body), B3([0, 0.55, -0.62], [0.4, 0.5, 0.25], body), B3([-0.52, 0.62, 0], [0.12, 0.5, 0.7], [body[0] - 25, body[1] - 25, body[2] - 25]), B3([0.52, 0.62, 0], [0.12, 0.5, 0.7], [body[0] - 25, body[1] - 25, body[2] - 25]),
     B3([0, 1.12, 0.52], [0.55, 0.52, 0.5], body, { anim: function (t, o) { return { o: [0, o.awake ? Math.abs(Math.sin(t / 220)) * -0.05 : -0.22, o.awake ? 0 : 0.05] }; } }),
@@ -28002,61 +28034,98 @@ function makeChickenModel(lv) {
   if (lv >= 7) P.push(B3([0, 1.85, 0.52], [0.5, 0.14, 0.3], [255, 215, 60], { emit: 0.3 }), B3([-0.18, 2.0, 0.52], [0.1, 0.18, 0.1], [255, 215, 60]), B3([0, 2.04, 0.52], [0.1, 0.22, 0.1], [255, 215, 60]), B3([0.18, 2.0, 0.52], [0.1, 0.18, 0.1], [255, 215, 60]));
   return { parts: P, shadow: { y: 0, r: 0.9 }, awake: false };
 }
+var FW = { w: 32, d: 64 };
 function buildFarmWorld(sc, uid) {
-  var W = { ch: [], pens: [] }, i, x, z;
-  var gd = { parts: [], cullR: 19 };
-  for (x = -24; x <= 24; x += 2) for (z = -26; z <= 24; z += 2) {
-    var chk = ((x / 2 + z / 2) & 1) === 0, col;
-    var inHome = Math.abs(x) <= 6 && z >= 14 && z <= 20, path = Math.abs(x) <= 1 && z <= 13 && z >= -26;
-    if (inHome) col = chk ? [86, 190, 255] : [64, 160, 235]; else if (path) col = chk ? [214, 178, 120] : [200, 164, 106]; else col = chk ? [112, 196, 92] : [100, 182, 80];
+  var W = { ch: [], cull: [], stands: [], pets: {} }, i, x, z, hm = CAT.farm.home;
+  FW = CAT.farm.field || FW;
+  var HX = FW.w / 2, HZ = FW.d / 2;
+  var CL = function (o, r) { o.cullR = r; W.cull.push(o); return o; };
+  var gd = CL({ parts: [] }, 26);
+  for (x = -HX + 1; x < HX; x += 2) for (z = -HZ + 1; z < HZ; z += 2) {
+    var chk = (((x - 1) / 2 + (z - 1) / 2) & 1) === 0, col;
+    var inH = Math.abs(x - hm.x) <= hm.w / 2 && Math.abs(z - hm.z) <= hm.d / 2, path = Math.abs(x) <= 3 && z <= hm.z - hm.d / 2;
+    if (inH) col = chk ? [86, 190, 255] : [64, 160, 235]; else if (path) col = chk ? [214, 178, 120] : [200, 164, 106]; else col = chk ? [112, 196, 92] : [100, 182, 80];
     gd.parts.push({ type: "quad", c: [x, 0, z], s: [2, 2], col: col, under: true });
   }
   sc.add(gd);
-  // uy: ko'k maydon chegarasi + uy binosi
-  var hz = { parts: [], cullR: 24 };
-  [[-7, 17, 0.3, 7], [7, 17, 0.3, 7]].forEach(function (f) { hz.parts.push(B3([f[0], 0.35, f[1]], [f[2], 0.7, f[3] + 0.2], [180, 130, 70])); });
-  hz.parts.push(B3([0, 0.35, 20.2], [14.3, 0.7, 0.3], [180, 130, 70]));
-  for (x = -6; x <= 6; x += 3) hz.parts.push(B3([x, 0.5, 13.4], [0.35, 1.0, 0.35], [235, 200, 60], { emit: 0.4 }));
-  hz.parts.push(B3([-10.5, 1.3, 17], [4, 2.6, 4], [240, 225, 190]), B3([-10.5, 3.0, 17], [4.6, 0.5, 4.6], [200, 60, 60]), B3([-10.5, 3.5, 17], [3.4, 0.5, 3.4], [214, 74, 70]), B3([-10.5, 4.0, 17], [2.2, 0.5, 2.2], [226, 90, 80]), B3([-8.45, 0.95, 17], [0.1, 1.9, 1.0], [110, 70, 40]), B3([-8.45, 1.6, 15.7], [0.1, 0.8, 0.8], [120, 200, 255], { emit: 0.3 }));
+  // butun maydonni o'rab turgan to'siq
+  var fe = CL({ parts: [] }, 26), WD = [170, 118, 64], seg = 4;
+  for (x = -HX + seg / 2; x < HX; x += seg) { fe.parts.push(B3([x, 0.45, -HZ - 0.2], [seg - 0.1, 0.7, 0.18], WD), B3([x, 0.45, HZ + 0.2], [seg - 0.1, 0.7, 0.18], WD)); }
+  for (z = -HZ + seg / 2; z < HZ; z += seg) { fe.parts.push(B3([-HX - 0.2, 0.45, z], [0.18, 0.7, seg - 0.1], WD), B3([HX + 0.2, 0.45, z], [0.18, 0.7, seg - 0.1], WD)); }
+  for (x = -HX; x <= HX; x += seg) { fe.parts.push(B3([x, 0.6, -HZ - 0.2], [0.34, 1.2, 0.34], [140, 92, 48]), B3([x, 0.6, HZ + 0.2], [0.34, 1.2, 0.34], [140, 92, 48])); }
+  for (z = -HZ + seg; z < HZ; z += seg) { fe.parts.push(B3([-HX - 0.2, 0.6, z], [0.34, 1.2, 0.34], [140, 92, 48]), B3([HX + 0.2, 0.6, z], [0.34, 1.2, 0.34], [140, 92, 48])); }
+  sc.add(fe);
+  // uy zonasi: sariq chegara ustunlari, uy binosi
+  var hz = CL({ parts: [] }, 30), hx0 = hm.x - hm.w / 2, hx1 = hm.x + hm.w / 2, hz0 = hm.z - hm.d / 2;
+  for (x = hx0; x <= hx1; x += 3) hz.parts.push(B3([x, 0.45, hz0], [0.35, 0.9, 0.35], [235, 200, 60], { emit: 0.4 }));
+  var hbz = hm.z + hm.d / 2 - 1.7, hbx = hm.x + hm.w / 2 - 3.4;
+  hz.parts.push(B3([hbx, 1.2, hbz], [6, 2.4, 2.6], [240, 225, 190]), B3([hbx, 2.65, hbz], [6.8, 0.5, 3.4], [200, 60, 60]), B3([hbx, 3.15, hbz], [5.2, 0.5, 2.8], [214, 74, 70]), B3([hbx, 3.65, hbz], [3.6, 0.5, 2.2], [226, 90, 80]),
+    B3([hbx, 0.9, hbz - 1.35], [1.1, 1.8, 0.1], [110, 70, 40]), B3([hbx - 2.0, 1.5, hbz - 1.35], [0.9, 0.9, 0.1], [120, 200, 255], { emit: 0.3 }), B3([hbx + 2.0, 1.5, hbz - 1.35], [0.9, 0.9, 0.1], [120, 200, 255], { emit: 0.3 }));
   sc.add(hz);
-  // daraxtlar
-  var tr = { parts: [], cullR: 26 }, tp = [];
-  for (x = -22; x <= 22; x += 4) { tp.push([x, -25]); tp.push([x, 23]); }
-  for (z = -22; z <= 20; z += 4) { tp.push([-23, z]); tp.push([23, z]); }
-  tp.push([-17, 11], [17, 11], [-18, -4], [18, -3], [-10, -7], [11, -6], [-3, -16], [4, -21]);
-  tp.forEach(function (p, k) { var h = 2.2 + (k % 3) * 0.6; tr.parts.push(B3([p[0], h / 2, p[1]], [0.7, h, 0.7], [120, 80, 46]), B3([p[0], h + 0.8, p[1]], [2.4, 1.6, 2.4], [60, 150, 70]), B3([p[0], h + 2.0, p[1]], [1.5, 1.0, 1.5], [78, 172, 84])); });
+  // daraxtlar va gullar
+  var tr = CL({ parts: [] }, 30), tp = [];
+  for (x = -HX + 2; x <= HX - 2; x += 6) { tp.push([x, -HZ - 3.2]); tp.push([x, HZ + 3.2]); }
+  for (z = -HZ + 3; z <= HZ - 3; z += 6) { tp.push([-HX - 3.2, z]); tp.push([HX + 3.2, z]); }
+  tp.push([-12, -20], [12, -9], [-11, 3], [11, 14]);
+  tp.forEach(function (p, k) { var h = 2.0 + (k % 3) * 0.5; tr.parts.push(B3([p[0], h / 2, p[1]], [0.7, h, 0.7], [120, 80, 46]), B3([p[0], h + 0.7, p[1]], [2.2, 1.4, 2.2], [60, 150, 70]), B3([p[0], h + 1.8, p[1]], [1.4, 0.9, 1.4], [78, 172, 84])); });
   sc.add(tr);
+  var fl = CL({ parts: [] }, 26), FC = [[255, 90, 120], [255, 214, 70], [255, 255, 255], [170, 120, 255]], sd = 7;
+  for (i = 0; i < 44; i++) { sd = (sd * 9301 + 49297) % 233280; var fx = (sd / 233280 - 0.5) * (FW.w - 3); sd = (sd * 9301 + 49297) % 233280; var fz = (sd / 233280 - 0.5) * (FW.d - 3); if (Math.abs(fx) < 4.2 || (fz > hm.z - hm.d / 2 - 1)) continue; fl.parts.push(B3([fx, 0.18, fz], [0.16, 0.36, 0.16], [60, 140, 60]), B3([fx, 0.44, fz], [0.34, 0.2, 0.34], FC[i % 4])); }
+  sc.add(fl);
   // tovuq uyalari
   CAT.farm.chickens.forEach(function (c, idx) {
-    var pen = { parts: [], pos: [c.x, 0, c.z], cullR: 20 }, s = 1.55;
+    var pen = CL({ parts: [], pos: [c.x, 0, c.z] }, 24), s = 1.55;
     pen.parts.push(B3([0, 0.06, 0], [2.6, 0.12, 2.6], [225, 190, 90], { under: false }));
-    [[-s, 0], [s, 0]].forEach(function (p) { pen.parts.push(B3([p[0], 0.3, p[1]], [0.14, 0.6, 3.2], [160, 110, 60])); });
-    [[0, -s]].forEach(function (p) { pen.parts.push(B3([p[0], 0.3, p[1]], [3.2, 0.6, 0.14], [160, 110, 60])); });
+    pen.parts.push(B3([-s, 0.3, 0], [0.14, 0.6, 3.2], [160, 110, 60]), B3([s, 0.3, 0], [0.14, 0.6, 3.2], [160, 110, 60]), B3([0, 0.3, -s], [3.2, 0.6, 0.14], [160, 110, 60]));
     sc.add(pen);
-    var ob = makeChickenModel(c.lv); ob.pos = [c.x, 0, c.z]; ob.rot = [0, 0, 0]; ob.sc = [1, 1, 1]; ob.cullR = 20; sc.add(ob);
-    var eg = G3M.makeEgg(c.egg, true); eg.sc = [0.3, 0.3, 0.3]; eg.pos = [c.x, 0.42, c.z + 1.05]; eg.cullR = 20; sc.add(eg);
-    W.ch.push({ c: c, ob: ob, eg: eg, kick: 0 });
+    var ob = CL(makeChickenModel(c.lv), 24), k = 1 + c.lv * 0.07; ob.pos = [c.x, 0, c.z]; ob.rot = [0, 0, 0]; ob.sc = [k, k, k]; sc.add(ob);
+    var eg = CL(G3M.makeEgg(c.egg, true), 24); eg.sc = [0.3, 0.3, 0.3]; eg.pos = [c.x, 0.42, c.z + 1.05]; sc.add(eg);
+    W.ch.push({ c: c, ob: ob, eg: eg, kick: 0, k: k });
   });
-  W.pl = sc.add(makeHuman(uid)); W.pl.pos = [0, 0, 15]; W.pl.rot = [0, Math.PI, 0];
+  // uydagi tuxum javonlari
+  FKINDS.forEach(function (kd, q) {
+    var sx = hm.x + (q - 1.5) * 3.4 - 2.2, sz = hm.z + 0.7;
+    var base = CL({ parts: [B3([0, 0.18, 0], [2.8, 0.36, 2.4], [170, 118, 64]), B3([0, 0.4, 0], [2.4, 0.1, 2.0], [225, 190, 90])], pos: [sx, 0, sz] }, 30); sc.add(base);
+    var eggs = [];
+    [[-0.5, 0.35], [0.5, 0.35], [0, -0.45]].forEach(function (p, j) { var e = CL(G3M.makeEgg(kd, true), 30); e.sc = [0.42, 0.42, 0.42]; e.pos = [sx + p[0], 0.82, sz + p[1]]; e.hidden = true; sc.add(e); eggs.push(e); });
+    W.stands.push({ kind: kd, x: sx, z: sz, eggs: eggs });
+  });
+  W.pl = sc.add(makeHuman(uid)); W.pl.pos = [0, 0, 23]; W.pl.rot = [0, Math.PI, 0];
   W.carry = sc.add(G3M.makeEgg("common", true)); W.carry.sc = [0.38, 0.38, 0.38]; W.carry.hidden = true;
   return W;
 }
 function farmCarryKey(key, W) { if (W.carryKey === key) return; W.carryKey = key; var sc = FM.sc, idx = sc.objs.indexOf(W.carry); var n = G3M.makeEgg(key || "common", true); n.sc = [0.38, 0.38, 0.38]; n.hidden = !key; sc.objs[idx] = n; W.carry = n; }
 function startFarm() {
   var cv = $("fCv"), sc = new G3.Scene(cv, { d: 21, pitch: 0.92, f: 1.35 });
+  sc.bg = function (ctx, w, h) { var g = ctx.createLinearGradient(0, 0, 0, h); g.addColorStop(0, "#5aa84e"); g.addColorStop(1, "#6fbf5c"); ctx.fillStyle = g; ctx.fillRect(0, 0, w, h); };
   var uid = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) ? tg.initDataUnsafe.user.id : 1;
-  var W = buildFarmWorld(sc, uid);
-  FM = { cv: cv, sc: sc, W: W, P: { x: 0, z: 15 }, face: Math.PI, now0: performance.now(), last: performance.now(), joy: { x: 0, y: 0 }, hold: null, F: null, readyAt: [], carry: null, speed: ST.farm_speed || 10, stunUntil: 0, fly: null, depBusy: 0, syncAt: 0, near: -1, msgT: 0, parts: [] };
-  sc.cam.t = [0, 0.8, 15];
+  var W = buildFarmWorld(sc, uid), hm = CAT.farm.home;
+  var sp = FP || { x: hm.x, z: hm.z - 3, yaw: 0, face: Math.PI };
+  FM = { cv: cv, sc: sc, W: W, P: { x: sp.x, z: sp.z }, face: sp.face, yaw: sp.yaw, pitch: 0.92, dist: 21, over: false, pan: { x: sp.x, z: sp.z }, now0: performance.now(), last: performance.now(), joy: { x: 0, y: 0 }, hold: null, F: null, readyAt: [], carry: null, speed: ST.farm_speed || 10, stunUntil: 0, fly: null, depBusy: 0, syncAt: 0, near: -1, msgT: 0, parts: [], petsAt: 0, petInit: false, mapAt: 0, sheet: false };
+  sc.cam.t = [sp.x, 0.8, sp.z]; sc.cam.yaw = sp.yaw;
   var joy = $("fJoy"), knob = $("fKnob"), R = 52;
   var jp = function (ev) { var r = joy.getBoundingClientRect(), dx = ev.clientX - (r.left + r.width / 2), dy = ev.clientY - (r.top + r.height / 2), l = Math.sqrt(dx * dx + dy * dy) || 1, k = Math.min(1, l / R); FM.joy = { x: dx / l * k, y: dy / l * k }; knob.style.transform = "translate(" + (dx / l * k * R) + "px," + (dy / l * k * R) + "px)"; };
-  joy.onpointerdown = function (ev) { try { joy.setPointerCapture(ev.pointerId); } catch (e) {} FM.jOn = true; jp(ev); };
+  joy.onpointerdown = function (ev) { ev.preventDefault(); try { joy.setPointerCapture(ev.pointerId); } catch (e) {} FM.jOn = true; jp(ev); };
   joy.onpointermove = function (ev) { if (FM && FM.jOn) jp(ev); };
   var jend = function () { if (!FM) return; FM.jOn = false; FM.joy = { x: 0, y: 0 }; knob.style.transform = ""; };
   joy.onpointerup = jend; joy.onpointercancel = jend;
+  // PUBG kabi: ekranni surish — kamerani aylantirish; ikki barmoq — yaqinlashtirish
+  var ptr = {}, pd0 = 0, dist0 = 21;
+  var pdist = function () { var k = Object.keys(ptr); if (k.length < 2) return 0; var a = ptr[k[0]], b = ptr[k[1]]; return Math.sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y)) || 1; };
+  cv.onpointerdown = function (ev) { ev.preventDefault(); try { cv.setPointerCapture(ev.pointerId); } catch (e) {} ptr[ev.pointerId] = { x: ev.clientX, y: ev.clientY }; if (Object.keys(ptr).length === 2) { pd0 = pdist(); dist0 = FM.dist; } };
+  cv.onpointermove = function (ev) {
+    var p = ptr[ev.pointerId]; if (!p || !FM) return; var dx = ev.clientX - p.x, dy = ev.clientY - p.y; p.x = ev.clientX; p.y = ev.clientY;
+    if (Object.keys(ptr).length >= 2) { var dn = pdist(); if (dn && pd0) FM.dist = Math.max(12, Math.min(38, dist0 * pd0 / dn)); return; }
+    if (FM.over) { var k = FM.sc.cam.d / ((cv.clientHeight || 600) * 1.35), v = G3.rotV([-dx * k, 0, -dy * k * 1.3], 0, FM.yaw, 0); FM.pan.x = Math.max(-17, Math.min(17, FM.pan.x + v[0])); FM.pan.z = Math.max(-34, Math.min(34, FM.pan.z + v[2])); }
+    else { FM.yaw -= dx * 0.0075; FM.pitch = Math.max(0.5, Math.min(1.3, FM.pitch + dy * 0.004)); }
+  };
+  var pend = function (ev) { delete ptr[ev.pointerId]; };
+  cv.onpointerup = pend; cv.onpointercancel = pend;
+  cv.onwheel = function (ev) { ev.preventDefault(); FM.dist = Math.max(12, Math.min(38, FM.dist * (ev.deltaY > 0 ? 1.08 : 0.93))); };
+  $("fOv").onclick = function () { FM.over = !FM.over; FM.pan = { x: FM.P.x, z: FM.P.z }; if (FM.over) { FM.pitch0 = FM.pitch; farmMsg("🔭 Xarita: barmoq bilan suring", 2200); } else FM.pitch = FM.pitch0 || 0.92; };
   var btn = $("fBtn");
-  btn.onpointerdown = function (ev) { try { btn.setPointerCapture(ev.pointerId); } catch (e) {} farmPress(); };
-  btn.onpointerup = farmRelease; btn.onpointercancel = farmRelease;
+  btn.onpointerdown = function (ev) { ev.preventDefault(); farmPress(); };
+  $("fUp").onclick = function () { farmSheet(true); };
   farmSync(); kick();
 }
 function farmMsg(t, ms) { var e = $("fMsg"); if (!e) return; e.textContent = t; e.hidden = false; FM && (FM.msgT = performance.now() + (ms || 2600)); }
@@ -28071,19 +28140,23 @@ function applyView(v) {
   ST.farm_speed = v.speed;
 }
 function inHome(P) { var h = CAT.farm.home; return Math.abs(P.x - h.x) <= h.w / 2 && Math.abs(P.z - h.z) <= h.d / 2; }
-async function farmPress() {
-  var f = FM; if (!f || f.hold || f.fly) return; var now = performance.now();
-  if (now < f.stunUntil || f.carry || f.near < 0) { if (f.carry) farmMsg("🏠 Avval tuxumni uyga olib boring!"); return; }
-  var i = f.near; f.hold = { i: i, t0: 0, ok: false, cancel: false }; var h = f.hold;
-  try { await api("POST", "act", { a: "farm_begin", i: i }); } catch (e) {
-    f.hold = null; var c = e.message;
-    if (c === "farm_gone") { farmMsg("😴 Tuxum allaqachon olingan"); farmSync(); } else if (c === "farm_stun") farmMsg("😵 Hali o'zingizga kelmadingiz"); else if (c === "farm_carrying") farmMsg("🏠 Avval tuxumni uyga olib boring!"); else fail(e);
-    return;
+function eggTotal() { var s = 0, e = ST.eggs || {}; for (var k in e) s += e[k]; return s; }
+// OLISH: bir marta bosish yetarli — 3 soniya o'zi to'ladi (barmoqni ushlab turish shart emas)
+function farmPress() {
+  var f = FM; if (!f || f.hold || f.fly || f.sheet) return; var now = performance.now();
+  if (f.carry) { farmMsg("🏠 Avval tuxumni uyga olib boring!"); return; }
+  if (now < f.stunUntil) return;
+  if (f.near < 0) {
+    if (inHome(f.P) && eggTotal() > 0) { var st = farmStand(); if (st) farmOpen(st.kind); return; }
+    farmMsg("🐔 Tovuqqa yaqinlashing"); return;
   }
-  if (f.hold !== h) return;
-  h.ok = true; h.t0 = performance.now(); hap("medium");
+  var i = f.near; var h = f.hold = { i: i, t0: now, begun: false, done: false };
+  hap("medium");
+  h.p = api("POST", "act", { a: "farm_begin", i: i }).then(function () { h.begun = true; }, function (e) {
+    if (FM && FM.hold === h) FM.hold = null; var c = e.message;
+    if (c === "farm_gone") { farmMsg("😴 Tuxum allaqachon olingan"); farmSync(); } else if (c === "farm_stun") farmMsg("😵 Hali o'zingizga kelmadingiz"); else if (c === "farm_carrying") farmMsg("🏠 Avval tuxumni uyga olib boring!"); else fail(e);
+  });
 }
-function farmRelease() { var f = FM; if (f && f.hold && !f.hold.done) { f.hold = null; } }
 async function farmFinish(i) {
   var f = FM; if (!f) return; var h = f.hold; if (h) h.done = true;
   try {
@@ -28095,113 +28168,198 @@ async function farmFinish(i) {
   } catch (e) { FM && (FM.hold = null); if (e.message === "farm_too_fast" || e.message === "farm_no_steal") farmMsg("Qayta urinib ko'ring"); else fail(e); }
 }
 function farmKick(i, req) {
-  var f = FM, hm = CAT.farm.home, tx = hm.x + (Math.random() - 0.5) * 6, tz = hm.z + (Math.random() - 0.5) * 3;
+  var f = FM, hm = CAT.farm.home, tx = hm.x + (Math.random() - 0.5) * (hm.w - 6), tz = hm.z - hm.d / 2 + 1.2 + Math.random() * 3;
+  var dd = Math.sqrt((tx - f.P.x) * (tx - f.P.x) + (tz - f.P.z) * (tz - f.P.z));
   f.W.ch[i].kick = performance.now();
-  f.fly = { t0: performance.now(), fx: f.P.x, fz: f.P.z, tx: tx, tz: tz, dur: 1300 };
-  farmMsg("💥 Tovuq sizni tepdi! Tezlik yetmadi: kerak ⚡" + req + ", sizda ⚡" + f.speed, 3600);
+  f.fly = { t0: performance.now(), fx: f.P.x, fz: f.P.z, tx: tx, tz: tz, dur: Math.min(2600, 1100 + dd * 30), hh: Math.min(16, 5 + dd * 0.22) };
+  farmMsg("💥 Tovuq sizni tepdi! Tezlik yetmadi: kerak ⚡" + fmtS(req) + ", sizda ⚡" + fmtS(f.speed), 3800);
 }
 async function farmDeposit() {
   var f = FM; if (!f || f.depBusy > performance.now()) return; f.depBusy = performance.now() + 1500;
   try {
     var j = await api("POST", "act", { a: "farm_deposit" }); if (!FM) return;
     applyView(j.result.view); setState(j.state); hap("ok");
-    farmMsg("🏠 Tuxum yetkazildi! «Tuxum» bo'limida bepul oching 🥚", 3600);
-    FM.sc.burst([FM.W.pl.pos[0], 2, FM.W.pl.pos[2]], ["#ffd23f", "#8fe9ff", "#fff"], 40);
+    farmMsg("🏠 Tuxum uyga yetkazildi! Uyda «OCHISH» tugmasini bosing", 3600);
+    var st = FM.W.stands[Math.max(0, FKINDS.indexOf(j.result.egg))]; FM.sc.burst([st.x, 1.4, st.z], ["#ffd23f", "#8fe9ff", "#fff"], 40);
   } catch (e) { if (e.message !== "farm_too_fast" && e.message !== "farm_no_carry") fail(e); else if (e.message === "farm_no_carry") farmSync(); }
 }
-async function farmUpgrade() {
-  try { var j = await api("POST", "act", { a: "farm_upgrade" }); applyView(j.result); setState(j.state); hap("ok"); farmMsg("⚡ Tezlik oshdi: " + j.result.speed, 1800); } catch (e) { if (e.message === "farm_no_coins") toast("Tanga yetarli emas 🪙"); else if (e.message === "farm_max") toast("Maksimal daraja"); else fail(e); }
+function farmStand() {
+  var f = FM, best = null, bd = 1e9; if (!f) return null;
+  f.W.stands.forEach(function (s) { if (!(ST.eggs || {})[s.kind]) return; var d = (s.x - f.P.x) * (s.x - f.P.x) + (s.z - f.P.z) * (s.z - f.P.z); if (d < bd) { bd = d; best = s; } });
+  return best;
+}
+function farmOpen(key) {
+  var idx = -1; CAT.eggs.forEach(function (e, i) { if (e.key === key) idx = i; }); if (idx < 0 || busy) return;
+  eggIdx = idx; hap("medium");
+  hatch(1).then(function () { if (FM) FM.petsAt = 0; });
+}
+// ---- tezlik do'koni ----
+function farmNeed() {
+  var f = FM, v = f.F; if (!v) return null; var mult = v.speed / Math.max(1, v.base), nx = null;
+  CAT.farm.chickens.forEach(function (c) { if (!nx && c.req > v.speed) nx = c; });
+  if (!nx) return { nx: null, n: 0 };
+  return { nx: nx, n: Math.max(1, Math.ceil(nx.req / mult) - v.base + 1) };
+}
+function farmSheet(open) {
+  var f = FM, sh = $("fSh"); if (!f || !sh) return; if (open === true) f.sheet = true; if (open === false) f.sheet = false;
+  if (!f.sheet) { sh.hidden = true; return; }
+  var v = f.F || { speed: f.speed, base: f.speed, price: 2 }, nd = farmNeed(), price = v.price, co = ST.coins;
+  var amts = [10, 100, 1000, 10000, 100000, 1000000, 10000000, 100000000];
+  var btn = function (n, lab) { var cost = n * price, ok = co >= cost; return '<button class="fb' + (ok ? "" : " off") + '" data-n="' + n + '"><b>' + lab + "</b><span>🪙 " + fmtS(cost) + "</span></button>"; };
+  var h = '<div class="fsht"><b>⚡ Tezlikni oshirish</b><button class="fx" id="fShX">✕</button></div>' +
+    '<div class="fsr">Tezligingiz: <b>⚡' + fmtS(v.speed) + '</b><br><span class="mu">1 tezlik = 🪙 ' + price + " · balans 🪙 " + fmtS(co) + "</span></div>";
+  if (nd && nd.nx) h += '<div class="fsr">Keyingi tovuq: <b>⚡' + fmtS(nd.nx.req) + "</b><br>" + btn(nd.n, "Keyingi tovuqgacha +" + fmtS(nd.n)).replace('class="fb', 'class="fb wide') + "</div>";
+  else h += '<div class="fsr">🏆 Hamma tovuqlarni o\'g\'irlay olasiz!</div>';
+  h += '<div class="fgrid">' + amts.map(function (n) { return btn(n, "+" + fmtS(n)); }).join("") + '<button class="fb wide' + (co >= price ? "" : " off") + '" data-n="max"><b>MAX</b><span>🪙 ' + fmtS(Math.floor(co / price) * price) + " → +" + fmtS(Math.floor(co / price)) + "</span></button></div>";
+  sh.innerHTML = h; sh.hidden = false;
+  $("fShX").onclick = function () { farmSheet(false); };
+  Array.prototype.forEach.call(sh.querySelectorAll(".fb"), function (b) { b.onclick = function () { farmBuy(b.getAttribute("data-n")); }; });
+}
+async function farmBuy(n) {
+  try { var j = await api("POST", "act", { a: "farm_upgrade", n: n === "max" ? "max" : Number(n) }); applyView(j.result); setState(j.state); hap("ok"); farmMsg("⚡ Tezlik: " + fmtS(j.result.speed), 1800); farmSheet(); }
+  catch (e) { if (e.message === "farm_no_coins") toast("Tanga yetarli emas 🪙"); else if (e.message === "farm_max") toast("Maksimal tezlik"); else fail(e); }
 }
 function farmHud() {
-  var f = FM; if (!f || !f.F) return;
-  var l = $("fHudL"), r = $("fHudR"); if (!l) return;
-  var v = f.F, inv = ST.eggs || {}, ic = { common: "🥚", rare: "🪺", epic: "🔮", legend: "👑" };
-  l.innerHTML = "⚡ Tezlik: <b>" + v.speed + "</b> <span class=\"mu\">(Lv" + v.speed_lvl + ")</span>" + (v.up_cost ? '<button class="btn sm' + (ST.coins >= v.up_cost ? "" : " off") + '" id="fUp">⬆ 🪙' + fmt(v.up_cost) + "</button>" : "");
-  var iv = Object.keys(inv).map(function (k) { return ic[k] + "×" + inv[k]; }).join(" ");
-  r.innerHTML = (f.carry ? "🥚 Tuxum ko'tarilgan!<br><span class=\"mu\">Uyga olib boring 🏠</span>" : "🎒 " + (iv || "tuxum yo'q"));
-  if ($("fUp")) $("fUp").onpointerdown = function (ev) { ev.stopPropagation(); farmUpgrade(); };
+  var f = FM; if (!f) return; var v = f.F || { speed: f.speed };
+  var sp = $("fSp"); if (!sp) return; sp.textContent = fmtS(v.speed);
+  var nd = f.F ? farmNeed() : null; $("fNx").textContent = nd && nd.nx ? "Keyingi tovuq: ⚡" + fmtS(nd.nx.req) : (f.F ? "🏆 Hamma tovuq ochiq" : "");
+  var inv = ST.eggs || {}, iv = FKINDS.filter(function (k) { return inv[k]; }).map(function (k) { return FICON[k] + "×" + inv[k]; }).join(" ");
+  $("fHudR").innerHTML = (f.carry ? "🥚 Tuxum ko'tarilgan!<br><span class=\"mu\">Uyga olib boring 🏠</span>" : "🎒 " + (iv || "tuxum yo'q"));
+}
+function farmPets() {
+  var f = FM, W = f.W, sc = f.sc, hm = CAT.farm.home, have = ST.pets || {}, k;
+  for (k in have) if (have[k] > 0 && !W.pets[k] && CAT.pets[k]) {
+    var ob = G3M.makePet(k); ob.sc = [0.62, 0.62, 0.62]; var fresh = f.petInit, st = W.stands[2];
+    ob.pos = fresh ? [st.x, 0.65, st.z - 1.6] : [hm.x + (Math.random() - 0.5) * (hm.w - 3), 0.65, hm.z - hm.d / 2 + 1 + Math.random() * 3.6]; ob.rot = [0, Math.random() * 6, 0]; ob.cullR = 40; sc.add(ob);
+    W.pets[k] = { ob: ob, tx: ob.pos[0], tz: ob.pos[2], wait: 0, born: fresh ? performance.now() : 0, k: k };
+    if (fresh) { sc.burst([ob.pos[0], 1.5, ob.pos[2]], ["#ffd23f", "#fff", "#ff8fd8", "#8fe9ff"], 44); farmMsg("🎉 Yangi hayvon uyda: " + CAT.pets[k].emoji + " " + CAT.pets[k].name, 3200); }
+  }
+  for (k in W.pets) if (!(have[k] > 0)) { var ix = sc.objs.indexOf(W.pets[k].ob); if (ix >= 0) sc.objs.splice(ix, 1); delete W.pets[k]; }
+  f.petInit = true;
 }
 function fmtT(ms) { var s = Math.max(0, Math.ceil(ms / 1000)); return Math.floor(s / 60) + ":" + (s % 60 < 10 ? "0" : "") + (s % 60); }
+function farmMap(now) {
+  var f = FM, cv = $("fMap"); if (!cv) return; var c = cv.getContext("2d"), w = cv.width, h = cv.height, hm = CAT.farm.home;
+  var X = function (x) { return (x + FW.w / 2) / FW.w * w; }, Z = function (z) { return (z + FW.d / 2) / FW.d * h; };
+  c.clearRect(0, 0, w, h); c.fillStyle = "#5fb552"; c.fillRect(0, 0, w, h);
+  c.fillStyle = "#4aa6e8"; c.fillRect(X(hm.x - hm.w / 2), Z(hm.z - hm.d / 2), hm.w / FW.w * w, hm.d / FW.d * h);
+  CAT.farm.chickens.forEach(function (ch, i) { var asleep = (f.readyAt[i] || 0) <= now; c.fillStyle = !asleep ? "#888" : (f.speed >= ch.req ? "#fff" : "#ff5a5a"); c.beginPath(); c.arc(X(ch.x), Z(ch.z), 3, 0, 7); c.fill(); });
+  c.fillStyle = "#ffd23f"; c.strokeStyle = "#000"; c.lineWidth = 1; c.beginPath(); c.arc(X(f.P.x), Z(f.P.z), 3.4, 0, 7); c.fill(); c.stroke();
+}
 function farmTick(now) {
-  var f = FM; if (!f || $("fCv") !== f.cv || tab !== "farm") { if (f && $("fCv") !== f.cv) FM = null; return false; }
-  var dt = Math.min(0.05, (now - f.last) / 1000); f.last = now; var W = f.W, P = f.P, sc = f.sc, cfg = CAT.farm;
-  if (now - f.syncAt > 3500) { f.syncAt = now + 99999; farmSync(); }
+  var f = FM; if (!f || $("fCv") !== f.cv || tab !== "farm") { if (f && $("fCv") !== f.cv) { FM = null; try { tg && tg.enableVerticalSwipes && tg.enableVerticalSwipes(); } catch (e) {} } return false; }
+  var dt = Math.min(0.05, (now - f.last) / 1000); f.last = now; var W = f.W, P = f.P, sc = f.sc, cfg = CAT.farm, hm = cfg.home, HX = FW.w / 2, HZ = FW.d / 2;
+  if (now - f.syncAt > 4000) { f.syncAt = now + 99999; farmSync(); }
   var stunned = now < f.stunUntil;
-  // harakat
+  // harakat (kameraga nisbatan)
   var jx = f.joy.x, jy = f.joy.y;
   if (KEYS["a"] || KEYS["arrowleft"]) jx -= 1; if (KEYS["d"] || KEYS["arrowright"]) jx += 1; if (KEYS["w"] || KEYS["arrowup"]) jy -= 1; if (KEYS["s"] || KEYS["arrowdown"]) jy += 1;
   var jl = Math.sqrt(jx * jx + jy * jy); if (jl > 1) { jx /= jl; jy /= jl; jl = 1; }
-  var moving = jl > 0.12 && !stunned && !f.fly, v = 2.6 + 0.17 * f.speed * (f.carry ? 0.92 : 1);
+  var moving = jl > 0.12 && !stunned && !f.fly, v = fMoveSpeed(f.speed) * (f.carry ? 0.92 : 1);
   if (f.fly) {
-    var k = Math.min(1, (now - f.fly.t0) / f.fly.dur), e = k;
-    P.x = f.fly.fx + (f.fly.tx - f.fly.fx) * e; P.z = f.fly.fz + (f.fly.tz - f.fly.fz) * e;
-    W.pl.pos = [P.x, Math.sin(k * Math.PI) * 6, P.z]; W.pl.rot = [k * 9, f.face + k * 12, k * 4];
+    var k = Math.min(1, (now - f.fly.t0) / f.fly.dur);
+    P.x = f.fly.fx + (f.fly.tx - f.fly.fx) * k; P.z = f.fly.fz + (f.fly.tz - f.fly.fz) * k;
+    W.pl.pos = [P.x, Math.sin(k * Math.PI) * f.fly.hh, P.z]; W.pl.rot = [k * 9, f.face + k * 12, k * 4];
     if (k >= 1) { f.fly = null; W.pl.rot = [0, f.face, 0]; farmMsg("😵 Hushingizga keling...", 2200); }
   } else {
     if (moving) {
-      var nx = P.x + jx * v * dt, nz = P.z + jy * v * dt;
-      for (var ci = 0; ci < cfg.chickens.length; ci++) { var c = cfg.chickens[ci], dx = nx - c.x, dz = nz - c.z, d2 = dx * dx + dz * dz; if (d2 < 1.9 * 1.9) { var d = Math.sqrt(d2) || 0.01; nx = c.x + dx / d * 1.9; nz = c.z + dz / d * 1.9; } }
-      P.x = Math.max(-21, Math.min(21, nx)); P.z = Math.max(-24, Math.min(22, nz));
-      var ta = Math.atan2(jx, jy), da = ta - f.face; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI; f.face += da * Math.min(1, dt * 14);
-      W.pl.ph += v * dt * 2.4;
+      var wv = G3.rotV([jx, 0, jy], 0, f.yaw, 0), wx = wv[0], wz = wv[2];
+      var nx = P.x + wx * v * dt, nz = P.z + wz * v * dt;
+      for (var ci = 0; ci < cfg.chickens.length; ci++) { var c = cfg.chickens[ci], dx = nx - c.x, dz = nz - c.z, d2 = dx * dx + dz * dz; if (d2 < 2.0 * 2.0) { var d = Math.sqrt(d2) || 0.01; nx = c.x + dx / d * 2.0; nz = c.z + dz / d * 2.0; } }
+      P.x = Math.max(-HX + 0.8, Math.min(HX - 0.8, nx)); P.z = Math.max(-HZ + 0.8, Math.min(HZ - 0.8, nz));
+      var ta = Math.atan2(wx, wz), da = ta - f.face; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI; f.face += da * Math.min(1, dt * 14);
+      W.pl.ph += v * dt * 1.5;
     }
     W.pl.mv += ((moving ? 1 : 0) - W.pl.mv) * Math.min(1, dt * 10);
     W.pl.pos = [P.x, Math.abs(Math.sin(W.pl.ph)) * 0.08 * W.pl.mv, P.z];
     W.pl.rot = stunned ? [0.2, f.face, 0.3 * Math.sin(now / 90)] : [0, f.face, 0];
   }
-  sc.cam.t[0] += (P.x - sc.cam.t[0]) * Math.min(1, dt * 7); sc.cam.t[2] += (P.z - sc.cam.t[2]) * Math.min(1, dt * 7);
+  // kamera
+  var dTarget = f.over ? 54 : f.dist, pTarget = f.over ? 1.22 : f.pitch, kk = Math.min(1, dt * (f.fly ? 10 : 7));
+  sc.cam.d += (dTarget - sc.cam.d) * Math.min(1, dt * 6); sc.cam.pitch += (pTarget - sc.cam.pitch) * Math.min(1, dt * 6); sc.cam.yaw = f.yaw;
+  var tx = f.over ? f.pan.x : P.x, tz = f.over ? f.pan.z : P.z;
+  sc.cam.t[0] += (tx - sc.cam.t[0]) * kk; sc.cam.t[2] += (tz - sc.cam.t[2]) * kk;
+  var cr = f.over ? 120 : Math.max(24, sc.cam.d * 1.25); for (var q0 = 0; q0 < W.cull.length; q0++) W.cull[q0].cullR = cr;
+  FP = { x: P.x, z: P.z, yaw: f.yaw, face: f.face };
   // uyga yetkazish
   if (f.carry && !f.fly && inHome(P)) farmDeposit();
   // yaqin tovuq
-  var best = -1, bd = 2.9 * 2.9;
+  var best = -1, bd = 3.7 * 3.7;
   for (var i = 0; i < cfg.chickens.length; i++) { var c2 = cfg.chickens[i], ready = (f.readyAt[i] || 0) <= now; if (!ready) continue; var ddx = P.x - c2.x, ddz = P.z - c2.z, dd = ddx * ddx + ddz * ddz; if (dd < bd) { bd = dd; best = i; } }
   f.near = best;
-  // ushlab turish
+  // 3 soniyalik olish
   var h = f.hold, prog = 0;
-  if (h && h.ok) {
+  if (h) {
     var c3 = cfg.chickens[h.i], hx = P.x - c3.x, hz = P.z - c3.z;
-    if (hx * hx + hz * hz > 3.6 * 3.6 || stunned || (f.readyAt[h.i] || 0) > now + 1500) { f.hold = null; farmMsg("Bekor qilindi"); }
-    else { prog = (now - h.t0) / (cfg.hold * 1000); W.pl.rot = [W.pl.rot[0], Math.atan2(c3.x - P.x, c3.z - P.z), W.pl.rot[2]]; if (prog >= 1 && !h.done) farmFinish(h.i); }
+    if (hx * hx + hz * hz > 4.8 * 4.8 || stunned || f.fly || (f.readyAt[h.i] || 0) > now + 1500) { f.hold = null; farmMsg("Bekor qilindi"); }
+    else if (!h.done) { prog = Math.min(1, (now - h.t0) / (cfg.hold * 1000)); W.pl.rot = [W.pl.rot[0], Math.atan2(c3.x - P.x, c3.z - P.z), W.pl.rot[2]]; if (prog >= 1 && h.begun) farmFinish(h.i); }
+    else prog = 1;
   }
   // tovuqlar
   sc.labels = [];
   for (var q = 0; q < W.ch.length; q++) {
     var cc = W.ch[q], c4 = cc.c, ob = cc.ob, ra = f.readyAt[q] || 0, asleep = ra <= now;
     ob.awake = !asleep;
-    var kk = cc.kick ? (now - cc.kick) / 700 : 2;
-    if (asleep) { ob.pos = [c4.x, Math.sin(now / 600 + q) * 0.04, c4.z]; ob.rot = [0, 0, 0]; ob.sc = [1, 1 + Math.sin(now / 600 + q) * 0.03, 1]; }
-    else { var a = now / 1100 + q * 1.7; ob.pos = [c4.x + Math.cos(a) * 0.7, Math.abs(Math.sin(now / 120 + q)) * 0.06, c4.z + Math.sin(a) * 0.7]; ob.rot = [0, -a + Math.PI, 0]; ob.sc = [1, 1, 1]; }
-    if (kk < 1) { ob.pos = [ob.pos[0], ob.pos[1] + Math.sin(kk * Math.PI * 3) * 0.5, ob.pos[2]]; ob.rot = [0, ob.rot[1], Math.sin(kk * 30) * 0.3]; }
+    var kc = cc.kick ? (now - cc.kick) / 700 : 2, bs = cc.k;
+    if (asleep) { ob.pos = [c4.x, Math.sin(now / 600 + q) * 0.04, c4.z]; ob.rot = [0, 0, 0]; ob.sc = [bs, bs * (1 + Math.sin(now / 600 + q) * 0.03), bs]; }
+    else { var a = now / 1100 + q * 1.7; ob.pos = [c4.x + Math.cos(a) * 0.7, Math.abs(Math.sin(now / 120 + q)) * 0.06, c4.z + Math.sin(a) * 0.7]; ob.rot = [0, -a + Math.PI, 0]; ob.sc = [bs, bs, bs]; }
+    if (kc < 1) { ob.pos = [ob.pos[0], ob.pos[1] + Math.sin(kc * Math.PI * 3) * 0.5, ob.pos[2]]; ob.rot = [0, ob.rot[1], Math.sin(kc * 30) * 0.3]; }
     cc.eg.hidden = !asleep; cc.eg.rot = [0, now / 700, 0]; cc.eg.pos = [c4.x, 0.45 + Math.sin(now / 400 + q) * 0.05, c4.z + 1.0];
-    var near = Math.abs(P.x - c4.x) < 11 && Math.abs(P.z - c4.z) < 13;
-    if (near || true) {
-      var ok = f.speed >= c4.req, tcol = ok ? "#7dff9b" : "#ff7b7b";
-      sc.labels.push({ pos: [c4.x, 2.75, c4.z], text: "Lv" + c4.lv + "  ⚡" + c4.req, col: tcol, size: 13 });
-      if (asleep) sc.labels.push({ pos: [c4.x, 2.3, c4.z], text: "💤 Zzz", col: "#cfe3ff", size: 12 }); else sc.labels.push({ pos: [c4.x, 2.3, c4.z], text: "⏳ " + fmtT(ra - now), col: "#ffe08a", size: 12 });
-      if (kk < 1) sc.labels.push({ pos: [c4.x, 3.4, c4.z], text: "💢", size: 22 });
+    var dxl = P.x - c4.x, dzl = P.z - c4.z;
+    if (f.over || dxl * dxl + dzl * dzl < 1600) {
+      var okS = f.speed >= c4.req, tcol = okS ? "#7dff9b" : "#ff7b7b", top = 2.5 + 0.35 * c4.lv;
+      sc.labels.push({ pos: [c4.x, top + 0.45, c4.z], text: "⚡" + fmtS(c4.req), col: tcol, size: 14 });
+      sc.labels.push({ pos: [c4.x, top, c4.z], text: asleep ? "💤 Zzz" : "⏳ " + fmtT(ra - now), col: asleep ? "#cfe3ff" : "#ffe08a", size: 12 });
+      if (kc < 1) sc.labels.push({ pos: [c4.x, top + 1.2, c4.z], text: "💢", size: 22 });
     }
   }
   if (f.carry) { farmCarryKey(f.carry, W); W.carry.hidden = false; W.carry.pos = [W.pl.pos[0], W.pl.pos[1] + 3.2 + Math.sin(now / 250) * 0.08, W.pl.pos[2]]; W.carry.rot = [0, now / 500, 0]; }
   else if (W.carry) W.carry.hidden = true;
-  sc.labels.push({ pos: [cfg.home.x, 3.2, cfg.home.z + 3.2], text: "🏠 UY", col: "#fff", size: 16 });
+  // uydagi tuxum javonlari
+  var inv = ST.eggs || {}, sel = inHome(P) && !f.carry ? farmStand() : null;
+  W.stands.forEach(function (s) {
+    var n = inv[s.kind] || 0;
+    s.eggs.forEach(function (e, j) { e.hidden = j >= Math.min(3, n); e.rot = [0, now / 800 + j, 0]; e.pos = [e.pos[0], 0.82 + Math.sin(now / 500 + j * 2) * 0.04, e.pos[2]]; });
+    sc.labels.push({ pos: [s.x, 1.9, s.z], text: n ? FICON[s.kind] + " ×" + n : "bo'sh", col: n ? "#fff" : "#9fb4c9", size: n ? 14 : 11 });
+    if (sel === s) sc.labels.push({ pos: [s.x, 2.6, s.z], text: "▼ OCHISH", col: "#ffd23f", size: 14 });
+  });
+  sc.labels.push({ pos: [hm.x + hm.w / 2 - 3.4, 5.0, hm.z + hm.d / 2 - 1.7], text: "🏠 UY", col: "#fff", size: 17 });
   if (f.carry) sc.labels.push({ pos: [W.pl.pos[0], 4.2, W.pl.pos[2]], text: "🏠 Uyga!", col: "#ffd23f", size: 13 });
   if (stunned) sc.labels.push({ pos: [W.pl.pos[0], 3.2, W.pl.pos[2]], text: "😵 " + Math.ceil((f.stunUntil - now) / 1000) + "s", size: 16 });
+  // uydagi hayvonlar — o'zlari yurib yuradi
+  if (now - f.petsAt > 600) { f.petsAt = now; farmPets(); }
+  var x0 = hm.x - hm.w / 2 + 1, x1 = hm.x + hm.w / 2 - 1, z0 = hm.z - hm.d / 2 + 1, z1 = hm.z - 0.9;
+  for (var pk in W.pets) {
+    var pe = W.pets[pk], po = pe.ob, pdx = pe.tx - po.pos[0], pdz = pe.tz - po.pos[2], pdl = Math.sqrt(pdx * pdx + pdz * pdz), mv = pdl > 0.15;
+    if (mv) { var ps = 1.5 * dt; po.pos[0] += pdx / pdl * ps; po.pos[2] += pdz / pdl * ps; var tr = Math.atan2(pdx, pdz), dr = tr - po.rot[1]; while (dr > Math.PI) dr -= 2 * Math.PI; while (dr < -Math.PI) dr += 2 * Math.PI; po.rot = [0, po.rot[1] + dr * Math.min(1, dt * 8), 0]; }
+    else if (now > pe.wait) { pe.wait = now + 1200 + Math.random() * 3500; pe.tx = x0 + Math.random() * (x1 - x0); pe.tz = z0 + Math.random() * (z1 - z0); }
+    var by = pe.born && now - pe.born < 1100 ? Math.abs(Math.sin((now - pe.born) / 1100 * Math.PI * 3)) * 1.6 : 0;
+    po.pos[1] = 0.65 + (mv ? Math.abs(Math.sin(now / 130)) * 0.12 : 0) + by; po.pos = [po.pos[0], po.pos[1], po.pos[2]];
+    var pxd = P.x - po.pos[0], pzd = P.z - po.pos[2];
+    if (pxd * pxd + pzd * pzd < 9 && CAT.pets[pk]) sc.labels.push({ pos: [po.pos[0], 2.3, po.pos[2]], text: CAT.pets[pk].emoji + " " + CAT.pets[pk].name + (have1(pk) > 1 ? " ×" + have1(pk) : ""), col: "#fff", size: 11 });
+  }
   sc.render(now);
   // tugma va xabar
   var btn = $("fBtn");
   if (btn) {
-    var txt, dis = false;
+    var txt, dis = false, go = false;
     if (stunned) { txt = "😵 " + Math.ceil((f.stunUntil - now) / 1000) + "s"; dis = true; }
     else if (f.carry) { txt = "🏠 Uyga olib boring"; dis = true; }
-    else if (f.near >= 0) { txt = h && h.ok ? "Ushlab turing..." : "🥚 OLISH"; }
+    else if (h) { txt = "Olinmoqda... " + Math.floor(prog * 100) + "%"; }
+    else if (f.near >= 0) { txt = "🥚 OLISH"; go = true; }
+    else if (sel) { txt = "🥚 OCHISH (" + (inv[sel.kind] || 0) + ")"; go = true; }
     else { txt = "🐔 Tovuqqa yaqinlashing"; dis = true; }
-    if (btn._t !== txt || btn._d !== dis) { btn.textContent = txt; btn.className = "fbtn" + (dis ? " off" : "") + (f.near >= 0 && !dis ? " go" : ""); btn._t = txt; btn._d = dis; }
-    btn.style.background = prog > 0 ? "conic-gradient(#ffd23f " + Math.min(100, prog * 100) + "%, rgba(0,0,0,.45) 0)" : "";
+    var cls = "fbtn" + (dis ? " off" : "") + (go ? " go" : "");
+    if (btn._t !== txt) { btn.textContent = txt; btn._t = txt; }
+    if (btn._c !== cls) { btn.className = cls; btn._c = cls; }
+    var bg = prog > 0 && prog < 1 ? "conic-gradient(#ffd23f " + (prog * 100) + "%, rgba(0,0,0,.5) 0)" : ""; if (btn._b !== bg) { btn.style.background = bg; btn._b = bg; }
   }
   if (f.msgT && now > f.msgT) { var mm = $("fMsg"); if (mm) mm.hidden = true; f.msgT = 0; }
-  if (now - (f.hudT || 0) > 400) { f.hudT = now; farmHud(); }
+  if (now - (f.hudT || 0) > 400) { f.hudT = now; farmHud(); if (f.sheet && now - (f.shT || 0) > 1500) { f.shT = now; } }
+  if (now - f.mapAt > 200) { f.mapAt = now; farmMap(now); }
   return true;
 }
+function have1(pk) { return (ST.pets || {})[pk] || 0; }
 
 $("colBtn").onclick = async function () {
   if (!ST || pend() < 1) { toast("Hali yig'ilgan tanga yo'q"); return; }
