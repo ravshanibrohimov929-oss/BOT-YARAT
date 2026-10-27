@@ -18130,7 +18130,7 @@ EG_FARM_REQS = [10, 150_000, 2_000_000, 25_000_000, 300_000_000, 4_000_000_000, 
 EG_FARM = [(i, i + 1, 0, round(14 - 6.2 * i, 1)) for i in range(8)]   # (id, tier, x, z)
 EG_FARM_EGG = {1: "common", 2: "common", 3: "rare", 4: "rare", 5: "epic", 6: "epic", 7: "legend", 8: "legend"}
 EG_FARM_HOME = {"x": 0, "z": 26, "w": 24, "d": 10}
-EG_FARM_FIELD = {"w": 32, "d": 64}
+EG_FARM_FIELD = {"w": 100, "d": 200}
 EG_FARM_HOLD = 3.0
 EG_FARM_MAXSPD = 10 ** 13
 
@@ -27268,6 +27268,7 @@ img.pi{width:100%;max-width:84px;height:auto;display:block;margin:0 auto;pointer
 @keyframes pulse{50%{transform:scale(1.07)}}
 .fmsg{position:absolute;left:10px;right:10px;top:56px;text-align:center;background:rgba(0,0,0,.7);border-radius:12px;padding:8px;font-weight:800;font-size:14px;z-index:4}
 #fCv{touch-action:none}
+.fm.full{position:fixed;left:0;top:0;right:0;bottom:0;width:100%;height:100%!important;z-index:60;border-radius:0;border:0;margin:0}
 .fmap{position:absolute;right:8px;top:72px;width:46px;height:92px;border-radius:8px;border:2px solid rgba(255,255,255,.65);z-index:2;pointer-events:none}
 .fico{position:absolute;right:8px;top:172px;width:46px;height:40px;border-radius:12px;border:2px solid rgba(255,255,255,.65);background:rgba(0,0,0,.45);color:#fff;font-size:20px;z-index:3;padding:0}
 .fsh{position:absolute;left:0;right:0;top:0;bottom:0;background:rgba(18,14,70,.96);z-index:6;overflow:auto;padding:12px 12px 20px;-webkit-overflow-scrolling:touch;touch-action:pan-y}
@@ -27302,6 +27303,18 @@ var G3 = (function () {
     if (rx) { t = y * cos(rx) - z * sin(rx); z = y * sin(rx) + z * cos(rx); y = t; }
     if (ry) { t = x * cos(ry) + z * sin(ry); z = -x * sin(ry) + z * cos(ry); x = t; }
     return [x, y, z];
+  }
+  // kameraning orqasidagi nuqtalar noto'g'ri chiziladi — ko'pburchakni yaqin tekislikda kesamiz
+  function clipNear(v, zn) {
+    var ok = true, i; for (i = 0; i < v.length; i++) if (v[i][2] > zn) { ok = false; break; }
+    if (ok) return v;
+    var out = [];
+    for (i = 0; i < v.length; i++) {
+      var a = v[i], b = v[(i + 1) % v.length], ain = a[2] <= zn, bin = b[2] <= zn;
+      if (ain) out.push(a);
+      if (ain !== bin) { var t = (zn - a[2]) / (b[2] - a[2]); out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, zn]); }
+    }
+    return out;
   }
   function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
   function rgb(c, k, a) { return "rgb(" + Math.round(clamp(c[0] * k, 0, 255)) + "," + Math.round(clamp(c[1] * k, 0, 255)) + "," + Math.round(clamp(c[2] * k, 0, 255)) + ")"; }
@@ -27474,9 +27487,10 @@ var G3 = (function () {
       var lam = Math.max(0, nx * LD[0] + ny * LD[1] + nz * LD[2]);
       var kk = emis ? 1.15 : 0.5 + 0.62 * lam;
       var base = pl.col; if (inner) base = part.inner || [255, 244, 214];
-      var fill = rgb(base, kk), pts = [], zz = 0;
-      for (var q = 0; q < 4; q++) { var pp = pr(v[q]); pts.push(pp[0], pp[1]); zz += v[q][2]; }
-      var rec = { z: zz / 4 + (inner ? -0.02 : 0), p: pts, c: fill, s: part.type === "box" ? rgb(base, kk * 0.62) : fill, lw: part.type === "box" ? 1.1 : 1, a: alpha };
+      var fill = rgb(base, kk), pts = [], zz = 0, cl = clipNear(v, -0.7);
+      if (cl.length < 3) continue;
+      for (var q = 0; q < cl.length; q++) { var pp = pr(cl[q]); pts.push(pp[0], pp[1]); zz += cl[q][2]; }
+      var rec = { z: zz / cl.length + (inner ? -0.02 : 0), p: pts, c: fill, s: part.type === "box" ? rgb(base, kk * 0.62) : fill, lw: part.type === "box" ? 1.1 : 1, a: alpha };
       if (part.under) { (out.under = out.under || []).push(rec); } else out.push(rec);
     }
   };
@@ -27997,7 +28011,7 @@ function viewFarm(m) {
   FM = null;
   m.innerHTML = '<div class="fm" id="fm"><canvas id="fCv"></canvas>' +
     '<div class="fhud tl" id="fHudL"><div>⚡ <b id="fSp">0</b> <button class="btn sm" id="fUp">⬆ Tezlik</button></div><div class="mu" id="fNx"></div></div>' +
-    '<div class="fhud tr" id="fHudR"></div><canvas class="fmap" id="fMap" width="46" height="92"></canvas><button class="fico" id="fOv">🔭</button>' +
+    '<div class="fhud tr" id="fHudR"></div><canvas class="fmap" id="fMap" width="46" height="92"></canvas><button class="fico" id="fOv">🔭</button><button class="fico" id="fFs" style="top:172px;right:60px">⛶</button>' +
     '<div class="joy" id="fJoy"><div class="knob" id="fKnob"></div></div><button class="fbtn" id="fBtn"></button><div class="fmsg" id="fMsg" hidden></div><div class="fsh" id="fSh" hidden></div></div>';
   if (!has3d() || !CAT.farm) { m.innerHTML = '<div class="err"><div class="big">🐔</div><p class="mu">3D o\'yin bu qurilmada ishlamaydi. «Tuxum» bo\'limidan foydalaning.</p></div>'; return; }
   var box = $("fm"), top = box.getBoundingClientRect().top;
@@ -28040,14 +28054,7 @@ function buildFarmWorld(sc, uid) {
   FW = CAT.farm.field || FW;
   var HX = FW.w / 2, HZ = FW.d / 2;
   var CL = function (o, r) { o.cullR = r; W.cull.push(o); return o; };
-  var gd = CL({ parts: [] }, 26);
-  for (x = -HX + 1; x < HX; x += 2) for (z = -HZ + 1; z < HZ; z += 2) {
-    var chk = (((x - 1) / 2 + (z - 1) / 2) & 1) === 0, col;
-    var inH = Math.abs(x - hm.x) <= hm.w / 2 && Math.abs(z - hm.z) <= hm.d / 2, path = Math.abs(x) <= 3 && z <= hm.z - hm.d / 2;
-    if (inH) col = chk ? [86, 190, 255] : [64, 160, 235]; else if (path) col = chk ? [214, 178, 120] : [200, 164, 106]; else col = chk ? [112, 196, 92] : [100, 182, 80];
-    gd.parts.push({ type: "quad", c: [x, 0, z], s: [2, 2], col: col, under: true });
-  }
-  sc.add(gd);
+  W.floor = { parts: [], cullR: 9999, pos: [0, 0, 0] }; W.fc = {}; sc.add(W.floor);
   // butun maydonni o'rab turgan to'siq
   var fe = CL({ parts: [] }, 26), WD = [170, 118, 64], seg = 4;
   for (x = -HX + seg / 2; x < HX; x += seg) { fe.parts.push(B3([x, 0.45, -HZ - 0.2], [seg - 0.1, 0.7, 0.18], WD), B3([x, 0.45, HZ + 0.2], [seg - 0.1, 0.7, 0.18], WD)); }
@@ -28067,10 +28074,11 @@ function buildFarmWorld(sc, uid) {
   for (x = -HX + 2; x <= HX - 2; x += 6) { tp.push([x, -HZ - 3.2]); tp.push([x, HZ + 3.2]); }
   for (z = -HZ + 3; z <= HZ - 3; z += 6) { tp.push([-HX - 3.2, z]); tp.push([HX + 3.2, z]); }
   tp.push([-12, -20], [12, -9], [-11, 3], [11, 14]);
+  var rs = 11; for (i = 0; i < 70; i++) { rs = (rs * 9301 + 49297) % 233280; var rx = (rs / 233280 - 0.5) * (FW.w - 8); rs = (rs * 9301 + 49297) % 233280; var rz = (rs / 233280 - 0.5) * (FW.d - 8); if (Math.abs(rx) < 14 && rz > -45 && rz < 40) continue; tp.push([rx, rz]); }
   tp.forEach(function (p, k) { var h = 2.0 + (k % 3) * 0.5; tr.parts.push(B3([p[0], h / 2, p[1]], [0.7, h, 0.7], [120, 80, 46]), B3([p[0], h + 0.7, p[1]], [2.2, 1.4, 2.2], [60, 150, 70]), B3([p[0], h + 1.8, p[1]], [1.4, 0.9, 1.4], [78, 172, 84])); });
   sc.add(tr);
   var fl = CL({ parts: [] }, 26), FC = [[255, 90, 120], [255, 214, 70], [255, 255, 255], [170, 120, 255]], sd = 7;
-  for (i = 0; i < 44; i++) { sd = (sd * 9301 + 49297) % 233280; var fx = (sd / 233280 - 0.5) * (FW.w - 3); sd = (sd * 9301 + 49297) % 233280; var fz = (sd / 233280 - 0.5) * (FW.d - 3); if (Math.abs(fx) < 4.2 || (fz > hm.z - hm.d / 2 - 1)) continue; fl.parts.push(B3([fx, 0.18, fz], [0.16, 0.36, 0.16], [60, 140, 60]), B3([fx, 0.44, fz], [0.34, 0.2, 0.34], FC[i % 4])); }
+  for (i = 0; i < 700; i++) { sd = (sd * 9301 + 49297) % 233280; var fx = (sd / 233280 - 0.5) * (FW.w - 3); sd = (sd * 9301 + 49297) % 233280; var fz = (sd / 233280 - 0.5) * (FW.d - 3); if (Math.abs(fx) < 4.2 && fz > -34 || (Math.abs(fx) <= hm.w / 2 + 1 && fz > hm.z - hm.d / 2 - 1 && fz < hm.z + hm.d / 2 + 1)) continue; fl.parts.push(B3([fx, 0.18, fz], [0.16, 0.36, 0.16], [60, 140, 60]), B3([fx, 0.44, fz], [0.34, 0.2, 0.34], FC[i % 4])); }
   sc.add(fl);
   // tovuq uyalari
   CAT.farm.chickens.forEach(function (c, idx) {
@@ -28094,6 +28102,23 @@ function buildFarmWorld(sc, uid) {
   W.carry = sc.add(G3M.makeEgg("common", true)); W.carry.sc = [0.38, 0.38, 0.38]; W.carry.hidden = true;
   return W;
 }
+function farmFloor(f) {
+  var sc = f.sc, W = f.W, hm = CAT.farm.home, R = f.over ? 70 : Math.min(44, Math.max(26, sc.cam.d * 1.3)), tile = f.over ? 6 : (R > 30 ? 4 : 2);
+  var cx = Math.round(sc.cam.t[0] / tile), cz = Math.round(sc.cam.t[2] / tile), key = tile + "|" + cx + "|" + cz + "|" + Math.round(R / 4);
+  if (key === W.floorKey) return; W.floorKey = key;
+  var HX = FW.w / 2, HZ = FW.d / 2, n = Math.ceil(R / tile) + 1, out = [], i, j;
+  for (i = cx - n; i <= cx + n; i++) for (j = cz - n; j <= cz + n; j++) {
+    var x = i * tile, z = j * tile; if (x < -HX || x > HX || z < -HZ || z > HZ) continue;
+    var ck = tile + "|" + i + "|" + j, part = W.fc[ck];
+    if (!part) {
+      var chk = ((i + j) & 1) === 0, col, inH = Math.abs(x - hm.x) <= hm.w / 2 && Math.abs(z - hm.z) <= hm.d / 2, path = Math.abs(x) <= 3 && z <= hm.z - hm.d / 2 && z > -34;
+      if (inH) col = chk ? [86, 190, 255] : [64, 160, 235]; else if (path) col = chk ? [214, 178, 120] : [200, 164, 106]; else col = chk ? [112, 196, 92] : [100, 182, 80];
+      part = W.fc[ck] = { type: "quad", c: [x, 0, z], s: [tile, tile], col: col, under: true };
+    }
+    out.push(part);
+  }
+  W.floor.parts = out;
+}
 function farmCarryKey(key, W) { if (W.carryKey === key) return; W.carryKey = key; var sc = FM.sc, idx = sc.objs.indexOf(W.carry); var n = G3M.makeEgg(key || "common", true); n.sc = [0.38, 0.38, 0.38]; n.hidden = !key; sc.objs[idx] = n; W.carry = n; }
 function startFarm() {
   var cv = $("fCv"), sc = new G3.Scene(cv, { d: 21, pitch: 0.92, f: 1.35 });
@@ -28116,7 +28141,7 @@ function startFarm() {
   cv.onpointermove = function (ev) {
     var p = ptr[ev.pointerId]; if (!p || !FM) return; var dx = ev.clientX - p.x, dy = ev.clientY - p.y; p.x = ev.clientX; p.y = ev.clientY;
     if (Object.keys(ptr).length >= 2) { var dn = pdist(); if (dn && pd0) FM.dist = Math.max(12, Math.min(38, dist0 * pd0 / dn)); return; }
-    if (FM.over) { var k = FM.sc.cam.d / ((cv.clientHeight || 600) * 1.35), v = G3.rotV([-dx * k, 0, -dy * k * 1.3], 0, FM.yaw, 0); FM.pan.x = Math.max(-17, Math.min(17, FM.pan.x + v[0])); FM.pan.z = Math.max(-34, Math.min(34, FM.pan.z + v[2])); }
+    if (FM.over) { var k = FM.sc.cam.d / ((cv.clientHeight || 600) * 1.35), v = G3.rotV([-dx * k, 0, -dy * k * 1.3], 0, FM.yaw, 0); FM.pan.x = Math.max(-FW.w / 2, Math.min(FW.w / 2, FM.pan.x + v[0])); FM.pan.z = Math.max(-FW.d / 2, Math.min(FW.d / 2, FM.pan.z + v[2])); }
     else { FM.yaw -= dx * 0.0075; FM.pitch = Math.max(0.5, Math.min(1.3, FM.pitch + dy * 0.004)); }
   };
   var pend = function (ev) { delete ptr[ev.pointerId]; };
@@ -28126,7 +28151,14 @@ function startFarm() {
   var btn = $("fBtn");
   btn.onpointerdown = function (ev) { ev.preventDefault(); farmPress(); };
   $("fUp").onclick = function () { farmSheet(true); };
+  $("fFs").onclick = function () { farmFull(!FM.full); };
+  window.addEventListener("resize", function () { var f = FM; if (f && !f.autoFull && !f.full && window.innerWidth > window.innerHeight * 1.2) { f.autoFull = true; farmFull(true, true); } });
   farmSync(); kick();
+}
+function farmFull(on, soft) {
+  var f = FM, box = $("fm"); if (!f || !box) return; f.full = on; box.classList.toggle("full", on); $("fFs").textContent = on ? "✕" : "⛶";
+  try { if (on) { tg && tg.requestFullscreen && !soft && tg.requestFullscreen(); tg && tg.lockOrientation && !soft && tg.lockOrientation(); } else { tg && tg.exitFullscreen && tg.exitFullscreen(); tg && tg.unlockOrientation && tg.unlockOrientation(); } } catch (e) {}
+  if (on && !soft) farmMsg("📱 Telefonni yonga burib qo'ying (16:9)", 2800);
 }
 function farmMsg(t, ms) { var e = $("fMsg"); if (!e) return; e.textContent = t; e.hidden = false; FM && (FM.msgT = performance.now() + (ms || 2600)); }
 async function farmSync() {
@@ -28243,13 +28275,14 @@ function farmMap(now) {
   var X = function (x) { return (x + FW.w / 2) / FW.w * w; }, Z = function (z) { return (z + FW.d / 2) / FW.d * h; };
   c.clearRect(0, 0, w, h); c.fillStyle = "#5fb552"; c.fillRect(0, 0, w, h);
   c.fillStyle = "#4aa6e8"; c.fillRect(X(hm.x - hm.w / 2), Z(hm.z - hm.d / 2), hm.w / FW.w * w, hm.d / FW.d * h);
-  CAT.farm.chickens.forEach(function (ch, i) { var asleep = (f.readyAt[i] || 0) <= now; c.fillStyle = !asleep ? "#888" : (f.speed >= ch.req ? "#fff" : "#ff5a5a"); c.beginPath(); c.arc(X(ch.x), Z(ch.z), 3, 0, 7); c.fill(); });
+  CAT.farm.chickens.forEach(function (ch, i) { var asleep = (f.readyAt[i] || 0) <= now; c.fillStyle = !asleep ? "#888" : (f.speed >= ch.req ? "#fff" : "#ff5a5a"); c.beginPath(); c.arc(X(ch.x), Z(ch.z), 2.4, 0, 7); c.fill(); });
   c.fillStyle = "#ffd23f"; c.strokeStyle = "#000"; c.lineWidth = 1; c.beginPath(); c.arc(X(f.P.x), Z(f.P.z), 3.4, 0, 7); c.fill(); c.stroke();
 }
 function farmTick(now) {
   var f = FM; if (!f || $("fCv") !== f.cv || tab !== "farm") { if (f && $("fCv") !== f.cv) { FM = null; try { tg && tg.enableVerticalSwipes && tg.enableVerticalSwipes(); } catch (e) {} } return false; }
   var dt = Math.min(0.05, (now - f.last) / 1000); f.last = now; var W = f.W, P = f.P, sc = f.sc, cfg = CAT.farm, hm = cfg.home, HX = FW.w / 2, HZ = FW.d / 2;
   if (now - f.syncAt > 4000) { f.syncAt = now + 99999; farmSync(); }
+  if (f.cv.clientWidth !== f.cw || f.cv.clientHeight !== f.ch) { f.cw = f.cv.clientWidth; f.ch = f.cv.clientHeight; sc.resize(); }
   var stunned = now < f.stunUntil;
   // harakat (kameraga nisbatan)
   var jx = f.joy.x, jy = f.joy.y;
@@ -28279,6 +28312,7 @@ function farmTick(now) {
   sc.cam.d += (dTarget - sc.cam.d) * Math.min(1, dt * 6); sc.cam.pitch += (pTarget - sc.cam.pitch) * Math.min(1, dt * 6); sc.cam.yaw = f.yaw;
   var tx = f.over ? f.pan.x : P.x, tz = f.over ? f.pan.z : P.z;
   sc.cam.t[0] += (tx - sc.cam.t[0]) * kk; sc.cam.t[2] += (tz - sc.cam.t[2]) * kk;
+  farmFloor(f);
   var cr = f.over ? 120 : Math.max(24, sc.cam.d * 1.25); for (var q0 = 0; q0 < W.cull.length; q0++) W.cull[q0].cullR = cr;
   FP = { x: P.x, z: P.z, yaw: f.yaw, face: f.face };
   // uyga yetkazish
@@ -28329,6 +28363,7 @@ function farmTick(now) {
   // uydagi hayvonlar — o'zlari yurib yuradi
   if (now - f.petsAt > 600) { f.petsAt = now; farmPets(); }
   var x0 = hm.x - hm.w / 2 + 1, x1 = hm.x + hm.w / 2 - 1, z0 = hm.z - hm.d / 2 + 1, z1 = hm.z - 0.9;
+  f.lbl = 0;
   for (var pk in W.pets) {
     var pe = W.pets[pk], po = pe.ob, pdx = pe.tx - po.pos[0], pdz = pe.tz - po.pos[2], pdl = Math.sqrt(pdx * pdx + pdz * pdz), mv = pdl > 0.15;
     if (mv) { var ps = 1.5 * dt; po.pos[0] += pdx / pdl * ps; po.pos[2] += pdz / pdl * ps; var tr = Math.atan2(pdx, pdz), dr = tr - po.rot[1]; while (dr > Math.PI) dr -= 2 * Math.PI; while (dr < -Math.PI) dr += 2 * Math.PI; po.rot = [0, po.rot[1] + dr * Math.min(1, dt * 8), 0]; }
@@ -28336,7 +28371,7 @@ function farmTick(now) {
     var by = pe.born && now - pe.born < 1100 ? Math.abs(Math.sin((now - pe.born) / 1100 * Math.PI * 3)) * 1.6 : 0;
     po.pos[1] = 0.65 + (mv ? Math.abs(Math.sin(now / 130)) * 0.12 : 0) + by; po.pos = [po.pos[0], po.pos[1], po.pos[2]];
     var pxd = P.x - po.pos[0], pzd = P.z - po.pos[2];
-    if (pxd * pxd + pzd * pzd < 9 && CAT.pets[pk]) sc.labels.push({ pos: [po.pos[0], 2.3, po.pos[2]], text: CAT.pets[pk].emoji + " " + CAT.pets[pk].name + (have1(pk) > 1 ? " ×" + have1(pk) : ""), col: "#fff", size: 11 });
+    if (pxd * pxd + pzd * pzd < 6 && CAT.pets[pk] && (f.lbl = (f.lbl || 0) + 1) <= 2) sc.labels.push({ pos: [po.pos[0], 2.3, po.pos[2]], text: CAT.pets[pk].emoji + " " + CAT.pets[pk].name, col: "#fff", size: 11 });
   }
   sc.render(now);
   // tugma va xabar
