@@ -626,6 +626,7 @@ BOT_TYPES = {
     "nakrutka": "🚀 Nakrutka bot",
     "download": "📥 Yuklovchi bot",
     "roblox": "🥚 Roblox tuxum bot",
+    "market": "🏪 Mini Market tycoon bot",
 }
 
 # 🎬 MEDIA BOT turlari (ichki bot turi o'zgarmaydi: "kino_pro" — barcha kino funksiyalari saqlanadi).
@@ -693,6 +694,7 @@ DEFAULT_PRICES = {
     "nakrutka": 120_000,
     "download": 120_000,
     "roblox": 120_000,
+    "market": 120_000,
 }
 DEFAULT_MONTHLY_RATE = 0.2  # keyingi oylar uchun narxning 20 foizi (standart) — eskirgan, endi ishlatilmaydi
 
@@ -881,6 +883,15 @@ try:
     if "roblox" not in data["bot_menu"] and not data.get("_egg_menu_added"):
         data["bot_menu"]["roblox"] = {"name": BOT_TYPES["roblox"], "enabled": True}
         data["_egg_menu_added"] = True
+        save_data()
+except Exception:
+    pass
+
+
+try:
+    if "market" not in data["bot_menu"] and not data.get("_mk_menu_added"):
+        data["bot_menu"]["market"] = {"name": BOT_TYPES["market"], "enabled": True}
+        data["_mk_menu_added"] = True
         save_data()
 except Exception:
     pass
@@ -1479,6 +1490,13 @@ def tariff_card_text(tid: str, t: dict) -> str:
 
 # Har bir bot turi uchun tavsif (bot yaratish oynasida ko'rsatiladi)
 BOT_DESCRIPTIONS = {
+    "market": (
+        "<i>Supermarket tycoon: o'z mini-do'koningizni quring — javonlarni oching, kassir yollang, do'konni kengaytiring va boy bo'ling.</i>\n\n"
+        "🏪 3D do'kon (xaridorlar yuradi), 🍞 8 xil javon, 👩‍💼 kassirlar, 🏬 6 darajali do'kon, 🏢 Franshiza (doimiy bonus), 💰 offlayn daromad, "
+        "🎁 kunlik bonus, 👥 do'st taklif qilish, 🏆 reyting, 🎟 promokodlar, 💎 Premium (x2).\n\n"
+        "📊 Admin panelda: majburiy obuna, top o'yinchilar, promokod, pul berish, sozlamalar, bloklash, xabar yuborish.\n\n"
+        "ℹ️ Bot ichidagi o'yin — haqiqiy pul emas."
+    ),
     "roblox": (
         "<i>Roblox uslubidagi tuxum o'yini: tuxum sotib oling, ichidan nodir petlar (⚪🔵🟣🟡) chiqaring — ular soatiga tanga ishlab beradi.</i>\n\n"
         "🥚 4 xil tuxum, 🐾 16 ta pet, 💰 passiv daromad, 🎁 kunlik bonus, 🔍 tuxum ovi, 👥 do'st taklif qilish, 🏆 reyting, 🎟 promokodlar, 💎 Premium (x2).\n\n"
@@ -18827,7 +18845,1505 @@ def setup_egg_bot(dp: Dispatcher, token: str):
 # ===================== /TUXUM BOT =====================
 
 
+# ===================== 🏪 MINI MARKET TYCOON BOT =====================
+# Do'kon egasi o'yini: javonlarni oching va yaxshilang, kassir yollang, do'konni kengaytiring.
+# Daromad soatiga hisoblanadi (offlayn ham yig'iladi), «Franshiza» — qayta boshlash + doimiy bonus.
+MK_LINES = [
+    # (kalit, nom, emoji, ochish narxi, daraja boshiga soatlik daromad, 1→2 daraja narxi)
+    ("non", "Non va un", "🍞", 0, 60, 50),
+    ("sut", "Sut mahsulotlari", "🥛", 400, 300, 200),
+    ("meva", "Mevalar", "🍎", 2_500, 1_400, 1_100),
+    ("sabzi", "Sabzavotlar", "🥕", 12_000, 6_500, 5_000),
+    ("gosht", "Go'sht", "🥩", 60_000, 32_000, 26_000),
+    ("shirin", "Shirinliklar", "🍰", 300_000, 160_000, 130_000),
+    ("tech", "Elektronika", "📱", 1_500_000, 800_000, 650_000),
+    ("gem", "Zargarlik", "💎", 8_000_000, 4_500_000, 3_500_000),
+]
+MK_GROWTH = 1.16
+MK_MAXLVL = 100
+MK_CASH_MAX = 10
+MK_SIZE_MAX = 6
+MK_FRAN_MIN = 2_000_000
+MK_CFG_DEFAULTS = {"start": 100, "daily": 200, "cap_h": 8, "ref": 300}
+MK_CFG_META = {
+    "start": ("🎁 Boshlang'ich pul", 0, 1_000_000),
+    "daily": ("📅 Kunlik bonus", 0, 1_000_000),
+    "cap_h": ("⏳ Daromad yig'ilish chegarasi (soat)", 1, 72),
+    "ref": ("👥 Taklif bonusi", 0, 1_000_000),
+}
+
+
+class MkAdmin(StatesGroup):
+    broadcast = State()
+    give = State()
+    block = State()
+
+
+class MkUser(StatesGroup):
+    promo = State()
+
+
+def mk_init(info: dict):
+    info.setdefault("mk_users", {})
+    info.setdefault("mk_promos", {})
+    cfg = info.setdefault("mk_cfg", {})
+    for k, v in MK_CFG_DEFAULTS.items():
+        cfg.setdefault(k, v)
+    info.setdefault("blocked_users", [])
+    info.setdefault("maintenance_mode", False)
+    for k in ("daily_claims", "promos", "franchises", "buys"):
+        info["stats"].setdefault(k, 0)
+
+
+def mk_fmt(n) -> str:
+    return f"{int(n):,}".replace(",", " ")
+
+
+def mk_user(info: dict, uid, now=None, name=None) -> dict:
+    now = now if now is not None else _eg_time.time()
+    users = info["mk_users"]
+    u = users.get(str(uid))
+    if u is None:
+        u = users[str(uid)] = {"coins": int(info["mk_cfg"]["start"]), "lines": [1] + [0] * (len(MK_LINES) - 1), "cash": 0, "size": 1,
+                               "fp": 0, "earned": 0, "earned_run": 0, "t_col": now, "t_daily": 0, "streak": 0, "refs": 0, "ref_by": None,
+                               "name": "", "since": now}
+    if name:
+        u["name"] = name
+    return u
+
+
+def mk_mult(info: dict, uid, u: dict) -> float:
+    return (1 + 0.2 * u["cash"]) * (1 + 0.5 * (u["size"] - 1)) * (1 + 0.1 * u["fp"]) * (2 if is_premium_active(info, uid) else 1)
+
+
+def mk_base(u: dict) -> int:
+    return sum(MK_LINES[i][4] * int(lv) for i, lv in enumerate(u["lines"]))
+
+
+def mk_rate(info: dict, uid, u: dict) -> int:
+    return int(mk_base(u) * mk_mult(info, uid, u))
+
+
+def mk_pending(info: dict, uid, u: dict, now=None) -> int:
+    now = now if now is not None else _eg_time.time()
+    cap = int(info["mk_cfg"]["cap_h"]) * 3600
+    el = max(0.0, min(now - u["t_col"], cap))
+    return int(mk_rate(info, uid, u) * el / 3600)
+
+
+def mk_collect(info: dict, uid, u: dict, now=None) -> int:
+    now = now if now is not None else _eg_time.time()
+    amt = mk_pending(info, uid, u, now)
+    u["coins"] += amt
+    u["earned"] += amt
+    u["earned_run"] += amt
+    u["t_col"] = now
+    return amt
+
+
+def mk_step_cost(i: int, lv: int) -> int:
+    """i-javonni lv-darajadan lv+1 ga ko'tarish narxi (lv=0 — ochish narxi)."""
+    if lv <= 0:
+        return int(MK_LINES[i][3])
+    return int(MK_LINES[i][5] * (MK_GROWTH ** (lv - 1)))
+
+
+def mk_line_cost(i: int, lv: int, n: int) -> int:
+    return sum(mk_step_cost(i, lv + k) for k in range(n))
+
+
+def mk_cash_cost(u: dict) -> int:
+    return int(500 * (2.3 ** u["cash"]))
+
+
+def mk_size_cost(u: dict) -> int:
+    return int(5000 * (7 ** (u["size"] - 1)))
+
+
+def mk_fran_gain(u: dict) -> int:
+    return int((u["earned_run"] / 1_000_000) ** 0.6) if u["earned_run"] >= MK_FRAN_MIN else 0
+
+
+def mk_buy_line(info: dict, uid, u: dict, i: int, n, now=None):
+    if not 0 <= i < len(MK_LINES):
+        return ("err", "bad_value")
+    mk_collect(info, uid, u, now)
+    lv = int(u["lines"][i])
+    room = MK_MAXLVL - lv
+    if room <= 0:
+        return ("err", "max")
+    if n == "max":
+        k, cost = 0, 0
+        while k < room:
+            c = mk_step_cost(i, lv + k)
+            if u["coins"] < cost + c:
+                break
+            cost += c
+            k += 1
+        n = k
+    n = min(int(n), room)
+    if n <= 0:
+        return ("err", "no_coins")
+    cost = mk_line_cost(i, lv, n)
+    if u["coins"] < cost:
+        return ("err", "no_coins")
+    u["coins"] -= cost
+    u["lines"][i] = lv + n
+    info["stats"]["buys"] = info["stats"].get("buys", 0) + 1
+    return ("ok", n)
+
+
+def mk_buy_cash(info: dict, uid, u: dict, now=None):
+    mk_collect(info, uid, u, now)
+    if u["cash"] >= MK_CASH_MAX:
+        return ("err", "max")
+    c = mk_cash_cost(u)
+    if u["coins"] < c:
+        return ("err", "no_coins")
+    u["coins"] -= c
+    u["cash"] += 1
+    info["stats"]["buys"] = info["stats"].get("buys", 0) + 1
+    return ("ok", u["cash"])
+
+
+def mk_buy_size(info: dict, uid, u: dict, now=None):
+    mk_collect(info, uid, u, now)
+    if u["size"] >= MK_SIZE_MAX:
+        return ("err", "max")
+    c = mk_size_cost(u)
+    if u["coins"] < c:
+        return ("err", "no_coins")
+    u["coins"] -= c
+    u["size"] += 1
+    info["stats"]["buys"] = info["stats"].get("buys", 0) + 1
+    return ("ok", u["size"])
+
+
+def mk_franchise(info: dict, uid, u: dict, now=None):
+    now = now if now is not None else _eg_time.time()
+    mk_collect(info, uid, u, now)
+    g = mk_fran_gain(u)
+    if g <= 0:
+        return ("err", "fran_low")
+    u["fp"] += g
+    u["coins"] = int(info["mk_cfg"]["start"])
+    u["lines"] = [1] + [0] * (len(MK_LINES) - 1)
+    u["cash"], u["size"], u["earned_run"], u["t_col"] = 0, 1, 0, now
+    info["stats"]["franchises"] = info["stats"].get("franchises", 0) + 1
+    return ("ok", g)
+
+
+def mk_daily(info: dict, u: dict, now=None):
+    now = now if now is not None else _eg_time.time()
+    if u["t_daily"] and now - u["t_daily"] < 24 * 3600:
+        return ("wait", 24 * 3600 - (now - u["t_daily"]))
+    streak = u.get("streak", 0) + 1 if (u["t_daily"] and now - u["t_daily"] < 48 * 3600) else 1
+    streak = min(streak, 7)
+    base = int(info["mk_cfg"]["daily"])
+    bonus = base + (streak - 1) * (base // 4)
+    u["streak"], u["t_daily"] = streak, now
+    u["coins"] += bonus
+    info["stats"]["daily_claims"] = info["stats"].get("daily_claims", 0) + 1
+    return ("ok", bonus, streak)
+
+
+def mk_promo(info: dict, uid, u: dict, code: str):
+    code = (code or "").strip().upper()
+    p = info["mk_promos"].get(code)
+    if not p:
+        return ("none",)
+    if uid in p["used"]:
+        return ("used",)
+    if len(p["used"]) >= int(p["uses"]):
+        return ("over",)
+    p["used"].append(uid)
+    u["coins"] += int(p["coins"])
+    info["stats"]["promos"] = info["stats"].get("promos", 0) + 1
+    return ("ok", int(p["coins"]))
+
+
+def mk_top(info: dict, n: int = 10):
+    rows = [(int(k), u.get("name") or "", mk_rate(info, int(k), u), u["fp"], u.get("coins", 0)) for k, u in info["mk_users"].items()]
+    rows.sort(key=lambda r: (-r[2], -r[4]))
+    return rows[:n]
+
+
+def mk_catalog() -> dict:
+    return {"lines": [{"key": k, "name": n, "emoji": e, "unlock": ul, "inc": inc, "base": b} for k, n, e, ul, inc, b in MK_LINES],
+            "growth": MK_GROWTH, "maxlvl": MK_MAXLVL, "cash_max": MK_CASH_MAX, "size_max": MK_SIZE_MAX, "fran_min": MK_FRAN_MIN}
+
+
+def mk_state(info: dict, uid: int, u: dict, now=None) -> dict:
+    now = now if now is not None else _eg_time.time()
+    cfg = info["mk_cfg"]
+    dl = max(0, 24 * 3600 - (now - u["t_daily"])) if u["t_daily"] else 0
+    streak = u.get("streak", 0)
+    if u["t_daily"] and now - u["t_daily"] >= 48 * 3600:
+        streak = 0
+    lines = [int(x) for x in u["lines"]]
+    return {"coins": int(u["coins"]), "rate": mk_rate(info, uid, u), "pending": mk_pending(info, uid, u, now), "cap_h": int(cfg["cap_h"]),
+            "lines": lines, "line_cost": [mk_step_cost(i, lv) if lv < MK_MAXLVL else 0 for i, lv in enumerate(lines)],
+            "cash": u["cash"], "cash_cost": mk_cash_cost(u) if u["cash"] < MK_CASH_MAX else 0,
+            "size": u["size"], "size_cost": mk_size_cost(u) if u["size"] < MK_SIZE_MAX else 0,
+            "fp": u["fp"], "earned_run": int(u["earned_run"]), "fran_gain": mk_fran_gain(u), "mult": round(mk_mult(info, uid, u), 2),
+            "streak": streak, "daily_left": int(dl), "premium": bool(is_premium_active(info, uid)), "refs": u.get("refs", 0),
+            "ref_bonus": int(cfg["ref"]), "username": info.get("username", ""), "admin": bool(is_admin(info, uid)), "name": info.get("name", ""),
+            "daily_base": int(cfg["daily"])}
+
+
+def mk_admin_view(info: dict) -> dict:
+    st = info["stats"]
+    us = list(info["mk_users"].values())
+    return {
+        "stats": {"users": len(info.get("users", [])), "players": len(us), "coins": sum(int(u["coins"]) for u in us), "buys": st.get("buys", 0),
+                  "franchises": st.get("franchises", 0), "daily": st.get("daily_claims", 0), "promos": st.get("promos", 0), "blocked": len(info.get("blocked_users", []))},
+        "top": [{"id": r[0], "name": r[1], "rate": r[2], "fp": r[3], "coins": int(r[4])} for r in mk_top(info, 15)],
+        "promos": [{"code": c, "coins": p["coins"], "uses": p["uses"], "used": len(p["used"])} for c, p in list(info["mk_promos"].items())[-30:]],
+        "cfg": [{"key": k, "name": m[0], "min": m[1], "max": m[2], "value": info["mk_cfg"][k]} for k, m in MK_CFG_META.items()],
+        "maintenance": bool(info.get("maintenance_mode")),
+        "blocked_list": list(info.get("blocked_users", []))[-30:],
+    }
+
+
+# ---------- Telegram bot ----------
+def setup_market_bot(dp: Dispatcher, token: str):
+    info = data["bots"][token]
+    admin_id = info["admin_id"]
+    mk_init(info)
+    setup_subscription_handlers(dp, token, admin_id)
+    setup_admin_management(dp, token)
+    setup_premium_system(dp, token, admin_id)
+    setup_global_buttons_handler(dp, lambda m, s: mstart(m))
+
+    def is_blocked(uid: int) -> bool:
+        return uid in info.get("blocked_users", [])
+
+    def staff(ev) -> bool:
+        return is_admin(info, ev.from_user.id)
+
+    def admin_kb():
+        return ReplyKeyboardMarkup(keyboard=[
+            [KeyboardButton(text="📊 Statistika"), KeyboardButton(text="📢 Xabar yuborish")],
+            [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
+            [KeyboardButton(text="🏆 Top o'yinchilar"), KeyboardButton(text="🪙 Pul berish")],
+            [KeyboardButton(text="🚫 Bloklash"), KeyboardButton(text="💎 Premium")],
+            [KeyboardButton(text="💳 To'lov tizimlar"), KeyboardButton(text="🎮 O'ynash")],
+        ] + get_global_button_rows(), resize_keyboard=True)
+
+    def user_kb(uid: int):
+        rows = ([[KeyboardButton(text="🏪 Do'konni ochish")]] if get_marketapp_url(info.get("id")) else []) + [
+            [KeyboardButton(text="💰 Daromad yig'ish"), KeyboardButton(text="🎁 Kunlik bonus")],
+            [KeyboardButton(text="🏆 Reyting"), KeyboardButton(text="👥 Do'stlarni taklif qilish")],
+            [KeyboardButton(text="🎟 Promokod"), KeyboardButton(text="👤 Profil")],
+            [KeyboardButton(text="ℹ️ Yordam")],
+        ]
+        if is_admin(info, uid):
+            rows.append([KeyboardButton(text="🛠 Admin panel")])
+        return ReplyKeyboardMarkup(keyboard=rows + get_global_button_rows(), resize_keyboard=True)
+
+    async def gate(ev) -> bool:
+        uid = ev.from_user.id
+        is_cb = hasattr(ev, "data")
+
+        async def deny(text):
+            if is_cb:
+                await ev.answer(text, show_alert=True)
+            else:
+                await ev.answer(text)
+        if not await check_active(ev, info, admin_id):
+            return False
+        if is_admin(info, uid):
+            return True
+        if is_blocked(uid):
+            await deny("🚫 Siz ushbu botdan foydalanish huquqidan mahrum qilingansiz.")
+            return False
+        if info.get("maintenance_mode"):
+            await deny("🛠 Bot texnik tanaffusda. Birozdan keyin qayting.")
+            return False
+        if not await require_subscription(ev, info, admin_id):
+            return False
+        return True
+
+    def me(ev):
+        fu = ev.from_user
+        name = ("@" + fu.username) if fu.username else (fu.full_name or "")
+        return mk_user(info, fu.id, name=name)
+
+    @dp.message(Command("start"))
+    async def mstart(message: Message, state: FSMContext = None):
+        uid = message.from_user.id
+        if state is not None:
+            await state.clear()
+        if not await check_active(message, info, admin_id):
+            return
+        new_user = str(uid) not in info["mk_users"]
+        if uid not in info["users"]:
+            info["users"].append(uid)
+        u = me(message)
+        if new_user and not is_blocked(uid):
+            parts = (message.text or "").split(maxsplit=1)
+            arg = parts[1].strip() if len(parts) > 1 and (message.text or "").startswith("/start") else ""
+            if arg.startswith("ref_") and arg[4:].isdigit():
+                rid = int(arg[4:])
+                ref = info["mk_users"].get(str(rid))
+                bonus = int(info["mk_cfg"]["ref"])
+                if ref is not None and rid != uid and bonus > 0:
+                    u["ref_by"] = rid
+                    u["coins"] += bonus
+                    ref["coins"] += bonus
+                    ref["refs"] = ref.get("refs", 0) + 1
+                    try:
+                        await message.bot.send_message(rid, f"👥 Do'stingiz botga qo'shildi! Sizga <b>+{mk_fmt(bonus)} 🪙</b> berildi.")
+                    except Exception:
+                        pass
+        save_data()
+        if is_admin(info, uid):
+            await message.answer("🏪 <b>Mini Market boshqaruvi</b>\n\nPastdagi menyudan foydalaning 👇", reply_markup=admin_kb())
+            return
+        if not await gate(message):
+            return
+        await message.answer(
+            f"🏪 <b>Mini Market</b>ga xush kelibsiz!\n\nO'z do'koningizni boshqaring: javonlarni oching, kassir yollang, do'konni kengaytiring "
+            f"va eng boy do'kon egasi bo'ling! 🏆\n\n🎮 To'liq o'yin — «Do'konni ochish» tugmasida.\n🎁 Boshlang'ich pul: <b>{mk_fmt(u['coins'])} 🪙</b>",
+            reply_markup=user_kb(uid))
+
+    @dp.message(F.text == "🏪 Do'konni ochish")
+    async def m_open(message: Message):
+        if not await gate(message):
+            return
+        _u = get_marketapp_url(info.get("id"))
+        if not _u:
+            await message.answer("⚠️ Mini app manzili sozlanmagan.")
+            return
+        me(message)
+        save_data()
+        await message.answer("🏪 <b>Mini Market</b>\n\nDo'koningizni ochish uchun bosing 👇", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🏪 Do'konni ochish", web_app=WebAppInfo(url=_u))]]))
+
+    @dp.message(F.text == "🎮 O'ynash")
+    async def m_play(message: Message):
+        if staff(message):
+            me(message)
+            await message.answer("🎮 O'yin rejimi. Qaytish: «🛠 Admin panel».", reply_markup=user_kb(message.from_user.id))
+
+    @dp.message(F.text == "🛠 Admin panel")
+    async def m_back_admin(message: Message):
+        if staff(message):
+            await message.answer("🛠 Admin panel", reply_markup=admin_kb())
+
+    @dp.message(F.text == "ℹ️ Yordam")
+    async def m_help(message: Message):
+        await message.answer(
+            "ℹ️ <b>Qanday o'ynaladi?</b>\n\n"
+            "🍞 Javonlarni oching va yaxshilang — har biri soatiga pul ishlaydi.\n"
+            f"💰 Daromad {info['mk_cfg']['cap_h']} soatgacha to'planadi: «Daromad yig'ish» yoki do'kondagi kassadan oling.\n"
+            "👩‍💼 Kassirlar daromadni +20% dan oshiradi, 🏬 kengaytirish +50% dan.\n"
+            "🏢 Katta daromaddan keyin «Franshiza» qiling: hammasi qayta boshlanadi, lekin doimiy +10% bonus olasiz.\n"
+            "🎁 Kunlik bonus, 🎟 promokod, 👥 do'st taklif qilish — qo'shimcha pul.\n"
+            "💎 Premium foydalanuvchilar daromadi 2 barobar.\n\n"
+            "ℹ️ Bu — bot ichidagi o'yin, haqiqiy pul emas.")
+
+    @dp.message(F.text == "👤 Profil")
+    async def m_profile(message: Message):
+        if not await gate(message):
+            return
+        uid = message.from_user.id
+        u = me(message)
+        await message.answer(
+            f"👤 <b>Profil</b>{' 💎' if is_premium_active(info, uid) else ''}\n\n🪙 Pul: <b>{mk_fmt(u['coins'])}</b>\n"
+            f"📈 Daromad: <b>{mk_fmt(mk_rate(info, uid, u))}</b>/soat\n💰 Yig'ilgan: <b>{mk_fmt(mk_pending(info, uid, u))}</b>\n"
+            f"👩‍💼 Kassirlar: {u['cash']} · 🏬 Do'kon: {u['size']}-daraja\n🏢 Franshiza ballari: {u['fp']}\n👥 Takliflar: {u.get('refs', 0)}")
+
+    @dp.message(F.text == "💰 Daromad yig'ish")
+    async def m_collect(message: Message):
+        if not await gate(message):
+            return
+        uid = message.from_user.id
+        u = me(message)
+        amt = mk_collect(info, uid, u)
+        save_data()
+        await message.answer(f"💰 Yig'ildi: <b>+{mk_fmt(amt)} 🪙</b>\n🪙 Pul: {mk_fmt(u['coins'])}\n📈 Daromad: {mk_fmt(mk_rate(info, uid, u))}/soat")
+
+    @dp.message(F.text == "🎁 Kunlik bonus")
+    async def m_daily(message: Message):
+        if not await gate(message):
+            return
+        u = me(message)
+        r = mk_daily(info, u)
+        if r[0] == "wait":
+            h, m = int(r[1]) // 3600, (int(r[1]) % 3600) // 60
+            await message.answer(f"⏳ Keyingi bonusgacha: <b>{h} soat {m} daq</b>")
+            return
+        save_data()
+        await message.answer(f"🎁 Kunlik bonus: <b>+{mk_fmt(r[1])} 🪙</b> (seriya: {r[2]} kun)")
+
+    @dp.message(F.text == "🏆 Reyting")
+    async def m_rating(message: Message):
+        if not await gate(message):
+            return
+        rows = [r for r in mk_top(info, 10) if r[2] > 0]
+        if not rows:
+            await message.answer("🏆 Reyting hali bo'sh. Birinchi bo'ling!")
+            return
+        medals = ["🥇", "🥈", "🥉"]
+        lines = [f"{medals[i] if i < 3 else str(i + 1) + '.'} {html_escape(r[1] or 'Yashirin')} — 📈 {mk_fmt(r[2])}/soat · 🏢 {r[3]}" for i, r in enumerate(rows)]
+        await message.answer("🏆 <b>Eng boy do'kon egalari</b>\n\n" + "\n".join(lines))
+
+    @dp.message(F.text == "👥 Do'stlarni taklif qilish")
+    async def m_invite(message: Message):
+        if not await gate(message):
+            return
+        uid = message.from_user.id
+        u = me(message)
+        uname = info.get("username") or (await message.bot.me()).username
+        await message.answer(
+            f"👥 <b>Do'stlarni taklif qiling</b>\n\nHar bir do'stingiz uchun ikkalangizga <b>+{mk_fmt(info['mk_cfg']['ref'])} 🪙</b>.\n\n"
+            f"🔗 Sizning havolangiz:\nhttps://t.me/{uname}?start=ref_{uid}\n\nTaklif qilinganlar: <b>{u.get('refs', 0)}</b>")
+
+    @dp.message(F.text == "🎟 Promokod")
+    async def m_promo_ask(message: Message, state: FSMContext):
+        if not await gate(message):
+            return
+        await state.set_state(MkUser.promo)
+        await message.answer("🎟 Promokodni yuboring (bekor qilish: /start):")
+
+    @dp.message(MkUser.promo, F.text)
+    async def m_promo_do(message: Message, state: FSMContext):
+        await state.clear()
+        u = me(message)
+        r = mk_promo(info, message.from_user.id, u, message.text)
+        if r[0] == "ok":
+            save_data()
+            await message.answer(f"🎉 Promokod qabul qilindi: <b>+{mk_fmt(r[1])} 🪙</b>")
+        else:
+            await message.answer({"none": "❌ Bunday promokod yo'q.", "used": "⚠️ Siz bu promokoddan foydalangansiz.", "over": "😔 Promokod limiti tugagan."}[r[0]])
+
+    # ---------- Admin ----------
+    @dp.message(F.text == "📊 Statistika")
+    async def m_stats(message: Message):
+        if not staff(message):
+            return
+        v = mk_admin_view(info)["stats"]
+        await message.answer(
+            f"📊 <b>Statistika</b>\n\n👥 Foydalanuvchilar: {v['users']}\n🎮 O'yinchilar: {v['players']}\n🪙 Aylanmadagi pul: {mk_fmt(v['coins'])}\n"
+            f"🛒 Xaridlar: {v['buys']}\n🏢 Franshizalar: {v['franchises']}\n🎁 Kunlik bonuslar: {v['daily']}\n🎟 Promokodlar: {v['promos']}\n🚫 Bloklangan: {v['blocked']}\n\n"
+            "⚙️ Promokod va sozlamalar — mini app «Admin» bo'limida.")
+
+    @dp.message(F.text == "🏆 Top o'yinchilar")
+    async def m_top_admin(message: Message):
+        if not staff(message):
+            return
+        rows = mk_top(info, 15)
+        await message.answer("🏆 <b>Top o'yinchilar</b>\n\n" + ("\n".join(
+            f"{i + 1}. {html_escape(r[1] or '—')} <code>{r[0]}</code> — 📈 {mk_fmt(r[2])}/soat · 🪙 {mk_fmt(r[4])}" for i, r in enumerate(rows)) or "Hali o'yinchi yo'q."))
+
+    @dp.message(F.text == "🪙 Pul berish")
+    async def m_give_ask(message: Message, state: FSMContext):
+        if not staff(message):
+            return
+        await state.set_state(MkAdmin.give)
+        await message.answer("🪙 Foydalanuvchi ID va miqdorni yuboring.\nMasalan: <code>123456789 5000</code> (ayirish uchun manfiy son). Bekor qilish: /start")
+
+    @dp.message(MkAdmin.give, F.text)
+    async def m_give_do(message: Message, state: FSMContext):
+        if not staff(message):
+            return
+        parts = (message.text or "").split()
+        try:
+            tid, amt = int(parts[0]), int(parts[1])
+        except (ValueError, IndexError):
+            await message.answer("❌ Format: ID miqdor")
+            return
+        tu = info["mk_users"].get(str(tid))
+        if tu is None or abs(amt) > 10_000_000:
+            await message.answer("❌ Foydalanuvchi topilmadi yoki miqdor katta.")
+            return
+        tu["coins"] = max(0, tu["coins"] + amt)
+        save_data()
+        await state.clear()
+        await message.answer(f"✅ {tid}: {amt:+d} 🪙", reply_markup=admin_kb())
+
+    @dp.message(F.text == "🚫 Bloklash")
+    async def m_block_ask(message: Message, state: FSMContext):
+        if not staff(message):
+            return
+        await state.set_state(MkAdmin.block)
+        await message.answer("🚫 Bloklash uchun ID yuboring (blokdan chiqarish: <code>-ID</code>). Bekor qilish: /start")
+
+    @dp.message(MkAdmin.block, F.text)
+    async def m_block_do(message: Message, state: FSMContext):
+        if not staff(message):
+            return
+        t = (message.text or "").strip()
+        try:
+            tid = int(t.lstrip("-"))
+        except ValueError:
+            await message.answer("❌ ID raqam bo'lishi kerak.")
+            return
+        bl = info.setdefault("blocked_users", [])
+        if t.startswith("-"):
+            if tid in bl:
+                bl.remove(tid)
+            msg = "✅ Blokdan chiqarildi"
+        else:
+            if is_admin(info, tid):
+                await message.answer("❌ Adminni bloklab bo'lmaydi.")
+                return
+            if tid not in bl:
+                bl.append(tid)
+            msg = "🚫 Bloklandi"
+        save_data()
+        await state.clear()
+        await message.answer(msg, reply_markup=admin_kb())
+
+    @dp.message(F.text == "📢 Xabar yuborish")
+    async def m_bc_ask(message: Message, state: FSMContext):
+        if not staff(message):
+            return
+        await state.set_state(MkAdmin.broadcast)
+        await message.answer(f"📢 Xabar matnini yuboring ({len(info['users'])} kishiga boradi). Bekor qilish: /start")
+
+    @dp.message(MkAdmin.broadcast, F.text)
+    async def m_bc_send(message: Message, state: FSMContext):
+        if not staff(message):
+            return
+        text = message.text
+        await state.clear()
+        sent = failed = 0
+        for uu in list(info["users"]):
+            try:
+                await message.bot.send_message(uu, text)
+                sent += 1
+            except Exception:
+                failed += 1
+            await asyncio.sleep(0.05)
+        await message.answer(f"✅ Yuborildi: {sent}\n❌ Yetmadi: {failed}", reply_markup=admin_kb())
+
+
+# ================= 🏪 MINI MARKET MINI APP (/marketapp) =================
+def get_marketapp_url(bot_id) -> str:
+    purl = get_kinopanel_url(bot_id)
+    return purl.replace("/kinopanel?", "/marketapp?") if purl else ""
+
+
+async def market_page(request):
+    return web.Response(
+        text=MARKETAPP_HTML,
+        content_type="text/html",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache"},
+    )
+
+
+async def _mk_ctx(request, body=None):
+    token, info, uid, user, err = await pub_auth(request, body)
+    if err is not None or info is None:
+        return None, None, None, None, err if err is not None else _pub_err("bot_not_found", 404)
+    if info.get("type") != "market":
+        return None, None, None, None, _pub_err("not_found", 404)
+    mk_init(info)
+    if info.get("maintenance_mode") and not is_admin(info, uid):
+        return None, None, None, None, _pub_err("maintenance", 503)
+    name = ("@" + user["username"]) if user.get("username") else (user.get("first_name") or "")
+    u = mk_user(info, uid, name=name)
+    return info, uid, u, token, None
+
+
+async def market_state_api(request):
+    info, uid, u, token, err = await _mk_ctx(request)
+    if err is not None:
+        return err
+    out = {"state": mk_state(info, uid, u), "catalog": mk_catalog()}
+    if is_admin(info, uid):
+        out["admin"] = mk_admin_view(info)
+    return web.json_response(out, headers=_NO_STORE)
+
+
+async def market_act_api(request):
+    body = await _pub_body(request)
+    info, uid, u, token, err = await _mk_ctx(request, body)
+    if err is not None:
+        return err
+    if not _pub_rate(token, uid, "market", 150, 60):
+        return _pub_err("slow_down", 429)
+    a = str(body.get("a", ""))
+    now = _eg_time.time()
+    res = None
+    adm = is_admin(info, uid)
+
+    def done():
+        save_data()
+        out = {"ok": True, "result": res, "state": mk_state(info, uid, u)}
+        if adm and a.startswith("admin"):
+            out["admin"] = mk_admin_view(info)
+        return web.json_response(out, headers=_NO_STORE)
+
+    def fail(r):
+        return _pub_err("mk_" + r[1], 402 if r[1] == "no_coins" else 409)
+
+    if a == "collect":
+        res = mk_collect(info, uid, u, now)
+        return done()
+    if a == "buy_line":
+        try:
+            i = int(body.get("i"))
+            n = body.get("n", 1)
+            n = "max" if n == "max" else int(n)
+        except (TypeError, ValueError):
+            return _pub_err("bad_value")
+        if n != "max" and not 1 <= n <= MK_MAXLVL:
+            return _pub_err("bad_value")
+        r = mk_buy_line(info, uid, u, i, n, now)
+        if r[0] != "ok":
+            return fail(r) if r[1] != "bad_value" else _pub_err("bad_value")
+        res = {"levels": r[1]}
+        return done()
+    if a == "buy_cash":
+        r = mk_buy_cash(info, uid, u, now)
+        if r[0] != "ok":
+            return fail(r)
+        res = {"cash": r[1]}
+        return done()
+    if a == "buy_size":
+        r = mk_buy_size(info, uid, u, now)
+        if r[0] != "ok":
+            return fail(r)
+        res = {"size": r[1]}
+        return done()
+    if a == "franchise":
+        r = mk_franchise(info, uid, u, now)
+        if r[0] != "ok":
+            return fail(r)
+        res = {"fp": r[1]}
+        return done()
+    if a == "daily":
+        r = mk_daily(info, u, now)
+        if r[0] == "wait":
+            return _pub_err("wait", 429, left=int(r[1]))
+        res = {"bonus": r[1], "streak": r[2]}
+        return done()
+    if a == "promo":
+        r = mk_promo(info, uid, u, str(body.get("code", ""))[:30])
+        if r[0] != "ok":
+            return _pub_err("promo_" + r[0], 400)
+        res = {"coins": r[1]}
+        return done()
+    if a == "top":
+        rows = [r for r in mk_top(info, 20) if r[2] > 0]
+        res = [{"name": r[1] or "—", "rate": r[2], "fp": r[3], "me": r[0] == uid} for r in rows]
+        return web.json_response({"ok": True, "result": res}, headers=_NO_STORE)
+    if a.startswith("admin"):
+        if not adm:
+            return _pub_err("forbidden", 403)
+        if a == "admin_promo_add":
+            code = str(body.get("code", "")).strip().upper()
+            try:
+                coins, uses = int(body.get("coins")), int(body.get("uses"))
+            except (TypeError, ValueError):
+                return _pub_err("bad_value")
+            if not re.fullmatch(r"[A-Z0-9_]{3,20}", code) or not 1 <= coins <= 1_000_000 or not 1 <= uses <= 100000:
+                return _pub_err("bad_value")
+            info["mk_promos"][code] = {"coins": coins, "uses": uses, "used": []}
+            return done()
+        if a == "admin_promo_del":
+            info["mk_promos"].pop(str(body.get("code", "")).strip().upper(), None)
+            return done()
+        if a == "admin_give":
+            try:
+                tid, amt = int(str(body.get("id", "")).strip()), int(body.get("amount"))
+            except (TypeError, ValueError):
+                return _pub_err("bad_value")
+            tu = info["mk_users"].get(str(tid))
+            if tu is None or abs(amt) > 10_000_000:
+                return _pub_err("bad_value")
+            tu["coins"] = max(0, tu["coins"] + amt)
+            return done()
+        if a == "admin_cfg":
+            k = str(body.get("key", ""))
+            if k == "maintenance":
+                info["maintenance_mode"] = bool(body.get("value"))
+                return done()
+            if k not in MK_CFG_META:
+                return _pub_err("bad_value")
+            try:
+                v = int(body.get("value"))
+            except (TypeError, ValueError):
+                return _pub_err("bad_value")
+            if not MK_CFG_META[k][1] <= v <= MK_CFG_META[k][2]:
+                return _pub_err("bad_value")
+            info["mk_cfg"][k] = v
+            return done()
+        if a == "admin_block":
+            try:
+                tid = int(str(body.get("id", "")).strip())
+            except ValueError:
+                return _pub_err("bad_value")
+            if is_admin(info, tid):
+                return _pub_err("bad_value")
+            bl = info.setdefault("blocked_users", [])
+            if body.get("block", True):
+                if tid not in bl:
+                    bl.append(tid)
+            elif tid in bl:
+                bl.remove(tid)
+            return done()
+    return _pub_err("bad_value")
+
+
+MARKETAPP_HTML = r"""<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Mini Market</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{--bg1:#1b1464;--bg2:#3a1c8f;--cd:rgba(255,255,255,.1);--bd:rgba(255,255,255,.16);--tx:#fff;--mu:#c3bdf0;--gold:#ffd23f;--gn:#3ddc84;--rd:#ff5470;--c-common:#9aa4b2;--c-rare:#3b9cff;--c-epic:#b25cff;--c-legend:#ffc21a}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none}
+html,body{margin:0;height:100%;color:var(--tx);font:16px/1.4 "Trebuchet MS",-apple-system,"Segoe UI",Roboto,sans-serif;background:linear-gradient(160deg,var(--bg1),var(--bg2) 60%,#6a2bd1);background-attachment:fixed;overflow-x:hidden}
+#app{max-width:520px;margin:0 auto;min-height:100%;padding:0 12px 92px}
+.top{position:sticky;top:0;z-index:20;padding:10px 0 8px;background:linear-gradient(180deg,rgba(27,20,100,.96),rgba(27,20,100,.7));backdrop-filter:blur(6px)}
+.row{display:flex;gap:8px;align-items:center}
+.pill{flex:1;background:rgba(0,0,0,.35);border:2px solid var(--bd);border-radius:999px;padding:7px 12px;font-weight:800;font-size:15px;white-space:nowrap}
+.pill small{display:block;font-size:10px;color:var(--mu);font-weight:600;letter-spacing:.5px;text-transform:uppercase}
+.btn{border:0;border-radius:14px;padding:13px 16px;font:inherit;font-weight:900;color:#1a1340;background:linear-gradient(180deg,#ffe566,#ffb800);box-shadow:0 4px 0 #b37d00,0 8px 16px rgba(0,0,0,.25);cursor:pointer}
+.btn:active{transform:translateY(3px);box-shadow:0 1px 0 #b37d00}
+.btn.gn{background:linear-gradient(180deg,#7bf0a8,#26c866);box-shadow:0 4px 0 #14803f,0 8px 16px rgba(0,0,0,.25);color:#06361b}
+.btn.bl{background:linear-gradient(180deg,#7cc4ff,#2f7cf0);box-shadow:0 4px 0 #1a4aa8,0 8px 16px rgba(0,0,0,.25);color:#06214d}
+.btn.rd{background:linear-gradient(180deg,#ff8aa0,#e8344f);box-shadow:0 4px 0 #9c1830;color:#fff}
+.btn.sm{padding:9px 12px;font-size:14px;border-radius:12px}
+.btn[disabled],.btn.off{filter:grayscale(.85) brightness(.7);pointer-events:none}
+.card{background:var(--cd);border:2px solid var(--bd);border-radius:18px;padding:14px;margin:12px 0}
+h2{margin:6px 0 10px;font-size:20px;font-weight:900}
+.mu{color:var(--mu);font-size:13px}
+.tabs{position:fixed;left:0;right:0;bottom:0;z-index:30;display:flex;justify-content:center;gap:4px;padding:8px 8px calc(8px + env(safe-area-inset-bottom));background:rgba(20,12,70,.95);border-top:2px solid var(--bd)}
+.tabs button{flex:1;max-width:100px;border:0;border-radius:14px;padding:8px 2px;background:transparent;color:var(--mu);font:inherit;font-size:11px;font-weight:800}
+.tabs button b{display:block;font-size:22px;line-height:1.1}
+.tabs button.on{background:rgba(255,255,255,.18);color:#fff}
+.stage{text-align:center;padding:6px 0}
+.egg{font-size:132px;line-height:1.05;display:inline-block;filter:drop-shadow(0 14px 18px rgba(0,0,0,.45));animation:bob 2.4s ease-in-out infinite;cursor:pointer}
+.plat{width:170px;height:22px;margin:-6px auto 6px;border-radius:50%;background:radial-gradient(ellipse,rgba(255,255,255,.45),rgba(255,255,255,0) 70%)}
+@keyframes bob{50%{transform:translateY(-10px) rotate(-2deg)}}
+.arrow{width:46px;height:46px;border-radius:50%;border:2px solid var(--bd);background:rgba(0,0,0,.3);color:#fff;font-size:22px;font-weight:900}
+.dots{display:flex;gap:6px;justify-content:center;margin:6px 0}
+.dots i{width:9px;height:9px;border-radius:50%;background:rgba(255,255,255,.3)}.dots i.on{background:var(--gold)}
+.drops{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.drop{display:flex;align-items:center;gap:8px;background:rgba(0,0,0,.28);border:2px solid var(--bd);border-radius:14px;padding:8px}
+.drop .e{font-size:28px}.drop b{display:block;font-size:13px}.drop span{font-size:11px;color:var(--mu)}
+.r-common{border-color:var(--c-common)}.r-rare{border-color:var(--c-rare)}.r-epic{border-color:var(--c-epic)}.r-legend{border-color:var(--c-legend);box-shadow:0 0 18px rgba(255,194,26,.45)}
+.hb{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-top:10px}
+.hb .btn{padding:11px 4px;font-size:14px}.hb .btn small{display:block;font-size:11px;opacity:.8}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.pet{position:relative;text-align:center;background:rgba(0,0,0,.28);border:2px solid var(--bd);border-radius:16px;padding:10px 4px}
+.pet .e{font-size:38px}.pet b{display:block;font-size:12px}.pet span{font-size:11px;color:var(--mu)}
+.pet.lock{opacity:.45}.pet.lock .e{filter:brightness(0)}
+.pet .n{position:absolute;top:4px;right:6px;font-size:12px;font-weight:900;background:#000a;border-radius:8px;padding:0 6px}
+.ov{position:fixed;inset:0;z-index:100;background:radial-gradient(circle at 50% 40%,#5028c8,#0a0528);display:flex;flex-direction:column;align-items:center;justify-content:flex-start;padding:10px 6px;text-align:center}
+.ov>:first-child{margin-top:auto}.ov>:last-child{margin-bottom:auto}
+.ov[hidden]{display:none}
+.ov .big{font-size:150px;line-height:1}
+.shake{animation:shake .5s ease-in-out infinite}
+.shake.hard{animation-duration:.18s}
+@keyframes shake{0%,100%{transform:rotate(0) scale(1)}25%{transform:rotate(-12deg) scale(1.05)}75%{transform:rotate(12deg) scale(1.05)}}
+.flash{animation:flash .35s ease-out forwards}
+@keyframes flash{0%{filter:brightness(1)}60%{filter:brightness(6) blur(2px);transform:scale(1.5)}100%{filter:brightness(10);transform:scale(2);opacity:0}}
+.res{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;max-width:420px}
+.rc{width:112px;background:rgba(255,255,255,.12);border:3px solid var(--bd);border-radius:18px;padding:12px 4px;animation:pop .45s cubic-bezier(.2,1.6,.4,1) both;position:relative}
+.rc .e{font-size:54px}.rc b{display:block;font-size:13px}.rc span{font-size:11px;color:var(--mu)}
+.rc .new{position:absolute;top:-10px;left:50%;transform:translateX(-50%);background:var(--rd);color:#fff;font-size:11px;font-weight:900;border-radius:8px;padding:1px 8px}
+.res.one .rc{width:190px;padding:20px 8px}.res.one .rc .e{font-size:96px}
+@keyframes pop{0%{transform:scale(0) rotate(-20deg)}100%{transform:scale(1) rotate(0)}}
+.sheet{position:fixed;left:0;right:0;bottom:0;z-index:60;background:#241670;border-top:3px solid var(--bd);border-radius:22px 22px 0 0;padding:16px 16px calc(18px + env(safe-area-inset-bottom));max-width:520px;margin:0 auto}
+.sheet[hidden]{display:none}
+.toast{position:fixed;left:50%;bottom:96px;transform:translateX(-50%);z-index:200;background:#000d;border:2px solid var(--bd);border-radius:14px;padding:10px 16px;font-weight:800;max-width:90%;text-align:center}
+.spots{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.spot{aspect-ratio:1;border-radius:18px;border:2px solid var(--bd);background:rgba(0,0,0,.25);font-size:44px;display:flex;align-items:center;justify-content:center;font-weight:900}
+.spot.hit{background:rgba(255,210,63,.25);border-color:var(--gold);animation:pop .4s both}
+.streak{display:flex;gap:6px;justify-content:space-between;margin:10px 0}
+.streak i{flex:1;text-align:center;font-style:normal;background:rgba(0,0,0,.3);border:2px solid var(--bd);border-radius:10px;padding:6px 0;font-size:12px;font-weight:800}
+.streak i.on{background:var(--gold);color:#3a2a00;border-color:var(--gold)}
+input{width:100%;padding:12px 14px;border-radius:12px;border:2px solid var(--bd);background:rgba(0,0,0,.3);color:#fff;font:inherit;outline:none;user-select:text;-webkit-user-select:text}
+.lb{display:flex;align-items:center;gap:10px;padding:10px 4px;border-bottom:1px solid var(--bd)}
+.lb .rk{width:34px;font-weight:900;font-size:18px;text-align:center}.lb .nm{flex:1;font-weight:800;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.lb.me{background:rgba(255,210,63,.18);border-radius:12px}
+.stat{display:grid;grid-template-columns:1fr 1fr;gap:8px}.stat div{background:rgba(0,0,0,.28);border-radius:12px;padding:10px}.stat b{display:block;font-size:18px}.stat span{font-size:11px;color:var(--mu)}
+.ar{display:flex;gap:8px;margin:8px 0;align-items:center}.ar .grow{flex:1}
+.cv{display:block;width:100%;height:250px;touch-action:pan-y}
+img.pi{width:100%;max-width:84px;height:auto;display:block;margin:0 auto;pointer-events:none}
+.pet.lock img.pi{filter:brightness(0)}
+.drop img.pi{width:44px;margin:0;flex:none}
+.rc img.pi{width:84px}.res.one .rc img.pi{width:130px}
+.ovcv{display:none;width:100%;max-width:560px;height:44vh}
+.sh3{display:block;width:130px;height:130px;flex:none}
+.ov{overflow-y:auto}.ov .res.many{gap:6px}.ov .rc.sm{width:62px;padding:6px 2px;border-width:2px}.ov .rc.sm img.pi{width:46px}.ov .rc.sm b{font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fm{position:relative;width:100%;border-radius:18px;overflow:hidden;border:2px solid var(--bd);background:#7ec8ff;touch-action:none;margin-top:6px}
+#fCv{width:100%;height:100%;display:block}
+.fhud{position:absolute;top:8px;background:rgba(0,0,0,.5);border-radius:12px;padding:6px 10px;font-size:13px;font-weight:800;z-index:2;max-width:55%}.fhud.tl{left:8px}.fhud.tr{right:8px;text-align:right}
+.fhud .btn.sm{margin-left:6px;padding:4px 8px;font-size:12px;border-radius:9px;box-shadow:0 2px 0 #b37d00}
+.joy{position:absolute;left:14px;bottom:14px;width:124px;height:124px;border-radius:50%;background:rgba(255,255,255,.22);border:3px solid rgba(255,255,255,.5);touch-action:none;z-index:3}
+.knob{position:absolute;left:50%;top:50%;width:54px;height:54px;margin:-27px 0 0 -27px;border-radius:50%;background:rgba(255,255,255,.78);box-shadow:0 3px 8px rgba(0,0,0,.35)}
+.fbtn{position:absolute;right:14px;bottom:22px;width:118px;height:118px;border-radius:50%;border:4px solid #fff;background:rgba(40,160,80,.92);color:#fff;font:inherit;font-weight:900;font-size:14px;z-index:3;touch-action:none;padding:6px}
+.fbtn.off{background:rgba(0,0,0,.5);color:#ddd;border-color:#bbb}.fbtn.go{background:#ff9d1a;animation:pulse 1s infinite}
+@keyframes pulse{50%{transform:scale(1.07)}}
+.fmsg{position:absolute;left:10px;right:10px;top:56px;text-align:center;background:rgba(0,0,0,.7);border-radius:12px;padding:8px;font-weight:800;font-size:14px;z-index:4}
+#fCv{touch-action:none}
+.fm.full{position:fixed;left:0;top:0;right:0;bottom:0;width:100%;height:100%!important;z-index:60;border-radius:0;border:0;margin:0}
+.fmap{position:absolute;right:8px;top:72px;width:46px;height:92px;border-radius:8px;border:2px solid rgba(255,255,255,.65);z-index:2;pointer-events:none}
+.fico{position:absolute;right:8px;top:172px;width:46px;height:40px;border-radius:12px;border:2px solid rgba(255,255,255,.65);background:rgba(0,0,0,.45);color:#fff;font-size:20px;z-index:3;padding:0}
+.fsh{position:absolute;left:0;right:0;top:0;bottom:0;background:rgba(18,14,70,.96);z-index:6;overflow:auto;padding:12px 12px 20px;-webkit-overflow-scrolling:touch;touch-action:pan-y}
+.fsht{display:flex;justify-content:space-between;align-items:center;font-size:17px;margin-bottom:8px}.fx{background:rgba(255,255,255,.15);border:0;color:#fff;border-radius:10px;width:36px;height:36px;font-size:16px}
+.fsr{background:rgba(0,0,0,.28);border-radius:12px;padding:10px;margin:8px 0;font-size:14px}
+.fgrid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px}
+.fb{border:0;border-radius:12px;padding:9px 6px;background:linear-gradient(#ffd23f,#ff9d1a);color:#3a2200;font:inherit;font-weight:900;font-size:15px;box-shadow:0 3px 0 #b37d00;display:flex;flex-direction:column;align-items:center;gap:2px}
+.fb span{font-size:12px;font-weight:800}.fb.wide{grid-column:1/3;width:100%}.fb.off{filter:grayscale(1);opacity:.5}
+.bar{height:8px;border-radius:6px;background:rgba(0,0,0,.35);margin:6px 0 10px;overflow:hidden}.bar i{display:block;height:100%;background:linear-gradient(90deg,#7bf0a8,#ffd23f)}
+#mCv{width:100%;height:100%;display:block;touch-action:none}
+.err{text-align:center;padding:40px 16px}.err .big{font-size:70px}
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="top"><div class="row">
+    <div class="pill"><small>Tanga</small>🪙 <span id="coins">0</span></div>
+    <div class="pill"><small>Daromad / soat</small>📈 <span id="rate">0</span></div>
+  </div>
+  <div class="row" style="margin-top:8px"><button class="btn gn" id="colBtn" style="flex:1">💰 Yig'ish: <span id="pend">0</span></button></div></div>
+  <main id="m"><div class="err"><div class="big">🏪</div><p class="mu">Yuklanmoqda...</p></div></main>
+</div>
+<div class="tabs" id="tabs"></div>
+<div class="toast" id="toast" hidden></div>
+<script>
+/* ===== Mini 3D (tashqi kutubxonasiz): poligonlarni canvas'ga chizadi ===== */
+var G3 = (function () {
+  var PI = Math.PI, sin = Math.sin, cos = Math.cos, sqrt = Math.sqrt;
+  function rotV(p, rx, ry, rz) {
+    var x = p[0], y = p[1], z = p[2], t;
+    if (rz) { t = x * cos(rz) - y * sin(rz); y = x * sin(rz) + y * cos(rz); x = t; }
+    if (rx) { t = y * cos(rx) - z * sin(rx); z = y * sin(rx) + z * cos(rx); y = t; }
+    if (ry) { t = x * cos(ry) + z * sin(ry); z = -x * sin(ry) + z * cos(ry); x = t; }
+    return [x, y, z];
+  }
+  // kameraning orqasidagi nuqtalar noto'g'ri chiziladi — ko'pburchakni yaqin tekislikda kesamiz
+  function clipNear(v, zn) {
+    var ok = true, i; for (i = 0; i < v.length; i++) if (v[i][2] > zn) { ok = false; break; }
+    if (ok) return v;
+    var out = [];
+    for (i = 0; i < v.length; i++) {
+      var a = v[i], b = v[(i + 1) % v.length], ain = a[2] <= zn, bin = b[2] <= zn;
+      if (ain) out.push(a);
+      if (ain !== bin) { var t = (zn - a[2]) / (b[2] - a[2]); out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, zn]); }
+    }
+    return out;
+  }
+  function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
+  function rgb(c, k, a) { return "rgb(" + Math.round(clamp(c[0] * k, 0, 255)) + "," + Math.round(clamp(c[1] * k, 0, 255)) + "," + Math.round(clamp(c[2] * k, 0, 255)) + ")"; }
+  // ---- geometriya ----
+  var BOX_V = [[-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1], [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]];
+  var BOX_F = [[4, 5, 6, 7], [1, 0, 3, 2], [5, 1, 2, 6], [0, 4, 7, 3], [7, 6, 2, 3], [0, 1, 5, 4]];
+  function buildGrid(part) {
+    var LA = part.lat || 9, LO = part.lon || 14, g = [], i, j, A0 = part.a0 == null ? -PI / 2 : part.a0, A1 = part.a1 == null ? PI / 2 : part.a1;
+    for (i = 0; i <= LA; i++) {
+      var v = i / LA, row = [];
+      for (j = 0; j <= LO; j++) {
+        var u = j / LO, b = u * 2 * PI, a0 = A0, a1 = A1;
+        if (part.edge) { var ed = part.edge(j % LO); if (part.edgeSide === "a0") a0 = A0 + ed; else a1 = A1 + ed; }
+        var a = a0 + (a1 - a0) * v, r = cos(a), y = sin(a), x, z, rr = r;
+        if (part.type === "egg") { rr = r * (1 - 0.16 * y); y = y * 1.28; }
+        x = rr * sin(b); z = rr * cos(b);
+        row.push([x * part.s[0], y * part.s[1], z * part.s[2], u, v]);
+      }
+      g.push(row);
+    }
+    return { grid: g, LA: LA, LO: LO };
+  }
+  function Scene(canvas, opt) {
+    opt = opt || {};
+    this.cv = canvas; this.ctx = canvas.getContext("2d");
+    this.objs = []; this.cam = { d: opt.d || 6, pitch: opt.pitch == null ? 0.22 : opt.pitch, f: opt.f || 1.35 };
+    this.fx = []; this.bg = null; this.flash = 0; this.rays = null; this.time = 0;
+    this.size = opt.size || 0;
+    this.resize();
+  }
+  Scene.prototype.resize = function () {
+    var cv = this.cv, dpr = Math.min(2, window.devicePixelRatio || 1), w = this.size || cv.clientWidth || 300, h = this.size || cv.clientHeight || 300;
+    if (this.size) dpr = 1;
+    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); this.W = cv.width; this.H = cv.height; this.dpr = dpr;
+  };
+  Scene.prototype.project = function (p) {
+    var c = this.cam, t = c.t || [0, 0, 0], q = [p[0] - t[0], p[1] - t[1], p[2] - t[2]];
+    if (c.yaw) q = rotV(q, 0, -c.yaw, 0);
+    q = rotV(q, c.pitch, 0, 0); q[2] -= c.d;
+    var k = this.H * c.f / (-q[2]);
+    return [this.W / 2 + q[0] * k, this.H * 0.52 - q[1] * k, q];
+  };
+  // obyekt: {parts:[], pos:[x,y,z], rot:[rx,ry,rz], sc:[sx,sy,sz], hidden, shadow}
+  Scene.prototype.add = function (o) { o.pos = o.pos || [0, 0, 0]; o.rot = o.rot || [0, 0, 0]; o.sc = o.sc || [1, 1, 1]; this.objs.push(o); return o; };
+  var LD = (function () { var l = [-0.45, 0.75, 0.6], n = sqrt(l[0] * l[0] + l[1] * l[1] + l[2] * l[2]); return [l[0] / n, l[1] / n, l[2] / n]; })();
+  Scene.prototype.render = function (t) {
+    var ctx = this.ctx, W = this.W, H = this.H, self = this, faces = [], oi, pi;
+    this.time = t;
+    ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, W, H);
+    if (this.bg) this.bg(ctx, W, H, t);
+    // rays (orqada)
+    if (this.rays) this.drawRays(ctx, t);
+    for (oi = 0; oi < this.objs.length; oi++) {
+      var o = this.objs[oi]; if (o.hidden) continue;
+      if (o.shadow) {
+        var sp = this.project([o.pos[0], -o.shadow.y, o.pos[2]]), sr = o.shadow.r * o.sc[0] * this.H * this.cam.f / (this.cam.d) * 0.5;
+        ctx.save(); ctx.translate(sp[0], sp[1]); ctx.scale(1, 0.32);
+        var gr = ctx.createRadialGradient(0, 0, 0, 0, 0, sr); gr.addColorStop(0, "rgba(0,0,0,.45)"); gr.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(0, 0, sr, 0, 2 * PI); ctx.fill(); ctx.restore();
+      }
+      var ct = this.cam.t;
+      for (pi = 0; pi < o.parts.length; pi++) {
+        var pt = o.parts[pi];
+        if (o.cullR && ct) { var cx = o.pos[0] + (pt.c ? pt.c[0] : 0) - ct[0], cz = o.pos[2] + (pt.c ? pt.c[2] : 0) - ct[2]; if (cx * cx + cz * cz > o.cullR * o.cullR) continue; }
+        this.partFaces(o, pt, t, faces);
+      }
+    }
+    var under = faces.under || [];
+    under.sort(function (a, b) { return a.z - b.z; });
+    faces = under.concat(faces.sort(function (a, b) { return a.z - b.z; }));
+    ctx.lineJoin = "round";
+    for (var i = 0; i < faces.length; i++) {
+      var f = faces[i], p = f.p;
+      ctx.globalAlpha = f.a;
+      ctx.fillStyle = f.c; ctx.strokeStyle = f.s;
+      ctx.lineWidth = f.lw * this.dpr;
+      ctx.beginPath(); ctx.moveTo(p[0], p[1]);
+      for (var k = 2; k < p.length; k += 2) ctx.lineTo(p[k], p[k + 1]);
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    // zarralar
+    for (var q = this.fx.length - 1; q >= 0; q--) {
+      var s = this.fx[q]; s.life -= 1; if (s.life <= 0) { this.fx.splice(q, 1); continue; }
+      s.x += s.vx; s.y += s.vy; s.vy += s.g || 0;
+      var al = clamp(s.life / s.max, 0, 1);
+      ctx.globalAlpha = al; ctx.fillStyle = s.col;
+      ctx.save(); ctx.translate(s.x, s.y); ctx.rotate(s.life * 0.2);
+      var r = s.r * this.dpr; ctx.beginPath();
+      for (var m = 0; m < 8; m++) { var rad = m % 2 ? r * 0.35 : r; ctx.lineTo(cos(m * PI / 4) * rad, sin(m * PI / 4) * rad); }
+      ctx.closePath(); ctx.fill(); ctx.restore();
+    }
+    ctx.globalAlpha = 1;
+    if (this.labels) {
+      ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.lineJoin = "round";
+      for (var li = 0; li < this.labels.length; li++) {
+        var lb = this.labels[li], lp = this.project(lb.pos); if (lp[2][2] > -1) continue;
+        var fs = (lb.size || 14) * this.dpr; ctx.font = "800 " + fs + "px Trebuchet MS,sans-serif";
+        ctx.lineWidth = fs * 0.28; ctx.strokeStyle = "rgba(0,0,0,.7)"; ctx.strokeText(lb.text, lp[0], lp[1]);
+        ctx.fillStyle = lb.col || "#fff"; ctx.fillText(lb.text, lp[0], lp[1]);
+      }
+    }
+    if (this.flash > 0.01) { ctx.fillStyle = "rgba(255,255,255," + clamp(this.flash, 0, 1) + ")"; ctx.fillRect(0, 0, W, H); this.flash *= 0.86; }
+  };
+  Scene.prototype.toCamPt = function (p) {
+    var c = this.cam, t = c.t || [0, 0, 0], q = [p[0] - t[0], p[1] - t[1], p[2] - t[2]];
+    if (c.yaw) q = rotV(q, 0, -c.yaw, 0);
+    q = rotV(q, c.pitch, 0, 0); q[2] -= c.d; return q;
+  };
+  // yer ko'pburchagi yo'li (kamera orqasidagi qismi kesiladi); false — ko'rinmaydi
+  Scene.prototype.polyPath = function (ctx, pts) {
+    var self = this, v = clipNear(pts.map(function (p) { return self.toCamPt(p); }), -0.7);
+    if (v.length < 3) return false;
+    ctx.beginPath();
+    for (var i = 0; i < v.length; i++) { var k = this.H * this.cam.f / (-v[i][2]), x = this.W / 2 + v[i][0] * k, y = this.H * 0.52 - v[i][1] * k; if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y); }
+    ctx.closePath(); return true;
+  };
+  // ekran nuqtasi -> yer (y=0) dagi dunyo koordinatasi
+  Scene.prototype.groundAt = function (px, py) {
+    var c = this.cam, t = c.t || [0, 0, 0], W = this.W, H = this.H, sp = sin(c.pitch), cp = cos(c.pitch);
+    var X = (px - W / 2) / (H * c.f), Y = (H * 0.52 - py) / (H * c.f), den = sp - Y * cp; if (den <= 0.02) return null;
+    var s = (t[1] + c.d * sp) / den, rx = s * X, ry = s * Y, rz = c.d - s, z2 = -ry * sp + rz * cp, yw = c.yaw || 0;
+    return [rx * cos(yw) + z2 * sin(yw) + t[0], -rx * sin(yw) + z2 * cos(yw) + t[2], s];
+  };
+  Scene.prototype.drawRays = function (ctx, t) {
+    var R = this.rays, p = this.project(R.pos), n = 14, rad = this.H * 0.75 * R.k;
+    ctx.save(); ctx.translate(p[0], p[1]); ctx.rotate(t * 0.0007);
+    for (var i = 0; i < n; i++) {
+      ctx.rotate(2 * PI / n); ctx.fillStyle = R.col; ctx.globalAlpha = 0.13 * R.k;
+      ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(rad, -rad * 0.045); ctx.lineTo(rad, rad * 0.045); ctx.closePath(); ctx.fill();
+    }
+    ctx.restore(); ctx.globalAlpha = 1;
+  };
+  Scene.prototype.burst = function (pos, col, n) {
+    var p = this.project(pos);
+    for (var i = 0; i < n; i++) {
+      var a = Math.random() * 2 * PI, v = (2 + Math.random() * 5) * this.dpr;
+      this.fx.push({ x: p[0], y: p[1], vx: cos(a) * v, vy: sin(a) * v - 2 * this.dpr, g: 0.12 * this.dpr, life: 40 + Math.random() * 30, max: 70, r: 4 + Math.random() * 6, col: col[(Math.random() * col.length) | 0] });
+    }
+  };
+  Scene.prototype.partFaces = function (o, part, t, out) {
+    var ctx = this.ctx, an = part.anim ? part.anim(t, o) : null, off = an && an.o || [0, 0, 0], prot = an && an.r || part.rot || [0, 0, 0];
+    var c = part.c || [0, 0, 0], self = this, cam = this.cam, W = this.W, H = this.H;
+    var cc = [c[0] + off[0], c[1] + off[1], c[2] + off[2]];
+    var pv = part.pv;
+    var toCam = function (v) {
+      var p = pv ? rotV([v[0] + pv[0], v[1] + pv[1], v[2] + pv[2]], prot[0], prot[1], prot[2]) : rotV(v, prot[0], prot[1], prot[2]);
+      p = [p[0] + cc[0], p[1] + cc[1], p[2] + cc[2]];
+      if (part.world) { p = part.world(p, o, t); }
+      p = [p[0] * o.sc[0], p[1] * o.sc[1], p[2] * o.sc[2]];
+      p = rotV(p, o.rot[0], o.rot[1], o.rot[2]);
+      p = [p[0] + o.pos[0], p[1] + o.pos[1], p[2] + o.pos[2]];
+      var ct = cam.t; if (ct) { p = [p[0] - ct[0], p[1] - ct[1], p[2] - ct[2]]; }
+      if (cam.yaw) p = rotV(p, 0, -cam.yaw, 0);
+      p = rotV(p, cam.pitch, 0, 0); p[2] -= cam.d; return p;
+    };
+    var ctr = toCam([0, 0, 0]), k;
+    var pr = function (q) { var kk = H * cam.f / (-q[2]); return [W / 2 + q[0] * kk, H * 0.52 - q[1] * kk]; };
+    var alpha = (part.alpha == null ? 1 : (typeof part.alpha === "function" ? part.alpha(o, t) : part.alpha)) * (o.alpha == null ? 1 : o.alpha);
+    var emis = part.emit || 0;
+    var polys = [];
+    if (part.type === "quad") {
+      var hw = part.s[0] / 2, hd = part.s[1] / 2;
+      polys.push({ v: [toCam([-hw, 0, hd]), toCam([hw, 0, hd]), toCam([hw, 0, -hd]), toCam([-hw, 0, -hd])], col: part.col, flat: true });
+    } else if (part.type === "box") {
+      if (!part._v) { part._v = BOX_V.map(function (v) { return [v[0] * part.s[0] / 2, v[1] * part.s[1] / 2, v[2] * part.s[2] / 2]; }); }
+      var vs = part._v.map(toCam);
+      for (var i = 0; i < 6; i++) { var f = BOX_F[i]; polys.push({ v: [vs[f[0]], vs[f[1]], vs[f[2]], vs[f[3]]], col: part.col }); }
+    } else {
+      if (!part._g) part._g = buildGrid(part);
+      var G = part._g, T = [];
+      for (var a = 0; a <= G.LA; a++) { T.push(G.grid[a].map(function (v) { var w = toCam(v); w.u = v[3]; w.vv = v[4]; w.l = v; return w; })); }
+      for (a = 0; a < G.LA; a++) for (var b = 0; b < G.LO; b++) {
+        var p0 = T[a][b], p1 = T[a][b + 1], p2 = T[a + 1][b + 1], p3 = T[a + 1][b];
+        var col = part.col, loc = null;
+        if (part.colorAt) { loc = { u: (p0.u + p1.u) / 2, v: (p0.vv + p2.vv) / 2, y: (p0.l[1] + p2.l[1]) / 2 / part.s[1], x: p0.l[0], z: p0.l[2] }; col = part.colorAt(loc, o, t, a, G.LA); }
+        polys.push({ v: [p0, p1, p2, p3], col: col });
+      }
+    }
+    var shell = part.type === "egg" && o.open > 0.02;
+    for (var n = 0; n < polys.length; n++) {
+      var pl = polys[n], v = pl.v, d1 = [v[1][0] - v[0][0], v[1][1] - v[0][1], v[1][2] - v[0][2]], d2 = [v[2][0] - v[0][0], v[2][1] - v[0][1], v[2][2] - v[0][2]];
+      var nx = d1[1] * d2[2] - d1[2] * d2[1], ny = d1[2] * d2[0] - d1[0] * d2[2], nz = d1[0] * d2[1] - d1[1] * d2[0];
+      var fc = [(v[0][0] + v[2][0]) / 2, (v[0][1] + v[2][1]) / 2, (v[0][2] + v[2][2]) / 2];
+      var dx = fc[0] - ctr[0], dy = fc[1] - ctr[1], dz = fc[2] - ctr[2];
+      if (!pl.flat && nx * dx + ny * dy + nz * dz < 0) { nx = -nx; ny = -ny; nz = -nz; }
+      var nl = sqrt(nx * nx + ny * ny + nz * nz) || 1; nx /= nl; ny /= nl; nz /= nl;
+      var facing = (nx * -fc[0] + ny * -fc[1] + nz * -fc[2]) > 0, inner = false;
+      if (!facing) { if (!shell) continue; inner = true; nx = -nx; ny = -ny; nz = -nz; }
+      var lam = Math.max(0, nx * LD[0] + ny * LD[1] + nz * LD[2]);
+      var kk = emis ? 1.15 : 0.56 + 0.58 * lam;
+      var base = pl.col; if (inner) base = part.inner || [255, 244, 214];
+      var pts = [], zz = 0, cl = clipNear(v, -0.7);
+      if (cl.length < 3) continue;
+      for (var q = 0; q < cl.length; q++) { var pp = pr(cl[q]); pts.push(pp[0], pp[1]); zz += cl[q][2]; }
+      var dep = -zz / cl.length, fillC = [base[0] * kk, base[1] * kk, base[2] * kk], strC = [base[0] * kk * 0.9, base[1] * kk * 0.9, base[2] * kk * 0.9], tf = 0;
+      if (this.fog) { tf = clamp((dep - this.fog.n) / (this.fog.f - this.fog.n), 0, 1) * 0.92; }
+      if (tf > 0) { var fc2 = this.fog.c; for (var ci = 0; ci < 3; ci++) { fillC[ci] += (fc2[ci] - fillC[ci]) * tf; strC[ci] += (fc2[ci] - strC[ci]) * tf; } }
+      var soft = part.type === "box" && !part.hard, lw = 1;
+      if (soft) { var av = 0, np = pts.length / 2; for (var e1 = 0; e1 < np; e1++) { var e2 = (e1 + 1) % np; av += Math.sqrt((pts[2 * e1] - pts[2 * e2]) * (pts[2 * e1] - pts[2 * e2]) + (pts[2 * e1 + 1] - pts[2 * e2 + 1]) * (pts[2 * e1 + 1] - pts[2 * e2 + 1])); } lw = clamp(av / np * 0.15 / this.dpr, 0.9, 9); }
+      var rec = { z: zz / cl.length + (inner ? -0.02 : 0), p: pts, c: rgb(fillC, 1), s: soft ? rgb(strC, 1) : rgb(fillC, 1), lw: lw, a: alpha };
+      if (part.under) { (out.under = out.under || []).push(rec); } else out.push(rec);
+    }
+  };
+  return { Scene: Scene, rotV: rotV, rgb: rgb };
+})();
+
+</script>
+<script>
+var tg = window.Telegram && window.Telegram.WebApp;
+if (tg) { try { tg.ready(); tg.expand(); tg.setHeaderColor && tg.setHeaderColor("#1b1464"); tg.setBackgroundColor && tg.setBackgroundColor("#1b1464"); } catch (e) {} }
+var INIT = tg ? tg.initData : "";
+var BID = new URLSearchParams(location.search).get("b");
+var CAT = null, ST = null, ADM = null, T0 = 0, tab = "store", TOP = null, tt = null, MK = null, RAF = 0;
+var KEYS = {};
+window.addEventListener("keydown", function (e) { KEYS[e.key.toLowerCase()] = true; });
+window.addEventListener("keyup", function (e) { KEYS[e.key.toLowerCase()] = false; });
+function $(id) { return document.getElementById(id); }
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
+function fmt(n) { return String(Math.floor(n)).replace(/\B(?=(\d{3})+(?!\d))/g, " "); }
+function fmtS(n) {
+  n = Math.floor(n || 0);
+  var U = [[1e15, "Q"], [1e12, "T"], [1e9, "B"], [1e6, "M"], [1e3, "K"]];
+  for (var i = 0; i < U.length; i++) if (n >= U[i][0]) { var x = n / U[i][0]; return (x >= 100 ? Math.round(x) : Math.round(x * 10) / 10) + U[i][1]; }
+  return String(n);
+}
+function dur(s) { s = Math.max(0, Math.floor(s)); var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60; return h ? h + " soat " + m + " daq" : (m ? m + " daq " : "") + x + " s"; }
+function hap(k) { try { if (tg && tg.HapticFeedback) { if (k === "ok") tg.HapticFeedback.notificationOccurred("success"); else tg.HapticFeedback.impactOccurred(k || "light"); } } catch (e) {} }
+function has3d() { try { return typeof G3 !== "undefined" && !!document.createElement("canvas").getContext("2d"); } catch (e) { return false; } }
+function toast(t) { var e = $("toast"); e.textContent = t; e.hidden = false; clearTimeout(tt); tt = setTimeout(function () { e.hidden = true; }, 2400); }
+var ERR = { no_coins: "Tanga yetarli emas", mk_no_coins: "Tanga yetarli emas", mk_max: "Maksimal daraja", mk_fran_low: "Franshiza uchun daromad hali yetarli emas", wait: "Hali erta", slow_down: "Sekinroq 🙂", promo_none: "Bunday promokod yo'q", promo_used: "Bu promokoddan foydalangansiz", promo_over: "Promokod limiti tugagan", maintenance: "Texnik tanaffus. Birozdan keyin qayting", bad_value: "Noto'g'ri qiymat", forbidden: "Ruxsat yo'q", invalid_init_data: "Mini appni bot ichidan oching", bot_not_found: "Bot topilmadi", net: "Aloqa xatosi" };
+async function api(method, path, body) {
+  var url = "/api/market/" + path + "?b=" + encodeURIComponent(BID);
+  var opt = { method: method, headers: { "Content-Type": "application/json" } };
+  if (method === "GET") url += "&initData=" + encodeURIComponent(INIT); else opt.body = JSON.stringify(Object.assign({ initData: INIT }, body || {}));
+  var r = await fetch(url, opt);
+  var j = await r.json().catch(function () { return { error: "net" }; });
+  if (!r.ok) { var e = new Error(j.error || "net"); e.data = j; throw e; }
+  return j;
+}
+function setState(s, adm) { ST = s; T0 = Date.now(); if (adm) ADM = adm; render(); }
+function pend() { if (!ST) return 0; return Math.min(ST.rate * ST.cap_h, ST.pending + ST.rate * (Date.now() - T0) / 3600000); }
+function gateView(g) {
+  var h = '<div class="err"><div class="big">🔒</div>';
+  if (g && g.reason === "channels") {
+    h += "<h2>Avval kanallarga obuna bo'ling</h2>" + (g.channels || []).map(function (c) { return '<p><a style="color:#ffd23f" href="' + esc(c.url) + '">' + esc(c.title) + "</a></p>"; }).join("") + '<p class="mu">Obuna bo\'lgach, mini appni qayta oching.</p>';
+  } else if (g && g.reason === "blocked") h += "<h2>Siz bloklangansiz</h2>";
+  else if (g && g.reason === "premium") h += "<h2>Bu bot Premium obunachilar uchun</h2><p class=\"mu\">Botda 💎 Premium bo'limidan foydalaning.</p>";
+  else h += "<h2>Bot hozir faol emas</h2>";
+  $("m").innerHTML = h + "</div>";
+  $("tabs").innerHTML = "";
+}
+function fail(e) {
+  var d = e.data || {}, c = e.message;
+  if (c === "gate") { gateView(d.gate); return; }
+  if (c === "wait" && d.left) { toast("⏳ " + dur(d.left)); return; }
+  toast(ERR[c] || "Xatolik: " + c);
+}
+function tabs() {
+  var t = [["store", "🏪", "Do'kon"], ["up", "⬆", "Yaxshilash"], ["bonus", "🎁", "Bonus"], ["top", "🏆", "Reyting"]];
+  if (ST && ST.admin) t.push(["admin", "⚙️", "Admin"]);
+  $("tabs").innerHTML = t.map(function (x) { return '<button data-t="' + x[0] + '" class="' + (tab === x[0] ? "on" : "") + '"><b>' + x[1] + "</b>" + x[2] + "</button>"; }).join("");
+  Array.prototype.forEach.call($("tabs").querySelectorAll("button"), function (b) {
+    b.onclick = function () { tab = b.getAttribute("data-t"); hap("light"); if (tab === "top") loadTop(); render(); };
+  });
+}
+function head() {
+  if (!ST) return;
+  $("coins").textContent = fmtS(ST.coins);
+  $("rate").textContent = fmtS(ST.rate) + (ST.premium ? " 💎x2" : "");
+  var p = pend();
+  $("pend").textContent = fmtS(p);
+  $("colBtn").className = "btn gn" + (p < 1 ? " off" : "");
+}
+function render() {
+  if (!CAT || !ST) return;
+  head(); tabs();
+  var m = $("m");
+  if (tab === "store" && MK && $("mCv") === MK.cv) { mkSync(); return; }
+  if (tab !== "store") mkStop();
+  if (tab === "store") viewStore(m); else if (tab === "up") viewUp(m); else if (tab === "bonus") viewBonus(m); else if (tab === "top") viewTop(m); else if (tab === "admin") viewAdmin(m);
+}
+function mkStop() { if (MK) { MK = null; try { tg && tg.enableVerticalSwipes && tg.enableVerticalSwipes(); } catch (e) {} } }
+function kick() { if (!RAF) RAF = requestAnimationFrame(frame); }
+function frame() {
+  RAF = 0; var live = false;
+  try { live = mkTick(); } catch (e) { live = false; if (window.console) console.error(e); }
+  if (live) kick();
+}
+// ---------- narx hisoblari (server bilan bir xil formula) ----------
+function stepCost(i, lv) { var L = CAT.lines[i]; return lv <= 0 ? L.unlock : Math.floor(L.base * Math.pow(CAT.growth, lv - 1)); }
+function bulkCost(i, lv, n) { var s = 0; for (var k = 0; k < n; k++) s += stepCost(i, lv + k); return s; }
+function maxAfford(i, lv, coins) { var k = 0, s = 0; while (lv + k < CAT.maxlvl) { var c = stepCost(i, lv + k); if (s + c > coins) break; s += c; k++; } return [k, s]; }
+// ---------- 3D do'kon ----------
+function B3(c, s, col, x) { var p = { type: "box", c: c, s: s, col: col }; if (x) for (var k in x) p[k] = x[k]; return p; }
+function hashCol(n) { var C = [[230, 70, 70], [70, 150, 240], [80, 200, 120], [250, 170, 50], [170, 100, 230], [240, 110, 180]]; return C[Math.abs(n | 0) % C.length]; }
+var LCOL = [[236, 196, 120], [245, 245, 252], [230, 70, 70], [255, 150, 40], [225, 90, 110], [255, 150, 200], [90, 130, 230], [120, 230, 240]];
+function makeHuman(seed, hat) {
+  var shirt = hashCol(seed), skin = [255, 206, 160], leg = [58, 68, 150];
+  var sw = function (side) { return function (t, o) { return { r: [Math.sin(o.ph || 0) * 0.9 * (o.mv || 0) * side, 0, side * 0.04] }; }; };
+  var P = [
+    B3([0, 1.95, 0], [0.64, 0.64, 0.64], skin), B3([0, 2.32, -0.02], [0.68, 0.22, 0.68], hat ? [60, 40, 30] : [110, 70, 40]),
+    B3([-0.16, 2.0, 0.33], [0.1, 0.14, 0.04], [30, 30, 40]), B3([0.16, 2.0, 0.33], [0.1, 0.14, 0.04], [30, 30, 40]),
+    B3([0, 1.2, 0], [0.82, 0.95, 0.44], shirt),
+    B3([-0.56, 1.62, 0], [0.26, 0.9, 0.3], shirt, { pv: [0, -0.34, 0], anim: sw(-1) }), B3([0.56, 1.62, 0], [0.26, 0.9, 0.3], shirt, { pv: [0, -0.34, 0], anim: sw(1) }),
+    B3([-0.21, 0.78, 0], [0.36, 0.8, 0.38], leg, { pv: [0, -0.34, 0], anim: sw(1) }), B3([0.21, 0.78, 0], [0.36, 0.8, 0.38], leg, { pv: [0, -0.34, 0], anim: sw(-1) })
+  ];
+  return { parts: P, shadow: { y: 0, r: 0.9 }, ph: 0, mv: 0 };
+}
+function mkGeom() {
+  var s = ST.size, hx = 9 + 2 * (s - 1), hz = 9 + (s - 1), sp = 4.6 + (s - 1) * 0.7, rg = 6.4 + (s - 1) * 0.5, G = { hx: hx, hz: hz, slots: [], counter: { x: 0, z: hz - 3.2, w: 5 + Math.min(10, ST.cash) * 0.9 } };
+  for (var i = 0; i < CAT.lines.length; i++) G.slots.push({ x: ((i % 4) - 1.5) * sp, z: -hz + 2.4 + ((i / 4) | 0) * rg });
+  return G;
+}
+function mkBuild() {
+  var f = MK, sc = f.sc, G = f.G = mkGeom(), i, k;
+  f.stat.forEach(function (o) { var ix = sc.objs.indexOf(o); if (ix >= 0) sc.objs.splice(ix, 1); });
+  f.stat = []; f.pads = []; f.labels = [];
+  var add = function (o) { sc.add(o); f.stat.push(o); return o; };
+  var hx = G.hx, hz = G.hz;
+  add({ parts: [B3([0, 1.6, -hz - 0.4], [2 * hx + 1.6, 3.2, 0.8], [196, 168, 240], { hard: false }), B3([-hx - 0.4, 0.8, 0], [0.8, 1.6, 2 * hz + 0.8], [176, 148, 224]), B3([hx + 0.4, 0.8, 0], [0.8, 1.6, 2 * hz + 0.8], [176, 148, 224]),
+    B3([-(hx + 2) / 2 - 1, 0.6, hz + 0.4], [hx - 2 + 0.8, 1.2, 0.8], [176, 148, 224]), B3([(hx + 2) / 2 + 1, 0.6, hz + 0.4], [hx - 2 + 0.8, 1.2, 0.8], [176, 148, 224])] });
+  for (i = 0; i < CAT.lines.length; i++) {
+    var sl = G.slots[i], lv = ST.lines[i], col = LCOL[i % LCOL.length], P = [], L = CAT.lines[i];
+    if (lv > 0) {
+      P.push(B3([0, 1.3, 0], [3.6, 2.6, 1.3], [165, 112, 70]), B3([0, 2.7, 0.0], [3.8, 0.2, 1.5], [120, 78, 48]));
+      var n = Math.min(12, 1 + Math.floor(lv / 3));
+      for (k = 0; k < n; k++) P.push(B3([-1.35 + (k % 4) * 0.9, 0.62 + Math.floor(k / 4) * 0.82, 0.62], [0.62, 0.62, 0.5], col));
+      f.labels.push({ pos: [sl.x, 3.5, sl.z], text: L.emoji + " " + lv, size: 15 });
+      if (lv < CAT.maxlvl) {
+        var c1 = stepCost(i, lv), okp = ST.coins >= c1;
+        f.pads.push({ x: sl.x, z: sl.z + 2.4, w: 3.0, d: 1.7, kind: "line", i: i, cost: c1, ok: okp, dwell: 0 });
+        f.labels.push({ pos: [sl.x, 0.15, sl.z + 2.4], text: "⬆ " + fmtS(c1), size: 13, col: okp ? "#c8ffd8" : "#ffb3b3" });
+      } else f.labels.push({ pos: [sl.x, 0.15, sl.z + 2.4], text: "MAX", size: 13, col: "#ffe566" });
+    } else {
+      P.push(B3([0, 1.3, 0], [3.6, 2.6, 1.3], [150, 150, 165], { alpha: 0.38 }));
+      var c0 = stepCost(i, 0), ok0 = ST.coins >= c0;
+      f.pads.push({ x: sl.x, z: sl.z + 2.4, w: 3.0, d: 1.7, kind: "line", i: i, cost: c0, ok: ok0, dwell: 0 });
+      f.labels.push({ pos: [sl.x, 0.15, sl.z + 2.4], text: "🔒 " + fmtS(c0), size: 13, col: ok0 ? "#c8ffd8" : "#ffb3b3" });
+      f.labels.push({ pos: [sl.x, 3.2, sl.z], text: L.emoji, size: 18, col: "#ddd" });
+    }
+    var o = add({ parts: P }); o.pos = [sl.x, 0, sl.z];
+  }
+  // kassa
+  var cw = G.counter.w, CP = [B3([0, 0.6, 0], [cw, 1.2, 1.4], [235, 235, 245]), B3([0, 1.25, 0], [cw + 0.2, 0.12, 1.6], [90, 70, 160])];
+  for (k = 0; k < Math.min(3, 1 + ST.cash); k++) CP.push(B3([-cw / 2 + 1.1 + k * 1.6, 1.55, 0.1], [0.7, 0.5, 0.6], [60, 60, 80]));
+  var co = add({ parts: CP }); co.pos = [G.counter.x, 0, G.counter.z];
+  var cs = Math.min(10, ST.cash);
+  for (k = 0; k < cs; k++) { var ch = makeHuman(100 + k, 1); ch.pos = [G.counter.x - cw / 2 + 0.9 + k * (cw - 1.8) / Math.max(1, cs - 1 || 1), 0, G.counter.z - 1.5]; ch.rot = [0, Math.PI, 0]; ch.shadow = { y: 0, r: 0.8 }; add(ch); if (cs === 1) ch.pos[0] = G.counter.x; }
+  // yig'ish va kengaytirish maydonlari
+  var pe = pend(), pz = hz - 1.7;
+  f.pads.push({ x: -hx + 2.6, z: pz, w: 3.4, d: 2.0, kind: "col", cost: 0, ok: pe >= 1, dwell: 0 });
+  f.labels.push({ pos: [-hx + 2.6, 0.15, pz], text: "💰 Yig'ish", size: 14, col: "#fff3b0" });
+  if (ST.size < CAT.size_max) {
+    var cz = ST.size_cost, okz = ST.coins >= cz;
+    f.pads.push({ x: hx - 2.6, z: pz, w: 3.4, d: 2.0, kind: "size", cost: cz, ok: okz, dwell: 0 });
+    f.labels.push({ pos: [hx - 2.6, 0.15, pz], text: "🏬 " + fmtS(cz), size: 14, col: okz ? "#c8ffd8" : "#ffb3b3" });
+  }
+  f.labels.push({ pos: [0, 4.4, -hz - 0.4], text: "🏪 MINI MARKET · " + ST.size + "-daraja", size: 17, col: "#ffe566" });
+  if (ST.cash) f.labels.push({ pos: [G.counter.x, 3.4, G.counter.z - 1.5], text: "👩‍💼 ×" + ST.cash, size: 13 });
+  f.key = mkKey();
+}
+function mkKey() { return [ST.size, ST.cash, ST.lines.join(","), ST.lines.map(function (lv, i) { return ST.coins >= stepCost(i, lv) ? 1 : 0; }).join(""), ST.coins >= ST.size_cost ? 1 : 0, pend() >= 1 ? 1 : 0, ST.fp].join("|"); }
+function mkSync() {
+  var f = MK; if (!f) return;
+  if (f.key !== mkKey()) mkBuild();
+  var h = $("mHud"); if (h) { var t = "🏬 " + ST.size + " · 👩‍💼 " + ST.cash; if (h.getAttribute("data-t") !== t) { h.setAttribute("data-t", t); h.textContent = t; } }
+}
+function mkMsg(t, ms) { var e = $("mMsg"); if (!e) return; e.textContent = t; e.hidden = false; MK && (MK.msgT = performance.now() + (ms || 2200)); }
+function viewStore(m) {
+  MK = null;
+  if (!has3d()) { m.innerHTML = '<div class="err"><div class="big">🏪</div><p class="mu">3D ko\'rinish bu qurilmada ishlamaydi. «Yaxshilash» bo\'limidan foydalaning.</p></div>'; return; }
+  m.innerHTML = '<div class="fm" id="mBox"><canvas id="mCv"></canvas><div class="fhud tl" id="mHud"></div><div class="joy" id="mJoy"><div class="knob" id="mKnob"></div></div><div class="fmsg" id="mMsg" hidden></div></div>';
+  var box = $("mBox"), top = box.getBoundingClientRect().top;
+  box.style.height = Math.max(320, (window.innerHeight || 700) - top - 96) + "px";
+  try { tg && tg.disableVerticalSwipes && tg.disableVerticalSwipes(); } catch (e) {}
+  mkStart();
+}
+function mkStart() {
+  var cv = $("mCv"), sc = new G3.Scene(cv, { d: 40, pitch: 1.0, f: 1.35 });
+  var uid = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) ? tg.initDataUnsafe.user.id : 1;
+  var pl = sc.add(makeHuman(uid, 0)); pl.sc = [1.1, 1.1, 1.1];
+  MK = { cv: cv, sc: sc, pl: pl, P: { x: 0, z: 0 }, face: Math.PI, yaw: 0, pitch: 1.0, dist: 40, joy: { x: 0, y: 0 }, last: performance.now(), stat: [], pads: [], labels: [], cust: [], pops: [], spawnAt: 0, cw: 0, ch: 0, msgT: 0, key: "", busy: false, G: null, seed: 1 };
+  var f = MK; mkBuild(); f.P.z = f.G.hz - 6;
+  sc.cam.t = [f.P.x, 0.8, f.P.z]; sc.cam.yaw = 0;
+  sc.bg = function (ctx, w, h) { mkGround(sc, ctx, w, h); };
+  var joy = $("mJoy"), knob = $("mKnob"), R = 52;
+  var jp = function (ev) { var r = joy.getBoundingClientRect(), dx = ev.clientX - (r.left + r.width / 2), dy = ev.clientY - (r.top + r.height / 2), l = Math.sqrt(dx * dx + dy * dy) || 1, k = Math.min(1, l / R); f.joy = { x: dx / l * k, y: dy / l * k }; knob.style.transform = "translate(" + (dx / l * k * R) + "px," + (dy / l * k * R) + "px)"; };
+  joy.onpointerdown = function (ev) { ev.preventDefault(); try { joy.setPointerCapture(ev.pointerId); } catch (e) {} f.jOn = true; jp(ev); };
+  joy.onpointermove = function (ev) { if (f.jOn) jp(ev); };
+  var jend = function () { f.jOn = false; f.joy = { x: 0, y: 0 }; knob.style.transform = ""; };
+  joy.onpointerup = jend; joy.onpointercancel = jend;
+  var ptr = {}, pd0 = 0, dist0 = 40;
+  var pdist = function () { var k = Object.keys(ptr); if (k.length < 2) return 0; var a = ptr[k[0]], b = ptr[k[1]]; return Math.sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y)) || 1; };
+  cv.onpointerdown = function (ev) { ev.preventDefault(); try { cv.setPointerCapture(ev.pointerId); } catch (e) {} ptr[ev.pointerId] = { x: ev.clientX, y: ev.clientY }; if (Object.keys(ptr).length === 2) { pd0 = pdist(); dist0 = f.dist; } };
+  cv.onpointermove = function (ev) {
+    var p = ptr[ev.pointerId]; if (!p) return; var dx = ev.clientX - p.x, dy = ev.clientY - p.y; p.x = ev.clientX; p.y = ev.clientY;
+    if (Object.keys(ptr).length >= 2) { var dn = pdist(); if (dn && pd0) f.dist = Math.max(20, Math.min(75, dist0 * pd0 / dn)); return; }
+    f.yaw -= dx * 0.0075; f.pitch = Math.max(0.5, Math.min(1.3, f.pitch + dy * 0.004));
+  };
+  var pe = function (ev) { delete ptr[ev.pointerId]; };
+  cv.onpointerup = pe; cv.onpointercancel = pe;
+  cv.onwheel = function (ev) { ev.preventDefault(); f.dist = Math.max(20, Math.min(75, f.dist * (ev.deltaY > 0 ? 1.1 : 0.9))); };
+  mkSync(); kick();
+}
+function mkGround(sc, ctx, W, H) {
+  var f = MK, G = f && f.G; if (!G) return;
+  var g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, "#4b36a8"); g.addColorStop(1, "#1d1450"); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  var hx = G.hx, hz = G.hz, quad = function (x0, z0, x1, z1) { return [[x0, 0, z0], [x1, 0, z0], [x1, 0, z1], [x0, 0, z1]]; };
+  if (sc.polyPath(ctx, quad(-hx - 5, -hz - 1, hx + 5, hz + 10))) { ctx.fillStyle = "#6b5bc0"; ctx.fill(); }
+  if (sc.polyPath(ctx, quad(-2, hz, 2, hz + 10))) { ctx.fillStyle = "#8d7fdc"; ctx.fill(); }
+  if (sc.polyPath(ctx, quad(-hx, -hz, hx, hz))) { ctx.fillStyle = "#f3e8d4"; ctx.fill(); }
+  ctx.fillStyle = "#e4d3b6";
+  for (var i = 0; i < hx; i++) for (var j = 0; j < hz; j++) if ((i + j) & 1) { if (sc.polyPath(ctx, quad(-hx + i * 2, -hz + j * 2, -hx + i * 2 + 2, -hz + j * 2 + 2))) ctx.fill(); }
+  if (sc.polyPath(ctx, quad(-2, hz - 1, 2, hz))) { ctx.fillStyle = "#b56a3a"; ctx.fill(); }
+  for (var p = 0; p < f.pads.length; p++) {
+    var pd = f.pads[p], x0 = pd.x - pd.w / 2, x1 = pd.x + pd.w / 2, z0 = pd.z - pd.d / 2, z1 = pd.z + pd.d / 2;
+    var base = pd.kind === "col" ? (pd.ok ? "#ffd23f" : "#9a8a50") : pd.kind === "size" ? (pd.ok ? "#4aa3ff" : "#4a6a9a") : (pd.ok ? "#3ddc84" : "#7a8a80");
+    if (sc.polyPath(ctx, quad(x0, z0, x1, z1))) { ctx.fillStyle = base; ctx.fill(); ctx.lineWidth = 3 * sc.dpr; ctx.strokeStyle = "rgba(255,255,255,.85)"; ctx.stroke(); }
+    if (pd.dwell > 0) { var k = Math.min(1, pd.dwell / 0.45), cx = pd.x, cz = pd.z, hw = pd.w / 2 * k, hd = pd.d / 2 * k; if (sc.polyPath(ctx, quad(cx - hw, cz - hd, cx + hw, cz + hd))) { ctx.fillStyle = "rgba(255,255,255,.55)"; ctx.fill(); } }
+  }
+}
+function mkPush(f, rx, rz, hw, hd) {
+  var P = f.P, dx = P.x - rx, dz = P.z - rz, ox = hw + 0.7 - Math.abs(dx), oz = hd + 0.7 - Math.abs(dz);
+  if (ox > 0 && oz > 0) { if (ox < oz) P.x += dx >= 0 ? ox : -ox; else P.z += dz >= 0 ? oz : -oz; }
+}
+function mkPadGo(pd) {
+  var f = MK; if (!f || f.busy) return;
+  var act = null, body = null;
+  if (pd.kind === "line") { if (ST.coins < pd.cost) { if (performance.now() > (f.nm || 0)) { f.nm = performance.now() + 2200; mkMsg("🪙 Tanga yetarli emas"); } return; } body = { a: "buy_line", i: pd.i, n: 1 }; }
+  else if (pd.kind === "size") { if (ST.coins < pd.cost) { if (performance.now() > (f.nm || 0)) { f.nm = performance.now() + 2200; mkMsg("🪙 Tanga yetarli emas"); } return; } body = { a: "buy_size" }; }
+  else { if (pend() < 1) { if (performance.now() > (f.nm || 0)) { f.nm = performance.now() + 2200; mkMsg("Hali yig'ilgan tanga yo'q"); } return; } body = { a: "collect" }; }
+  f.busy = true;
+  api("POST", "act", body).then(function (j) {
+    f.busy = false; pd.dwell = pd.kind === "line" ? 0.1 : 0;
+    var sp = f.sc, col = [[255, 210, 60], [255, 245, 160], [120, 255, 170]];
+    sp.burst([pd.x, 1.2, pd.z], col, 16); hap("ok");
+    if (pd.kind === "col") toast("💰 +" + fmtS(j.result) + " 🪙"); else if (pd.kind === "size") toast("🏬 Do'kon kengaydi!"); else toast(CAT.lines[pd.i].emoji + " Yaxshilandi!");
+    setState(j.state);
+  }).catch(function (e) { f.busy = false; pd.dwell = -1; fail(e); });
+}
+function mkSpawn(f) {
+  var un = []; for (var i = 0; i < ST.lines.length; i++) if (ST.lines[i] > 0) un.push(i);
+  if (!un.length || f.cust.length >= 14) return;
+  var G = f.G, li = un[(Math.random() * un.length) | 0], sl = G.slots[li], o = makeHuman((f.seed++) * 7 + 3, 0);
+  o.sc = [0.9, 0.9, 0.9]; o.pos = [(Math.random() - 0.5) * 3, 0, G.hz + 3]; o.rot = [0, Math.PI, 0];
+  o.parts.push(B3([0, 1.35, 0.55], [0.5, 0.5, 0.5], LCOL[li % LCOL.length], { alpha: function (ob) { return ob.item ? 1 : 0; } }));
+  var cx = G.counter.x + (Math.random() - 0.5) * Math.min(6, G.counter.w - 2);
+  o.path = [[(Math.random() - 0.5) * 3, G.hz + 0.5, 0], [sl.x + (Math.random() - 0.5) * 2, sl.z + 1.5, 1.0], [cx, G.counter.z + 1.7, 0.9], [(Math.random() - 0.5) * 3, G.hz + 4, 0]];
+  o.pi = 0; o.wait = 0; f.sc.add(o); f.cust.push(o);
+}
+function mkTick() {
+  var f = MK; if (!f || $("mCv") !== f.cv || tab !== "store") { if (f && $("mCv") !== f.cv) mkStop(); return false; }
+  var now = performance.now(), dt = Math.min(0.05, (now - f.last) / 1000); f.last = now; var sc = f.sc, P = f.P, G = f.G, pl = f.pl;
+  if (f.cv.clientWidth !== f.cw || f.cv.clientHeight !== f.ch) { f.cw = f.cv.clientWidth; f.ch = f.cv.clientHeight; sc.resize(); }
+  if (f.msgT && now > f.msgT) { f.msgT = 0; var me = $("mMsg"); if (me) me.hidden = true; }
+  var jx = f.joy.x, jy = f.joy.y;
+  if (KEYS["a"] || KEYS["arrowleft"]) jx -= 1; if (KEYS["d"] || KEYS["arrowright"]) jx += 1; if (KEYS["w"] || KEYS["arrowup"]) jy -= 1; if (KEYS["s"] || KEYS["arrowdown"]) jy += 1;
+  var jl = Math.sqrt(jx * jx + jy * jy); if (jl > 1) { jx /= jl; jy /= jl; jl = 1; }
+  var moving = jl > 0.12, v = 7.5;
+  if (moving) {
+    var wv = G3.rotV([jx, 0, jy], 0, f.yaw, 0), wx = wv[0], wz = wv[2];
+    P.x += wx * v * dt; P.z += wz * v * dt;
+    var ta = Math.atan2(wx, wz), da = ta - f.face; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI; f.face += da * Math.min(1, dt * 14);
+    pl.ph += v * dt * 1.5;
+  }
+  for (var si = 0; si < G.slots.length; si++) mkPush(f, G.slots[si].x, G.slots[si].z, 1.9, 0.8);
+  mkPush(f, G.counter.x, G.counter.z, G.counter.w / 2, 0.8);
+  P.x = Math.max(-G.hx + 1, Math.min(G.hx - 1, P.x)); P.z = Math.max(-G.hz + 1.2, Math.min(G.hz - 0.8, P.z));
+  pl.mv += ((moving ? 1 : 0) - pl.mv) * Math.min(1, dt * 10);
+  pl.pos = [P.x, Math.abs(Math.sin(pl.ph)) * 0.08 * pl.mv, P.z]; pl.rot = [0, f.face, 0];
+  // maydonlar
+  for (var pi = 0; pi < f.pads.length; pi++) {
+    var pd = f.pads[pi], inside = Math.abs(P.x - pd.x) < pd.w / 2 && Math.abs(P.z - pd.z) < pd.d / 2;
+    if (inside) { if (pd.dwell >= 0) pd.dwell += dt; if (pd.dwell >= 0.45) { pd.dwell = 0.44; mkPadGo(pd); } } else pd.dwell = 0;
+  }
+  // xaridorlar
+  if (now > f.spawnAt) { mkSpawn(f); f.spawnAt = now + Math.max(500, 2600 - Math.log10(ST.rate + 10) * 380) * (0.6 + Math.random() * 0.8); }
+  for (var ci = f.cust.length - 1; ci >= 0; ci--) {
+    var c = f.cust[ci];
+    if (c.wait > 0) { c.wait -= dt; c.mv += (0 - c.mv) * Math.min(1, dt * 10); if (c.wait <= 0) { if (c.pi === 2) { c.item = true; } if (c.pi === 3) { c.item = false; var amt = Math.max(1, Math.round(ST.rate * 2 / 3600)); f.pops.push({ pos: [c.pos[0], 3.4, c.pos[2]], text: "+" + fmtS(amt) + " 🪙", life: 1 }); sc.burst([c.pos[0], 2.0, c.pos[2]], [[255, 210, 60], [255, 245, 160]], 6); } } continue; }
+    var tg0 = c.path[c.pi]; if (!tg0) { var ix = sc.objs.indexOf(c); if (ix >= 0) sc.objs.splice(ix, 1); f.cust.splice(ci, 1); continue; }
+    var dx = tg0[0] - c.pos[0], dz = tg0[1] - c.pos[2], dd = Math.sqrt(dx * dx + dz * dz), st = 4.2 * dt;
+    if (dd <= st) { c.pos[0] = tg0[0]; c.pos[2] = tg0[1]; c.pi++; c.wait = tg0[2]; if (c.pi === 2 && c.wait) c.item = false; if (c.pi === 3) { c.item = true; } if (!c.wait) c.wait = 0.001; }
+    else { c.pos[0] += dx / dd * st; c.pos[2] += dz / dd * st; var ang = Math.atan2(dx, dz), d2 = ang - c.rot[1]; while (d2 > Math.PI) d2 -= 2 * Math.PI; while (d2 < -Math.PI) d2 += 2 * Math.PI; c.rot[1] += d2 * Math.min(1, dt * 10); c.ph += st * 1.6; c.mv += (1 - c.mv) * Math.min(1, dt * 10); }
+    c.pos[1] = Math.abs(Math.sin(c.ph)) * 0.06 * c.mv;
+  }
+  var labs = f.labels.slice();
+  for (var q = f.pops.length - 1; q >= 0; q--) { var pp = f.pops[q]; pp.life -= dt * 0.8; if (pp.life <= 0) { f.pops.splice(q, 1); continue; } labs.push({ pos: [pp.pos[0], pp.pos[1] + (1 - pp.life) * 2, pp.pos[2]], text: pp.text, size: 15, col: "#ffe566" }); }
+  sc.labels = labs;
+  var kk = Math.min(1, dt * 7);
+  sc.cam.d += (f.dist - sc.cam.d) * Math.min(1, dt * 6); sc.cam.pitch += (f.pitch - sc.cam.pitch) * Math.min(1, dt * 6); sc.cam.yaw = f.yaw;
+  sc.cam.t[0] += (P.x - sc.cam.t[0]) * kk; sc.cam.t[2] += (P.z - sc.cam.t[2]) * kk;
+  sc.render(now);
+  return true;
+}
+// ---------- Yaxshilash ----------
+function viewUp(m) {
+  var h = '<div class="card"><h2>📈 Daromad: ' + fmtS(ST.rate) + '/soat</h2><div class="mu">Ko\'paytirgich: <b>×' + ST.mult + "</b> (kassirlar, do'kon darajasi, franshiza" + (ST.premium ? ", 💎 Premium ×2" : "") + ")</div></div>";
+  CAT.lines.forEach(function (L, i) {
+    var lv = ST.lines[i], mx = lv >= CAT.maxlvl, per = L.inc * ST.mult;
+    h += '<div class="card"><div class="ar"><div style="font-size:34px">' + L.emoji + '</div><div class="grow"><b>' + esc(L.name) + "</b> " + (lv ? "· Lv " + lv : '<span class="mu">(yopiq)</span>') + '<div class="mu">+' + fmtS(per) + "/soat har daraja" + (lv ? " · jami " + fmtS(per * lv) : "") + "</div></div></div>" +
+      '<div class="bar"><i style="width:' + Math.min(100, lv / CAT.maxlvl * 100) + '%"></i></div>';
+    if (mx) h += '<div class="mu" style="text-align:center">✅ Maksimal daraja</div>';
+    else if (!lv) h += '<button class="btn gn ' + (ST.coins >= L.unlock ? "" : "off") + '" data-l="' + i + '" data-n="1" style="width:100%">🔓 Ochish · 🪙 ' + fmtS(L.unlock) + "</button>";
+    else {
+      var c1 = stepCost(i, lv), ma = maxAfford(i, lv, ST.coins), c10 = lv + 10 <= CAT.maxlvl ? bulkCost(i, lv, 10) : 0;
+      h += '<div class="hb"><button class="btn sm ' + (ST.coins >= c1 ? "" : "off") + '" data-l="' + i + '" data-n="1">×1<small>🪙 ' + fmtS(c1) + "</small></button>" +
+        '<button class="btn sm bl ' + (c10 && ST.coins >= c10 ? "" : "off") + '" data-l="' + i + '" data-n="10">×10<small>' + (c10 ? "🪙 " + fmtS(c10) : "—") + "</small></button>" +
+        '<button class="btn sm gn ' + (ma[0] ? "" : "off") + '" data-l="' + i + '" data-n="max">MAX' + (ma[0] ? " ×" + ma[0] : "") + "<small>" + (ma[0] ? "🪙 " + fmtS(ma[1]) : "—") + "</small></button></div>";
+    }
+    h += "</div>";
+  });
+  h += '<div class="card"><div class="ar"><div style="font-size:34px">👩‍💼</div><div class="grow"><b>Kassirlar</b> · ' + ST.cash + "/" + CAT.cash_max + '<div class="mu">Har biri daromadni +20% oshiradi</div></div></div>' +
+    (ST.cash >= CAT.cash_max ? '<div class="mu" style="text-align:center">✅ Maksimal</div>' : '<button class="btn ' + (ST.coins >= ST.cash_cost ? "" : "off") + '" id="bc" style="width:100%">Yollash · 🪙 ' + fmtS(ST.cash_cost) + "</button>") + "</div>" +
+    '<div class="card"><div class="ar"><div style="font-size:34px">🏬</div><div class="grow"><b>Do\'kon kengaytirish</b> · ' + ST.size + "/" + CAT.size_max + '<div class="mu">Har daraja daromadni +50% oshiradi</div></div></div>' +
+    (ST.size >= CAT.size_max ? '<div class="mu" style="text-align:center">✅ Maksimal</div>' : '<button class="btn bl ' + (ST.coins >= ST.size_cost ? "" : "off") + '" id="bs" style="width:100%">Kengaytirish · 🪙 ' + fmtS(ST.size_cost) + "</button>") + "</div>" +
+    '<div class="card"><h2>🏢 Franshiza</h2><div class="mu">Hammasi (tanga, javonlar, kassirlar, do\'kon) qayta boshlanadi, lekin har bir ball doimiy <b>+10%</b> daromad beradi.<br>Joriy ball: <b>' + ST.fp + "</b> · Bu davrdagi daromad: <b>" + fmtS(ST.earned_run) + "</b> / " + fmtS(CAT.fran_min) + "</div>" +
+    '<button class="btn rd ' + (ST.fran_gain > 0 ? "" : "off") + '" id="bf" style="width:100%;margin-top:10px">' + (ST.fran_gain > 0 ? "🏢 Franshiza qilish (+" + ST.fran_gain + " ball)" : "🔒 " + fmtS(CAT.fran_min) + " daromad kerak") + "</button></div>";
+  m.innerHTML = h;
+  var buy = async function (body, msg) { try { var j = await api("POST", "act", body); setState(j.state); toast(msg); hap("ok"); } catch (e) { fail(e); } };
+  Array.prototype.forEach.call(m.querySelectorAll("[data-l]"), function (b) {
+    b.onclick = function () { var n = b.getAttribute("data-n"); buy({ a: "buy_line", i: parseInt(b.getAttribute("data-l"), 10), n: n === "max" ? "max" : parseInt(n, 10) }, "✅ Yaxshilandi"); };
+  });
+  if ($("bc")) $("bc").onclick = function () { buy({ a: "buy_cash" }, "👩‍💼 Kassir yollandi"); };
+  if ($("bs")) $("bs").onclick = function () { buy({ a: "buy_size" }, "🏬 Do'kon kengaydi"); };
+  $("bf").onclick = function () {
+    if (ST.fran_gain <= 0) { toast("Hali daromad yetarli emas"); return; }
+    var go = function () { buy({ a: "franchise" }, "🏢 Franshiza! Yangi boshlanish"); }, q = "Franshiza qilasizmi? Hammasi qayta boshlanadi, +" + ST.fran_gain + " ball olasiz.";
+    if (tg && tg.showConfirm) tg.showConfirm(q, function (ok) { if (ok) go(); }); else if (confirm(q)) go();
+  };
+}
+// ---------- Bonus ----------
+function viewBonus(m) {
+  var left = ST.daily_left - (Date.now() - T0) / 1000, can = left <= 0;
+  var days = [1, 2, 3, 4, 5, 6, 7].map(function (d) { return '<i class="' + (d <= ST.streak ? "on" : "") + '">' + d + "</i>"; }).join("");
+  m.innerHTML = '<div class="card"><h2>🎁 Kunlik bonus</h2><div class="mu">Ketma-ket kunlarda bonus oshadi (7 kungacha). Seriya: ' + ST.streak + ' kun</div><div class="streak">' + days + '</div><button class="btn ' + (can ? "" : "off") + '" id="dl" style="width:100%">' + (can ? "🎁 Bonusni olish" : "⏳ " + dur(left)) + "</button></div>" +
+    '<div class="card"><h2>🎟 Promokod</h2><div class="ar"><input id="pc" maxlength="20" placeholder="KOD" autocapitalize="characters"><button class="btn sm" id="pb">OK</button></div></div>' +
+    '<div class="card"><h2>👥 Do\'st taklif qilish</h2><div class="mu">Har bir do\'st uchun ikkalangizga +' + fmt(ST.ref_bonus) + ' 🪙. Takliflar: ' + ST.refs + '</div><button class="btn bl" id="inv" style="width:100%;margin-top:10px">📨 Havolani ulashish</button></div>';
+  $("dl").onclick = async function () {
+    try { var j = await api("POST", "act", { a: "daily" }); setState(j.state); toast("🎁 +" + fmt(j.result.bonus) + " 🪙"); hap("ok"); } catch (e) { fail(e); }
+  };
+  $("pb").onclick = async function () {
+    var c = $("pc").value.trim(); if (!c) return;
+    try { var j = await api("POST", "act", { a: "promo", code: c }); setState(j.state); toast("🎟 +" + fmt(j.result.coins) + " 🪙"); hap("ok"); } catch (e) { fail(e); }
+  };
+  $("inv").onclick = function () {
+    var link = "https://t.me/" + ST.username + "?start=ref_" + (tg && tg.initDataUnsafe && tg.initDataUnsafe.user ? tg.initDataUnsafe.user.id : "");
+    var u = "https://t.me/share/url?url=" + encodeURIComponent(link) + "&text=" + encodeURIComponent("🏪 Men bilan Mini Market o'ynang! O'z do'koningizni quring:");
+    if (tg && tg.openTelegramLink) tg.openTelegramLink(u); else window.open(u, "_blank");
+  };
+}
+// ---------- Reyting ----------
+async function loadTop() {
+  try { var j = await api("POST", "act", { a: "top" }); TOP = j.result; } catch (e) { TOP = []; }
+  if (tab === "top") render();
+}
+function viewTop(m) {
+  if (TOP == null) { m.innerHTML = '<div class="err"><div class="big">🏆</div><p class="mu">Yuklanmoqda...</p></div>'; return; }
+  var md = ["🥇", "🥈", "🥉"];
+  m.innerHTML = '<div class="card"><h2>🏆 Eng boy do\'kon egalari</h2>' + (TOP.length ? TOP.map(function (r, i) {
+    return '<div class="lb' + (r.me ? " me" : "") + '"><div class="rk">' + (md[i] || (i + 1)) + '</div><div class="nm">' + esc(r.name) + (r.me ? " (siz)" : "") + '</div><div class="mu">📈 ' + fmtS(r.rate) + "/soat · 🏢 " + r.fp + "</div></div>";
+  }).join("") : '<p class="mu">Hali reyting bo\'sh. Birinchi bo\'ling!</p>') + "</div>";
+}
+// ---------- Admin ----------
+function viewAdmin(m) {
+  var a = ADM; if (!a) { m.innerHTML = ""; return; }
+  var s = a.stats;
+  var st = [["O'yinchilar", s.players], ["Foydalanuvchilar", s.users], ["Aylanmadagi tanga", s.coins], ["Xaridlar", s.buys], ["Franshizalar", s.franchises], ["Kunlik bonus", s.daily], ["Promokod ishlatilgan", s.promos], ["Bloklangan", s.blocked]];
+  m.innerHTML = '<div class="card"><h2>📊 Statistika</h2><div class="stat">' + st.map(function (x) { return "<div><b>" + fmtS(x[1]) + "</b><span>" + x[0] + "</span></div>"; }).join("") + "</div></div>" +
+    '<div class="card"><h2>🏆 Top o\'yinchilar</h2>' + (a.top.map(function (r, i) { return '<div class="lb"><div class="rk">' + (i + 1) + '</div><div class="nm">' + esc(r.name || "—") + ' <span class="mu">' + r.id + '</span></div><div class="mu">📈 ' + fmtS(r.rate) + " · 🪙 " + fmtS(r.coins) + "</div></div>"; }).join("") || '<p class="mu">Hali yo\'q</p>') + "</div>" +
+    '<div class="card"><h2>🎁 Promokodlar</h2>' + (a.promos.map(function (p) { return '<div class="ar"><div class="grow"><b>' + esc(p.code) + '</b> <span class="mu">🪙 ' + fmt(p.coins) + " · " + p.used + "/" + p.uses + '</span></div><button class="btn rd sm" data-pd="' + esc(p.code) + '">🗑</button></div>'; }).join("") || '<p class="mu">Hali yo\'q</p>') +
+    '<div class="ar"><input id="pcode" placeholder="KOD" maxlength="20"><input id="pcoin" type="number" placeholder="Tanga" style="max-width:100px"><input id="puse" type="number" placeholder="Soni" style="max-width:80px"></div><button class="btn" id="padd" style="width:100%">➕ Promokod yaratish</button></div>' +
+    '<div class="card"><h2>🪙 Tanga berish</h2><div class="ar"><input id="gid" type="number" placeholder="Foydalanuvchi ID"><input id="gam" type="number" placeholder="± miqdor" style="max-width:120px"></div><button class="btn" id="gbtn" style="width:100%">Yuborish</button></div>' +
+    '<div class="card"><h2>🚫 Bloklash</h2><div class="mu">Bloklanganlar: ' + (a.blocked_list.join(", ") || "yo'q") + '</div><div class="ar"><input id="bid" type="number" placeholder="Foydalanuvchi ID"></div><div class="ar"><button class="btn rd" id="bb" style="flex:1">Bloklash</button><button class="btn gn" id="bu" style="flex:1">Ochish</button></div></div>' +
+    '<div class="card"><h2>⚙️ Sozlamalar</h2>' + a.cfg.map(function (c) { return '<div class="ar"><div class="grow">' + esc(c.name) + '</div><input data-ck="' + c.key + '" type="number" value="' + c.value + '" style="max-width:110px"><button class="btn sm" data-cs="' + c.key + '">OK</button></div>'; }).join("") +
+    '<div class="ar"><div class="grow">🛠 Texnik tanaffus</div><button class="btn sm ' + (a.maintenance ? "rd" : "gn") + '" id="mt">' + (a.maintenance ? "Yoqilgan" : "O'chiq") + "</button></div></div>";
+  var act = async function (body, msg) {
+    try { var j = await api("POST", "act", body); ADM = j.admin || ADM; setState(j.state, j.admin); toast(msg || "✅ Saqlandi"); hap("ok"); } catch (e) { fail(e); }
+  };
+  Array.prototype.forEach.call(m.querySelectorAll("[data-pd]"), function (b) { b.onclick = function () { act({ a: "admin_promo_del", code: b.getAttribute("data-pd") }, "🗑 O'chirildi"); }; });
+  $("padd").onclick = function () { act({ a: "admin_promo_add", code: $("pcode").value, coins: $("pcoin").value, uses: $("puse").value }); };
+  $("gbtn").onclick = function () { act({ a: "admin_give", id: $("gid").value, amount: $("gam").value }); };
+  $("bb").onclick = function () { act({ a: "admin_block", id: $("bid").value, block: true }, "🚫 Bloklandi"); };
+  $("bu").onclick = function () { act({ a: "admin_block", id: $("bid").value, block: false }, "✅ Blokdan chiqarildi"); };
+  $("mt").onclick = function () { act({ a: "admin_cfg", key: "maintenance", value: !a.maintenance }); };
+  Array.prototype.forEach.call(m.querySelectorAll("[data-cs]"), function (b) {
+    b.onclick = function () { var k = b.getAttribute("data-cs"), inp = m.querySelector('[data-ck="' + k + '"]'); act({ a: "admin_cfg", key: k, value: inp.value }); };
+  });
+}
+$("colBtn").onclick = async function () {
+  if (!ST || pend() < 1) { toast("Hali yig'ilgan tanga yo'q"); return; }
+  try { var j = await api("POST", "act", { a: "collect" }); setState(j.state); toast("💰 +" + fmtS(j.result) + " 🪙"); hap("ok"); } catch (e) { fail(e); }
+};
+async function start() {
+  try {
+    var j = await api("GET", "state");
+    CAT = j.catalog; setState(j.state, j.admin);
+  } catch (e) { fail(e); if (e.message !== "gate") $("m").innerHTML = '<div class="err"><div class="big">⚠️</div><p>' + esc(ERR[e.message] || "Xatolik") + "</p></div>"; }
+}
+setInterval(function () { if (ST) { head(); if (tab === "bonus") { var d = $("dl"); if (d) { var left = ST.daily_left - (Date.now() - T0) / 1000; if (left <= 0) render(); else d.textContent = "⏳ " + dur(left); } } } }, 1000);
+start();
+
+</script>
+</body>
+</html>
+"""
+# ===================== /MINI MARKET TYCOON =====================
+
+
 SETUP_FUNCTIONS = {
+    "market": setup_market_bot,
     "roblox": setup_egg_bot,
     "download": setup_download_bot,
     "nakrutka": setup_nakrutka_bot,
@@ -18937,6 +20453,13 @@ async def start_child_bot(token: str, bot_type: str):
                 await child_bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text="🥚 O'yin", web_app=WebAppInfo(url=_egg_u)))
             except Exception as _e:
                 logging.info(f"Tuxum o'yini menyu tugmasi ({token[-6:]}): {_e}")
+    if bot_type == "market":
+        _mu = get_marketapp_url(data["bots"].get(token, {}).get("id"))
+        if _mu:
+            try:
+                await child_bot.set_chat_menu_button(menu_button=MenuButtonWebApp(text="🏪 Do'kon", web_app=WebAppInfo(url=_mu)))
+            except Exception as _e:
+                logging.info(f"Market menyu tugmasi ({token[-6:]}): {_e}")
     if bot_type in BP_TYPES:
         _binfo = data["bots"].get(token, {})
         _pub_u = get_botapp_url(_binfo.get("id"))
@@ -21835,6 +23358,9 @@ async def start_web_server():
     app.router.add_post("/api/kw/watch", kw_api_watch)
     app.router.add_get("/botapp", botapp_page)
     app.router.add_get("/eggapp", egg_page)
+    app.router.add_get("/marketapp", market_page)
+    app.router.add_get("/api/market/state", market_state_api)
+    app.router.add_post("/api/market/act", market_act_api)
     app.router.add_get("/api/egg/state", egg_state_api)
     app.router.add_post("/api/egg/act", egg_act_api)
     app.router.add_get("/api/pub/info", pub_info)
@@ -23651,7 +25177,7 @@ class BotMetricsMiddleware(BaseMiddleware):
         return result
 
 
-_BOT_EMOJI = {"roblox": "🥚", "download": "📥", "openbudget": "🗳", "kino_pro": "🎬", "shop": "🛍", "ai": "🤖", "taxi": "🚕", "nakrutka": "🚀"}
+_BOT_EMOJI = {"roblox": "🥚", "market": "🏪", "download": "📥", "openbudget": "🗳", "kino_pro": "🎬", "shop": "🛍", "ai": "🤖", "taxi": "🚕", "nakrutka": "🚀"}
 _creator_username_cache = {"v": ""}
 
 
@@ -26584,7 +28110,7 @@ async def pub_gate(token: str, info: dict, uid: int) -> dict:
 
 async def pub_auth(request, body=None, gate=True):
     """(token, info, uid, user_dict, xato). initData imzosi + bot qoidalari."""
-    token, info = bp_find_bot(request.query.get("b"), ("roblox",))
+    token, info = bp_find_bot(request.query.get("b"), ("roblox", "market"))
     if not info:
         return None, None, None, None, _pub_err("bot_not_found", 404)
     init_data = body.get("initData", "") if body is not None else request.query.get("initData", "")
