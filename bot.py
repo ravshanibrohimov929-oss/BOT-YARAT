@@ -18907,6 +18907,8 @@ def mk_user(info: dict, uid, now=None, name=None) -> dict:
         u = users[str(uid)] = {"coins": int(info["mk_cfg"]["start"]), "lines": [1] + [0] * (len(MK_LINES) - 1), "cash": 0, "size": 1,
                                "fp": 0, "earned": 0, "earned_run": 0, "t_col": now, "t_daily": 0, "streak": 0, "refs": 0, "ref_by": None,
                                "name": "", "since": now}
+    for _k, _v in (("xp", 0), ("bag", 0), ("sale_al", 300.0), ("sale_t", now)):
+        u.setdefault(_k, _v)
     if name:
         u["name"] = name
     return u
@@ -18922,6 +18924,72 @@ def mk_base(u: dict) -> int:
 
 def mk_rate(info: dict, uid, u: dict) -> int:
     return int(mk_base(u) * mk_mult(info, uid, u))
+
+
+MK_BAG_MAX = 8
+
+
+def mk_price(info: dict, uid, u: dict, i: int) -> int:
+    """Bitta buyum sotuv narxi (qo'lda sotuv): javon darajasi va ko'paytirgichga bog'liq."""
+    lv = int(u["lines"][i])
+    return max(1, int(round(MK_LINES[i][4] / 12.0 * (1 + 0.05 * lv) * mk_mult(info, uid, u))))
+
+
+def mk_level(xp: int):
+    lvl, rem = 1, int(xp)
+    while rem >= 40 * lvl and lvl < 999:
+        rem -= 40 * lvl
+        lvl += 1
+    return lvl, rem, 40 * lvl
+
+
+def mk_bag_cost(u: dict) -> int:
+    return int(400 * (2.2 ** u["bag"]))
+
+
+def mk_buy_bag(info: dict, uid, u: dict, now=None):
+    mk_collect(info, uid, u, now)
+    if u["bag"] >= MK_BAG_MAX:
+        return ("err", "max")
+    c = mk_bag_cost(u)
+    if u["coins"] < c:
+        return ("err", "no_coins")
+    u["coins"] -= c
+    u["bag"] += 1
+    info["stats"]["buys"] = info["stats"].get("buys", 0) + 1
+    return ("ok", u["bag"])
+
+
+def mk_sale(info: dict, uid, u: dict, items, now=None):
+    """Mijozlarga qo'lda sotilgan buyumlar uchun pul. items: {javon_indeksi: soni}. Tezlik chegarasi bor."""
+    now = now if now is not None else _eg_time.time()
+    if not isinstance(items, dict) or not items or len(items) > len(MK_LINES):
+        return ("err", "bad_value")
+    clean, total = {}, 0
+    for k, v in items.items():
+        try:
+            i, n = int(k), int(v)
+        except (TypeError, ValueError):
+            return ("err", "bad_value")
+        if not 0 <= i < len(MK_LINES) or n < 0 or n > 500 or (n and int(u["lines"][i]) <= 0):
+            return ("err", "bad_value")
+        if n:
+            clean[i] = n
+            total += n
+    if total <= 0:
+        return ("err", "bad_value")
+    u["sale_al"] = min(400.0, float(u.get("sale_al", 300.0)) + max(0.0, now - float(u.get("sale_t", now))) * 2.5)
+    u["sale_t"] = now
+    if total > u["sale_al"]:
+        return ("err", "too_fast")
+    u["sale_al"] -= total
+    amt = sum(n * mk_price(info, uid, u, i) for i, n in clean.items())
+    u["coins"] += amt
+    u["earned"] += amt
+    u["earned_run"] += amt
+    u["xp"] = int(u.get("xp", 0)) + total
+    info["stats"]["sold"] = info["stats"].get("sold", 0) + total
+    return ("ok", amt, total)
 
 
 def mk_pending(info: dict, uid, u: dict, now=None) -> int:
@@ -19088,7 +19156,9 @@ def mk_state(info: dict, uid: int, u: dict, now=None) -> dict:
             "fp": u["fp"], "earned_run": int(u["earned_run"]), "fran_gain": mk_fran_gain(u), "mult": round(mk_mult(info, uid, u), 2),
             "streak": streak, "daily_left": int(dl), "premium": bool(is_premium_active(info, uid)), "refs": u.get("refs", 0),
             "ref_bonus": int(cfg["ref"]), "username": info.get("username", ""), "admin": bool(is_admin(info, uid)), "name": info.get("name", ""),
-            "daily_base": int(cfg["daily"])}
+            "daily_base": int(cfg["daily"]),
+            "price": [mk_price(info, uid, u, i) for i in range(len(MK_LINES))], "bag": u["bag"], "bag_cost": mk_bag_cost(u) if u["bag"] < MK_BAG_MAX else 0,
+            "carry_max": 4 + 2 * u["bag"], "bag_max": MK_BAG_MAX, "level": mk_level(u["xp"])[0], "xp": mk_level(u["xp"])[1], "xp_need": mk_level(u["xp"])[2]}
 
 
 def mk_admin_view(info: dict) -> dict:
@@ -19503,6 +19573,18 @@ async def market_act_api(request):
             return fail(r)
         res = {"cash": r[1]}
         return done()
+    if a == "buy_bag":
+        r = mk_buy_bag(info, uid, u, now)
+        if r[0] != "ok":
+            return fail(r)
+        res = {"bag": r[1]}
+        return done()
+    if a == "sale":
+        r = mk_sale(info, uid, u, body.get("items"), now)
+        if r[0] != "ok":
+            return _pub_err("mk_" + r[1], 429 if r[1] == "too_fast" else 400)
+        res = {"coins": r[1], "items": r[2]}
+        return done()
     if a == "buy_size":
         r = mk_buy_size(info, uid, u, now)
         if r[0] != "ok":
@@ -19695,6 +19777,10 @@ img.pi{width:100%;max-width:84px;height:auto;display:block;margin:0 auto;pointer
 .fb{border:0;border-radius:12px;padding:9px 6px;background:linear-gradient(#ffd23f,#ff9d1a);color:#3a2200;font:inherit;font-weight:900;font-size:15px;box-shadow:0 3px 0 #b37d00;display:flex;flex-direction:column;align-items:center;gap:2px}
 .fb span{font-size:12px;font-weight:800}.fb.wide{grid-column:1/3;width:100%}.fb.off{filter:grayscale(1);opacity:.5}
 .bar{height:8px;border-radius:6px;background:rgba(0,0,0,.35);margin:6px 0 10px;overflow:hidden}.bar i{display:block;height:100%;background:linear-gradient(90deg,#7bf0a8,#ffd23f)}
+.lvl{display:flex;align-items:center;gap:6px;flex:1;min-width:0}.star{position:relative;width:44px;height:44px;flex:none}.star svg{position:absolute;left:0;top:0}.star span{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:15px;color:#fff;text-shadow:0 1px 2px #000a;z-index:2;padding-top:2px}
+.xp{position:relative;flex:1;height:22px;border-radius:12px;background:rgba(0,0,0,.5);border:2px solid rgba(255,255,255,.3);overflow:hidden;margin-left:-14px;padding-left:14px}.xp i{display:block;height:100%;background:linear-gradient(#8ff56f,#2fbf3e);width:0}.xp span{position:absolute;left:14px;right:0;top:0;line-height:18px;text-align:center;font-size:12px;font-weight:900}
+.cashp{flex:none;display:flex;align-items:center;gap:6px;min-width:112px;font-size:17px}.cashp .ico{display:inline-flex}.ti{vertical-align:middle;border-radius:10px;background:rgba(255,255,255,.12);padding:2px}
+.tabs button b svg{display:block;margin:0 auto}
 #mCv{width:100%;height:100%;display:block;touch-action:none}
 .err{text-align:center;padding:40px 16px}.err .big{font-size:70px}
 </style>
@@ -19702,10 +19788,10 @@ img.pi{width:100%;max-width:84px;height:auto;display:block;margin:0 auto;pointer
 <body>
 <div id="app">
   <div class="top"><div class="row">
-    <div class="pill"><small>Tanga</small>🪙 <span id="coins">0</span></div>
-    <div class="pill"><small>Daromad / soat</small>📈 <span id="rate">0</span></div>
+    <div class="lvl"><div class="star" id="lvStar"><span id="lvNum">1</span></div><div class="xp"><i id="xpBar"></i><span id="xpTx"></span></div></div>
+    <div class="pill cashp"><span class="ico" id="icCash"></span><span id="coins">0</span></div>
   </div>
-  <div class="row" style="margin-top:8px"><button class="btn gn" id="colBtn" style="flex:1">💰 Yig'ish: <span id="pend">0</span></button></div></div>
+  <div class="row" style="margin-top:6px"><div class="mu" style="flex:1" id="rateTx"></div><button class="btn gn sm" id="colBtn">Offlayn: <span id="pend">0</span></button></div></div>
   <main id="m"><div class="err"><div class="big">🏪</div><p class="mu">Yuklanmoqda...</p></div></main>
 </div>
 <div class="tabs" id="tabs"></div>
@@ -19945,7 +20031,7 @@ var tg = window.Telegram && window.Telegram.WebApp;
 if (tg) { try { tg.ready(); tg.expand(); tg.setHeaderColor && tg.setHeaderColor("#1b1464"); tg.setBackgroundColor && tg.setBackgroundColor("#1b1464"); } catch (e) {} }
 var INIT = tg ? tg.initData : "";
 var BID = new URLSearchParams(location.search).get("b");
-var CAT = null, ST = null, ADM = null, T0 = 0, tab = "store", TOP = null, tt = null, MK = null, RAF = 0;
+var CAT = null, ST = null, ADM = null, T0 = 0, tab = "store", TOP = null, tt = null, MK = null, RAF = 0, WS = null;
 var KEYS = {};
 window.addEventListener("keydown", function (e) { KEYS[e.key.toLowerCase()] = true; });
 window.addEventListener("keyup", function (e) { KEYS[e.key.toLowerCase()] = false; });
@@ -19961,8 +20047,8 @@ function fmtS(n) {
 function dur(s) { s = Math.max(0, Math.floor(s)); var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60; return h ? h + " soat " + m + " daq" : (m ? m + " daq " : "") + x + " s"; }
 function hap(k) { try { if (tg && tg.HapticFeedback) { if (k === "ok") tg.HapticFeedback.notificationOccurred("success"); else tg.HapticFeedback.impactOccurred(k || "light"); } } catch (e) {} }
 function has3d() { try { return typeof G3 !== "undefined" && !!document.createElement("canvas").getContext("2d"); } catch (e) { return false; } }
-function toast(t) { var e = $("toast"); e.textContent = t; e.hidden = false; clearTimeout(tt); tt = setTimeout(function () { e.hidden = true; }, 2400); }
-var ERR = { no_coins: "Tanga yetarli emas", mk_no_coins: "Tanga yetarli emas", mk_max: "Maksimal daraja", mk_fran_low: "Franshiza uchun daromad hali yetarli emas", wait: "Hali erta", slow_down: "Sekinroq 🙂", promo_none: "Bunday promokod yo'q", promo_used: "Bu promokoddan foydalangansiz", promo_over: "Promokod limiti tugagan", maintenance: "Texnik tanaffus. Birozdan keyin qayting", bad_value: "Noto'g'ri qiymat", forbidden: "Ruxsat yo'q", invalid_init_data: "Mini appni bot ichidan oching", bot_not_found: "Bot topilmadi", net: "Aloqa xatosi" };
+function toast(t) { var e = $("toast"); e.textContent = t; e.hidden = false; clearTimeout(tt); tt = setTimeout(function () { e.hidden = true; }, 2200); }
+var ERR = { no_coins: "Pul yetarli emas", mk_no_coins: "Pul yetarli emas", mk_max: "Maksimal daraja", mk_fran_low: "Franshiza uchun daromad hali yetarli emas", mk_too_fast: "Juda tez, biroz kuting", wait: "Hali erta", slow_down: "Sekinroq", promo_none: "Bunday promokod yo'q", promo_used: "Bu promokoddan foydalangansiz", promo_over: "Promokod limiti tugagan", maintenance: "Texnik tanaffus. Birozdan keyin qayting", bad_value: "Noto'g'ri qiymat", forbidden: "Ruxsat yo'q", invalid_init_data: "Mini appni bot ichidan oching", bot_not_found: "Bot topilmadi", net: "Aloqa xatosi" };
 async function api(method, path, body) {
   var url = "/api/market/" + path + "?b=" + encodeURIComponent(BID);
   var opt = { method: method, headers: { "Content-Type": "application/json" } };
@@ -19974,12 +20060,25 @@ async function api(method, path, body) {
 }
 function setState(s, adm) { ST = s; T0 = Date.now(); if (adm) ADM = adm; render(); }
 function pend() { if (!ST) return 0; return Math.min(ST.rate * ST.cap_h, ST.pending + ST.rate * (Date.now() - T0) / 3600000); }
+// ---------- ikonkalar (emoji emas, chizilgan) ----------
+var IC = {
+  store: '<svg viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" d="M3 4h18l2 6a3 3 0 01-5 1.6A3 3 0 0112 12a3 3 0 01-6-.4A3 3 0 011 10zM4 13.5h16V21H4z"/></svg>',
+  up: '<svg viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" d="M12 2l9 10h-5.5v10h-7V12H3z"/></svg>',
+  gift: '<svg viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" d="M2 8h20v4H2zM3.5 13h7v9h-7zM13.5 13h7v9h-7zM11 8h2v14h-2zM12 7C9 7 7 5 8.5 3.5S12 4 12 7zM12 7c3 0 5-2 3.5-3.5S12 4 12 7z"/></svg>',
+  trophy: '<svg viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" d="M6 3h12v6a6 6 0 01-12 0zM4 4h2v4a2 2 0 01-2-2zM18 4h2v2a2 2 0 01-2 2zM11 15h2v3h4v3H7v-3h4z"/></svg>',
+  gear: '<svg viewBox="0 0 24 24" width="26" height="26"><circle cx="12" cy="12" r="7.5" fill="none" stroke="currentColor" stroke-width="3.2" stroke-dasharray="3.2 2.5"/><circle cx="12" cy="12" r="5.2" fill="none" stroke="currentColor" stroke-width="2.6"/></svg>',
+  star: '<svg viewBox="0 0 24 24" width="44" height="44"><path fill="#ffc21a" stroke="#b8740a" stroke-width="1.4" stroke-linejoin="round" d="M12 1.8l3 6.6 7.2.8-5.4 4.8 1.6 7.1L12 17.4 5.6 21.1l1.6-7.1L1.8 9.2 9 8.4z"/></svg>',
+  cash: '<svg viewBox="0 0 24 24" width="26" height="26"><rect x="1.5" y="5.5" width="21" height="13" rx="2.5" fill="#3dcc5f" stroke="#1d7f36" stroke-width="1.6"/><circle cx="12" cy="12" r="3.4" fill="#c4f7cd" stroke="#1d7f36" stroke-width="1.2"/></svg>',
+  lock: '<svg viewBox="0 0 24 24" width="18" height="18"><rect x="4" y="10" width="16" height="11" rx="2.5" fill="#cfd4e3"/><path d="M7.5 10V7.5a4.5 4.5 0 019 0V10" fill="none" stroke="#cfd4e3" stroke-width="2.6"/></svg>'
+};
+$("lvStar").insertAdjacentHTML("afterbegin", IC.star); $("icCash").innerHTML = IC.cash;
+// ---------- gate / xato ----------
 function gateView(g) {
-  var h = '<div class="err"><div class="big">🔒</div>';
+  var h = '<div class="err"><div class="big">' + IC.lock.replace('width="18" height="18"', 'width="64" height="64"') + "</div>";
   if (g && g.reason === "channels") {
     h += "<h2>Avval kanallarga obuna bo'ling</h2>" + (g.channels || []).map(function (c) { return '<p><a style="color:#ffd23f" href="' + esc(c.url) + '">' + esc(c.title) + "</a></p>"; }).join("") + '<p class="mu">Obuna bo\'lgach, mini appni qayta oching.</p>';
   } else if (g && g.reason === "blocked") h += "<h2>Siz bloklangansiz</h2>";
-  else if (g && g.reason === "premium") h += "<h2>Bu bot Premium obunachilar uchun</h2><p class=\"mu\">Botda 💎 Premium bo'limidan foydalaning.</p>";
+  else if (g && g.reason === "premium") h += "<h2>Bu bot Premium obunachilar uchun</h2><p class=\"mu\">Botda Premium bo'limidan foydalaning.</p>";
   else h += "<h2>Bot hozir faol emas</h2>";
   $("m").innerHTML = h + "</div>";
   $("tabs").innerHTML = "";
@@ -19987,13 +20086,13 @@ function gateView(g) {
 function fail(e) {
   var d = e.data || {}, c = e.message;
   if (c === "gate") { gateView(d.gate); return; }
-  if (c === "wait" && d.left) { toast("⏳ " + dur(d.left)); return; }
+  if (c === "wait" && d.left) { toast("Kuting: " + dur(d.left)); return; }
   toast(ERR[c] || "Xatolik: " + c);
 }
 function tabs() {
-  var t = [["store", "🏪", "Do'kon"], ["up", "⬆", "Yaxshilash"], ["bonus", "🎁", "Bonus"], ["top", "🏆", "Reyting"]];
-  if (ST && ST.admin) t.push(["admin", "⚙️", "Admin"]);
-  $("tabs").innerHTML = t.map(function (x) { return '<button data-t="' + x[0] + '" class="' + (tab === x[0] ? "on" : "") + '"><b>' + x[1] + "</b>" + x[2] + "</button>"; }).join("");
+  var t = [["store", "store", "Do'kon"], ["up", "up", "Yaxshilash"], ["bonus", "gift", "Bonus"], ["top", "trophy", "Reyting"]];
+  if (ST && ST.admin) t.push(["admin", "gear", "Admin"]);
+  $("tabs").innerHTML = t.map(function (x) { return '<button data-t="' + x[0] + '" class="' + (tab === x[0] ? "on" : "") + '"><b>' + IC[x[1]] + "</b>" + x[2] + "</button>"; }).join("");
   Array.prototype.forEach.call($("tabs").querySelectorAll("button"), function (b) {
     b.onclick = function () { tab = b.getAttribute("data-t"); hap("light"); if (tab === "top") loadTop(); render(); };
   });
@@ -20001,10 +20100,13 @@ function tabs() {
 function head() {
   if (!ST) return;
   $("coins").textContent = fmtS(ST.coins);
-  $("rate").textContent = fmtS(ST.rate) + (ST.premium ? " 💎x2" : "");
+  $("lvNum").textContent = ST.level;
+  $("xpBar").style.width = Math.min(100, ST.xp / ST.xp_need * 100) + "%";
+  $("xpTx").textContent = ST.xp + "/" + ST.xp_need;
+  $("rateTx").textContent = "Offlayn daromad: " + fmtS(ST.rate) + "/soat" + (ST.premium ? " (Premium x2)" : "");
   var p = pend();
   $("pend").textContent = fmtS(p);
-  $("colBtn").className = "btn gn" + (p < 1 ? " off" : "");
+  $("colBtn").className = "btn gn sm" + (p < 1 ? " off" : "");
 }
 function render() {
   if (!CAT || !ST) return;
@@ -20021,101 +20123,185 @@ function frame() {
   try { live = mkTick(); } catch (e) { live = false; if (window.console) console.error(e); }
   if (live) kick();
 }
-// ---------- narx hisoblari (server bilan bir xil formula) ----------
+// ---------- narxlar (server bilan bir xil formula) ----------
 function stepCost(i, lv) { var L = CAT.lines[i]; return lv <= 0 ? L.unlock : Math.floor(L.base * Math.pow(CAT.growth, lv - 1)); }
 function bulkCost(i, lv, n) { var s = 0; for (var k = 0; k < n; k++) s += stepCost(i, lv + k); return s; }
 function maxAfford(i, lv, coins) { var k = 0, s = 0; while (lv + k < CAT.maxlvl) { var c = stepCost(i, lv + k); if (s + c > coins) break; s += c; k++; } return [k, s]; }
-// ---------- 3D do'kon ----------
+function shelfCap(lv) { return Math.min(10, 2 + Math.floor(lv / 6)); }
+// ---------- 3D buyumlar (emojisiz) ----------
 function B3(c, s, col, x) { var p = { type: "box", c: c, s: s, col: col }; if (x) for (var k in x) p[k] = x[k]; return p; }
+function S3(c, s, col, x) { var p = { type: "sphere", c: c, s: s, col: col }; if (x) for (var k in x) p[k] = x[k]; return p; }
 function hashCol(n) { var C = [[230, 70, 70], [70, 150, 240], [80, 200, 120], [250, 170, 50], [170, 100, 230], [240, 110, 180]]; return C[Math.abs(n | 0) % C.length]; }
-var LCOL = [[236, 196, 120], [245, 245, 252], [230, 70, 70], [255, 150, 40], [225, 90, 110], [255, 150, 200], [90, 130, 230], [120, 230, 240]];
-function makeHuman(seed, hat) {
-  var shirt = hashCol(seed), skin = [255, 206, 160], leg = [58, 68, 150];
-  var sw = function (side) { return function (t, o) { return { r: [Math.sin(o.ph || 0) * 0.9 * (o.mv || 0) * side, 0, side * 0.04] }; }; };
+var LCOL = [[226, 168, 92], [245, 245, 252], [225, 60, 60], [255, 140, 30], [225, 95, 105], [255, 150, 190], [90, 130, 230], [100, 225, 240]];
+var ITD = [
+  [S3([0, 0.26, 0], [0.5, 0.3, 0.34], [226, 168, 92], { lat: 5, lon: 9 }), S3([0, 0.36, 0], [0.32, 0.12, 0.2], [244, 205, 135], { lat: 4, lon: 8 })],
+  [B3([0, 0.4, 0], [0.5, 0.8, 0.5], [248, 248, 255]), B3([0, 0.88, 0], [0.3, 0.14, 0.3], [70, 140, 240]), B3([0, 0.4, 0.26], [0.32, 0.3, 0.02], [80, 150, 250])],
+  [S3([0, 0.33, 0], [0.38, 0.34, 0.38], [225, 60, 60], { lat: 6, lon: 10 }), B3([0, 0.7, 0], [0.07, 0.18, 0.07], [90, 60, 30]), B3([0.12, 0.72, 0], [0.22, 0.05, 0.12], [90, 190, 70])],
+  [B3([0, 0.42, 0], [0.3, 0.6, 0.3], [255, 140, 30]), B3([0, 0.1, 0], [0.16, 0.2, 0.16], [255, 140, 30]), B3([0, 0.84, 0], [0.3, 0.22, 0.3], [90, 190, 70])],
+  [B3([0, 0.2, 0], [0.8, 0.34, 0.55], [225, 95, 105]), B3([0, 0.39, 0], [0.62, 0.06, 0.4], [245, 175, 180]), B3([0.32, 0.22, 0.32], [0.18, 0.2, 0.1], [245, 240, 230])],
+  [B3([0, 0.2, 0], [0.7, 0.4, 0.7], [240, 210, 160]), B3([0, 0.46, 0], [0.74, 0.12, 0.74], [255, 150, 190]), S3([0, 0.64, 0], [0.1, 0.1, 0.1], [230, 40, 60], { lat: 4, lon: 6 })],
+  [B3([0, 0.45, 0], [0.45, 0.8, 0.1], [50, 55, 75]), B3([0, 0.45, 0.055], [0.38, 0.7, 0.02], [110, 190, 255])],
+  [S3([0, 0.5, 0], [0.4, 0.52, 0.4], [100, 225, 240], { lat: 2, lon: 4 })]
+];
+function itemParts(i, o, k) {
+  return ITD[i].map(function (q) {
+    var p = { type: q.type, c: [o[0] + q.c[0] * k, o[1] + q.c[1] * k, o[2] + q.c[2] * k], s: [q.s[0] * k, q.s[1] * k, q.s[2] * k], col: q.col };
+    if (q.lat) { p.lat = q.lat; p.lon = q.lon; }
+    return p;
+  });
+}
+var THC = {};
+function thumbCv(i) {
+  if (THC[i]) return THC[i];
+  var c = document.createElement("canvas");
+  try { var sc = new G3.Scene(c, { d: 3.6, size: 96 }), o = sc.add({ parts: itemParts(i, [0, -0.5, 0], 1) }); o.rot = [0.35, 0.6, 0]; sc.render(0); } catch (e) {}
+  THC[i] = c; return c;
+}
+function thumbImg(i, sz) { var u = ""; try { u = thumbCv(i).toDataURL("image/png"); } catch (e) {} return '<img class="ti" src="' + u + '" width="' + (sz || 40) + '" height="' + (sz || 40) + '" alt="">'; }
+// ---------- odamlar ----------
+function makeHuman(o) {
+  var shirt = o.shirt, skin = o.skin, leg = o.leg || [58, 68, 150];
+  var sw = function (side) { return function (t, ob) { return { r: [Math.sin(ob.ph || 0) * 0.9 * (ob.mv || 0) * side, 0, side * 0.04] }; }; };
   var P = [
-    B3([0, 1.95, 0], [0.64, 0.64, 0.64], skin), B3([0, 2.32, -0.02], [0.68, 0.22, 0.68], hat ? [60, 40, 30] : [110, 70, 40]),
-    B3([-0.16, 2.0, 0.33], [0.1, 0.14, 0.04], [30, 30, 40]), B3([0.16, 2.0, 0.33], [0.1, 0.14, 0.04], [30, 30, 40]),
-    B3([0, 1.2, 0], [0.82, 0.95, 0.44], shirt),
+    B3([0, 1.95, 0], [0.66, 0.66, 0.66], skin), B3([0, 1.2, 0], [0.82, 0.95, 0.46], shirt),
+    B3([-0.16, 2.0, 0.34], [0.1, 0.14, 0.04], [30, 30, 40]), B3([0.16, 2.0, 0.34], [0.1, 0.14, 0.04], [30, 30, 40]),
     B3([-0.56, 1.62, 0], [0.26, 0.9, 0.3], shirt, { pv: [0, -0.34, 0], anim: sw(-1) }), B3([0.56, 1.62, 0], [0.26, 0.9, 0.3], shirt, { pv: [0, -0.34, 0], anim: sw(1) }),
     B3([-0.21, 0.78, 0], [0.36, 0.8, 0.38], leg, { pv: [0, -0.34, 0], anim: sw(1) }), B3([0.21, 0.78, 0], [0.36, 0.8, 0.38], leg, { pv: [0, -0.34, 0], anim: sw(-1) })
   ];
-  return { parts: P, shadow: { y: 0, r: 0.9 }, ph: 0, mv: 0 };
+  return P;
+}
+function hatParts(h) {
+  if (h === 0) return [B3([0, 2.42, 0], [0.7, 0.36, 0.7], [210, 40, 40]), B3([0, 2.72, 0], [0.22, 0.22, 0.22], [255, 255, 255])];
+  if (h === 1) return [B3([0, 2.34, 0], [1.0, 0.1, 1.0], [240, 90, 170]), B3([0, 2.54, 0], [0.56, 0.32, 0.56], [240, 90, 170])];
+  if (h === 2) return [B3([0, 2.34, 0], [0.9, 0.12, 0.9], [250, 220, 70]), B3([0, 2.5, 0], [0.4, 0.2, 0.4], [255, 160, 60])];
+  return [B3([0, 2.4, 0], [0.72, 0.26, 0.72], [70, 190, 100]), B3([0, 2.3, 0.4], [0.6, 0.06, 0.3], [50, 150, 80])];
+}
+function cartParts(lc) {
+  var P = [B3([0, 0.75, 1.0], [0.9, 0.1, 1.1], [120, 210, 225]), B3([-0.46, 1.05, 1.0], [0.06, 0.55, 1.1], [190, 235, 245]), B3([0.46, 1.05, 1.0], [0.06, 0.55, 1.1], [190, 235, 245]),
+    B3([0, 1.05, 1.56], [0.9, 0.55, 0.06], [190, 235, 245]), B3([0, 1.5, 0.42], [0.96, 0.08, 0.08], [230, 60, 90]), B3([-0.4, 0.5, 0.6], [0.1, 0.3, 0.1], [90, 90, 100]), B3([0.4, 0.5, 0.6], [0.1, 0.3, 0.1], [90, 90, 100])];
+  for (var k = 0; k < 3; k++) (function (kk) { P.push(B3([-0.26 + 0.26 * kk, 1.18, 1.0], [0.3, 0.32, 0.3], lc, { alpha: function (ob) { return ob.got > kk ? 1 : 0; } })); })(k);
+  return P;
+}
+function pileParts(n) {
+  var P = [], k = Math.min(14, Math.ceil(n / 2));
+  for (var i = 0; i < k; i++) P.push(B3([((i % 2) - 0.5) * 0.62, 0.14 + Math.floor(i / 2) * 0.26, 0], [0.56, 0.2, 0.9], [70, 200, 90]));
+  return P;
+}
+// ---------- dunyo ----------
+function wsInit() {
+  if (WS) return;
+  WS = { src: [4, 0, 0, 0, 0, 0, 0, 0], sh: [0, 0, 0, 0, 0, 0, 0, 0], pile: [0, 0, 0, 0, 0, 0, 0, 0], stack: [], tp: [0, 0, 0, 0, 0, 0, 0, 0] };
 }
 function mkGeom() {
-  var s = ST.size, hx = 9 + 2 * (s - 1), hz = 9 + (s - 1), sp = 4.6 + (s - 1) * 0.7, rg = 6.4 + (s - 1) * 0.5, G = { hx: hx, hz: hz, slots: [], counter: { x: 0, z: hz - 3.2, w: 5 + Math.min(10, ST.cash) * 0.9 } };
-  for (var i = 0; i < CAT.lines.length; i++) G.slots.push({ x: ((i % 4) - 1.5) * sp, z: -hz + 2.4 + ((i / 4) | 0) * rg });
+  var s = ST.size, hx = 11 + 2 * (s - 1), hz = 12 + (s - 1), wz = 3, fe = wz + 16, G = { hx: hx, hz: hz, wz: wz, fe: fe, shelves: [], src: [], door: [-6.5, -1.2], side: [-4, 0] };
+  G.counter = { x: hx - 6.5, z: 0.6, w: 7, d: 1.4 }; G.cashier = { x: hx - 6.5, z: -1.7 };
+  for (var i = 0; i < 8; i++) {
+    G.shelves.push({ x: -hx + 4.2 + (i % 4) * ((2 * hx - 8.4) / 3), z: -hz + 2.2 + (i >> 2) * 5.4 });
+    G.src.push({ x: ((i % 4) - 1.5) * 5.2, z: wz + 5 + (i >> 2) * 6 });
+  }
   return G;
+}
+var SHW = [[205, 150, 95], [250, 236, 240], [240, 170, 110], [205, 150, 95], [150, 90, 70], [250, 200, 215], [120, 130, 150], [150, 190, 235]];
+function shelfBase(i, lock) {
+  var w = SHW[i], dk = [w[0] * 0.8, w[1] * 0.8, w[2] * 0.8], a = lock ? { alpha: 0.35 } : null, P = [
+    B3([0, 1.5, -0.55], [3.7, 3.0, 0.14], w, a), B3([-1.8, 1.5, 0], [0.14, 3.0, 1.2], dk, a), B3([1.8, 1.5, 0], [0.14, 3.0, 1.2], dk, a),
+    B3([0, 0.25, 0], [3.7, 0.5, 1.2], dk, a), B3([0, 1.15, 0], [3.7, 0.1, 1.2], w, a), B3([0, 2.0, 0], [3.7, 0.1, 1.2], w, a), B3([0, 3.0, 0], [3.9, 0.14, 1.4], dk, a)];
+  return P;
+}
+function srcBase(i, lock) {
+  var a = lock ? { alpha: 0.35 } : null, P = [];
+  if (i === 0) P = [B3([0, 0.55, 0], [3.2, 1.1, 1.8], [110, 190, 230], a), B3([0.7, 1.55, -0.5], [1.3, 0.9, 0.9], [240, 120, 60], a), B3([-0.9, 1.12, 0.3], [1.2, 0.06, 0.8], [210, 180, 130], a)];
+  else if (i === 1) P = [B3([0, 0.2, 0], [3.2, 0.4, 2.0], [150, 205, 150], a), B3([0.3, 1.2, -0.4], [1.5, 0.9, 0.8], [250, 250, 250], a), B3([1.15, 1.45, -0.4], [0.6, 0.6, 0.6], [250, 250, 250], a), B3([0.3, 1.25, -0.4], [0.5, 0.5, 0.82], [40, 40, 45], a), B3([1.4, 1.2, -0.4], [0.25, 0.2, 0.3], [240, 170, 170], a),
+    B3([-0.2, 0.55, -0.7], [0.2, 0.5, 0.2], [230, 230, 230], a), B3([0.8, 0.55, -0.7], [0.2, 0.5, 0.2], [230, 230, 230], a), B3([-0.2, 0.55, -0.1], [0.2, 0.5, 0.2], [230, 230, 230], a), B3([0.8, 0.55, -0.1], [0.2, 0.5, 0.2], [230, 230, 230], a)];
+  else if (i === 2) P = [B3([0, 0.3, 0], [3.2, 0.6, 1.8], [205, 150, 90], a), B3([-1.2, 1.3, -0.7], [0.3, 1.6, 0.3], [110, 75, 40], a), S3([-1.2, 2.4, -0.7], [0.95, 0.8, 0.95], [70, 170, 70], a)];
+  else if (i === 3) P = [B3([0, 0.2, 0], [3.2, 0.4, 1.9], [125, 85, 55], a), B3([-1.2, 0.5, -0.7], [0.3, 0.3, 0.3], [90, 190, 70], a), B3([1.2, 0.5, -0.7], [0.3, 0.3, 0.3], [90, 190, 70], a)];
+  else if (i === 4) P = [B3([0, 0.45, 0], [3.2, 0.9, 1.8], [75, 75, 85], a), B3([0.9, 0.95, -0.5], [1.1, 0.12, 0.6], [240, 80, 40], a), B3([-1.2, 1.4, -0.6], [0.2, 1.0, 0.2], [60, 60, 70], a)];
+  else if (i === 5) P = [B3([0, 0.45, 0], [3.2, 0.9, 1.8], [248, 242, 236], a), B3([0, 0.5, 0.91], [3.2, 0.2, 0.04], [255, 140, 190], a), B3([0, 1.5, -0.7], [0.6, 1.2, 0.6], [255, 140, 190], a)];
+  else if (i === 6) P = [B3([0, 0.45, 0], [3.2, 0.9, 1.8], [185, 195, 205], a), B3([-1.1, 1.5, -0.6], [1.0, 0.75, 0.1], [40, 40, 60], a), B3([-1.1, 1.5, -0.54], [0.9, 0.62, 0.02], [110, 190, 255], a), B3([-1.1, 1.0, -0.6], [0.14, 0.3, 0.14], [90, 90, 100], a)];
+  else P = [B3([-1.0, 0.55, -0.3], [1.1, 1.1, 1.1], [135, 135, 155], a), B3([0.6, 0.4, -0.5], [1.4, 0.8, 1.0], [120, 120, 140], a), B3([-0.1, 1.1, -0.7], [0.8, 0.8, 0.8], [150, 150, 170], a)];
+  return P;
+}
+var SRCTOP = [1.15, 0.4, 0.6, 0.4, 0.95, 0.95, 0.95, 0.0];
+function dispParts(i, n, top, o, k, per, rowsZ) {
+  var P = [];
+  for (var q = 0; q < n; q++) P = P.concat(itemParts(i, [o[0] + ((q % per) - (per - 1) / 2) * 0.62, o[1] + Math.floor(q / per) * 0, o[2] + rowsZ[Math.floor(q / per)]], k));
+  return P;
 }
 function mkBuild() {
   var f = MK, sc = f.sc, G = f.G = mkGeom(), i, k;
   f.stat.forEach(function (o) { var ix = sc.objs.indexOf(o); if (ix >= 0) sc.objs.splice(ix, 1); });
-  f.stat = []; f.pads = []; f.labels = [];
+  f.stat = []; f.pads = []; f.shadows = []; f.shO = []; f.srO = []; f.shK = []; f.srK = [];
   var add = function (o) { sc.add(o); f.stat.push(o); return o; };
-  var hx = G.hx, hz = G.hz;
-  add({ parts: [B3([0, 1.6, -hz - 0.4], [2 * hx + 1.6, 3.2, 0.8], [196, 168, 240], { hard: false }), B3([-hx - 0.4, 0.8, 0], [0.8, 1.6, 2 * hz + 0.8], [176, 148, 224]), B3([hx + 0.4, 0.8, 0], [0.8, 1.6, 2 * hz + 0.8], [176, 148, 224]),
-    B3([-(hx + 2) / 2 - 1, 0.6, hz + 0.4], [hx - 2 + 0.8, 1.2, 0.8], [176, 148, 224]), B3([(hx + 2) / 2 + 1, 0.6, hz + 0.4], [hx - 2 + 0.8, 1.2, 0.8], [176, 148, 224])] });
-  for (i = 0; i < CAT.lines.length; i++) {
-    var sl = G.slots[i], lv = ST.lines[i], col = LCOL[i % LCOL.length], P = [], L = CAT.lines[i];
-    if (lv > 0) {
-      P.push(B3([0, 1.3, 0], [3.6, 2.6, 1.3], [165, 112, 70]), B3([0, 2.7, 0.0], [3.8, 0.2, 1.5], [120, 78, 48]));
-      var n = Math.min(12, 1 + Math.floor(lv / 3));
-      for (k = 0; k < n; k++) P.push(B3([-1.35 + (k % 4) * 0.9, 0.62 + Math.floor(k / 4) * 0.82, 0.62], [0.62, 0.62, 0.5], col));
-      f.labels.push({ pos: [sl.x, 3.5, sl.z], text: L.emoji + " " + lv, size: 15 });
-      if (lv < CAT.maxlvl) {
-        var c1 = stepCost(i, lv), okp = ST.coins >= c1;
-        f.pads.push({ x: sl.x, z: sl.z + 2.4, w: 3.0, d: 1.7, kind: "line", i: i, cost: c1, ok: okp, dwell: 0 });
-        f.labels.push({ pos: [sl.x, 0.15, sl.z + 2.4], text: "⬆ " + fmtS(c1), size: 13, col: okp ? "#c8ffd8" : "#ffb3b3" });
-      } else f.labels.push({ pos: [sl.x, 0.15, sl.z + 2.4], text: "MAX", size: 13, col: "#ffe566" });
-    } else {
-      P.push(B3([0, 1.3, 0], [3.6, 2.6, 1.3], [150, 150, 165], { alpha: 0.38 }));
-      var c0 = stepCost(i, 0), ok0 = ST.coins >= c0;
-      f.pads.push({ x: sl.x, z: sl.z + 2.4, w: 3.0, d: 1.7, kind: "line", i: i, cost: c0, ok: ok0, dwell: 0 });
-      f.labels.push({ pos: [sl.x, 0.15, sl.z + 2.4], text: "🔒 " + fmtS(c0), size: 13, col: ok0 ? "#c8ffd8" : "#ffb3b3" });
-      f.labels.push({ pos: [sl.x, 3.2, sl.z], text: L.emoji, size: 18, col: "#ddd" });
-    }
-    var o = add({ parts: P }); o.pos = [sl.x, 0, sl.z];
+  var hx = G.hx, hz = G.hz, wz = G.wz, fe = G.fe, WALL = [236, 232, 246], WALL2 = [214, 208, 236], FEN = [185, 135, 85];
+  add({ parts: [B3([0, 1.6, -hz - 0.4], [2 * hx + 1.6, 3.2, 0.8], WALL), B3([0, 3.25, -hz - 0.4], [2 * hx + 1.6, 0.25, 0.9], [235, 70, 80]),
+    B3([-hx - 0.4, 1.1, (-hz - 4) / 2], [0.8, 2.2, hz - 4 + 0.8], WALL2), B3([-hx - 0.4, 1.1, (0 + wz) / 2 + 0.4], [0.8, 2.2, wz - 0 + 0.8], WALL2),
+    B3([hx + 0.4, 1.1, (-hz + wz) / 2], [0.8, 2.2, hz + wz + 0.8], WALL2),
+    B3([(-hx + G.door[0]) / 2 - 0.0, 1.1, wz], [G.door[0] + hx, 2.2, 0.6], WALL2), B3([(G.door[1] + hx) / 2, 1.1, wz], [hx - G.door[1], 2.2, 0.6], WALL2),
+    B3([-hx - 0.4, 0.4, (wz + fe) / 2], [0.8, 0.8, fe - wz], FEN), B3([hx + 0.4, 0.4, (wz + fe) / 2], [0.8, 0.8, fe - wz], FEN), B3([0, 0.4, fe + 0.4], [2 * hx + 1.6, 0.8, 0.8], FEN)] });
+  f.shadows.push({ x: G.counter.x, z: G.counter.z, w: G.counter.w + 0.4, d: G.counter.d + 0.4 });
+  for (i = 0; i < 8; i++) {
+    var lv = ST.lines[i], lock = lv <= 0, sh = G.shelves[i], sr = G.src[i];
+    var so = add({ parts: [] }); so.pos = [sh.x, 0, sh.z]; f.shO[i] = so; f.shK[i] = ""; so.lock = lock;
+    var ro = add({ parts: [] }); ro.pos = [sr.x, 0, sr.z]; f.srO[i] = ro; f.srK[i] = ""; ro.lock = lock;
+    f.shadows.push({ x: sh.x, z: sh.z, w: 4.0, d: 1.8 }, { x: sr.x, z: sr.z, w: 3.4, d: 2.2 });
+    var c = lock ? stepCost(i, 0) : (lv < CAT.maxlvl ? stepCost(i, lv) : 0), ok = ST.coins >= c;
+    f.pads.push({ x: sr.x + 2.6, z: sr.z + 0.1, w: 1.5, d: 1.8, kind: "line", i: i, cost: c, ok: ok, dwell: 0, max: !lock && lv >= CAT.maxlvl, t1: lock ? "Ochish" : "Lv " + lv, t2: lock ? fmtS(c) : (lv >= CAT.maxlvl ? "MAX" : fmtS(c)) });
   }
-  // kassa
-  var cw = G.counter.w, CP = [B3([0, 0.6, 0], [cw, 1.2, 1.4], [235, 235, 245]), B3([0, 1.25, 0], [cw + 0.2, 0.12, 1.6], [90, 70, 160])];
-  for (k = 0; k < Math.min(3, 1 + ST.cash); k++) CP.push(B3([-cw / 2 + 1.1 + k * 1.6, 1.55, 0.1], [0.7, 0.5, 0.6], [60, 60, 80]));
-  var co = add({ parts: CP }); co.pos = [G.counter.x, 0, G.counter.z];
-  var cs = Math.min(10, ST.cash);
-  for (k = 0; k < cs; k++) { var ch = makeHuman(100 + k, 1); ch.pos = [G.counter.x - cw / 2 + 0.9 + k * (cw - 1.8) / Math.max(1, cs - 1 || 1), 0, G.counter.z - 1.5]; ch.rot = [0, Math.PI, 0]; ch.shadow = { y: 0, r: 0.8 }; add(ch); if (cs === 1) ch.pos[0] = G.counter.x; }
-  // yig'ish va kengaytirish maydonlari
-  var pe = pend(), pz = hz - 1.7;
-  f.pads.push({ x: -hx + 2.6, z: pz, w: 3.4, d: 2.0, kind: "col", cost: 0, ok: pe >= 1, dwell: 0 });
-  f.labels.push({ pos: [-hx + 2.6, 0.15, pz], text: "💰 Yig'ish", size: 14, col: "#fff3b0" });
-  if (ST.size < CAT.size_max) {
-    var cz = ST.size_cost, okz = ST.coins >= cz;
-    f.pads.push({ x: hx - 2.6, z: pz, w: 3.4, d: 2.0, kind: "size", cost: cz, ok: okz, dwell: 0 });
-    f.labels.push({ pos: [hx - 2.6, 0.15, pz], text: "🏬 " + fmtS(cz), size: 14, col: okz ? "#c8ffd8" : "#ffb3b3" });
-  }
-  f.labels.push({ pos: [0, 4.4, -hz - 0.4], text: "🏪 MINI MARKET · " + ST.size + "-daraja", size: 17, col: "#ffe566" });
-  if (ST.cash) f.labels.push({ pos: [G.counter.x, 3.4, G.counter.z - 1.5], text: "👩‍💼 ×" + ST.cash, size: 13 });
-  f.key = mkKey();
+  f.counterO = add({ parts: [B3([0, 0.6, 0], [G.counter.w, 1.2, G.counter.d], [112, 205, 225]), B3([0, 1.24, 0], [G.counter.w + 0.2, 0.1, G.counter.d + 0.2], [250, 245, 235]), B3([2.3, 1.7, -0.2], [0.9, 0.7, 0.1], [50, 55, 75]), B3([2.3, 1.45, -0.1], [0.9, 0.25, 0.6], [60, 65, 85])] });
+  f.counterO.pos = [G.counter.x, 0, G.counter.z];
+  f.pileO = add({ parts: pileParts(0) }); f.pileO.pos = [G.counter.x - 2.4, 1.3, G.counter.z - 0.1]; f.pileN = -1;
+  var cs = Math.min(3, ST.cash);
+  for (k = 0; k < cs; k++) { var ch = add({ parts: makeHuman({ shirt: [70, 150, 240], skin: [255, 255, 255], leg: [50, 60, 110] }).concat(hatParts(3)) }); ch.pos = [G.cashier.x + (k - (cs - 1) / 2) * 2.2 + (k === 0 && cs > 1 ? 0 : 0), 0, G.cashier.z - 0.4]; ch.rot = [0, Math.PI, 0]; ch.shadow = { y: 0, r: 0.8 }; ch.sc = [1, 1, 1]; }
+  var uz = fe - 1.9, ut = [["cash", -6.6, "Kassir", ST.cash >= CAT.cash_max, ST.cash_cost], ["bag", 0, "Qop", ST.bag >= ST.bag_max, ST.bag_cost], ["size", 6.6, "Kengaytirish", ST.size >= CAT.size_max, ST.size_cost]];
+  ut.forEach(function (u) { if (!u[3]) f.pads.push({ x: u[1], z: uz, w: 4.0, d: 2.0, kind: u[0], cost: u[4], ok: ST.coins >= u[4], dwell: 0, t1: u[2], t2: fmtS(u[4]) }); });
+  f.key = mkKey(); mkDisp(f, true);
 }
-function mkKey() { return [ST.size, ST.cash, ST.lines.join(","), ST.lines.map(function (lv, i) { return ST.coins >= stepCost(i, lv) ? 1 : 0; }).join(""), ST.coins >= ST.size_cost ? 1 : 0, pend() >= 1 ? 1 : 0, ST.fp].join("|"); }
+function mkKey() { return [ST.size, ST.cash, ST.bag, ST.lines.join(","), ST.lines.map(function (lv, i) { return ST.coins >= (lv <= 0 ? stepCost(i, 0) : stepCost(i, lv)) ? 1 : 0; }).join(""), ST.coins >= ST.size_cost ? 1 : 0, ST.coins >= ST.cash_cost ? 1 : 0, ST.coins >= ST.bag_cost ? 1 : 0, ST.fp].join("|"); }
+function mkDisp(f, force) {
+  var G = f.G;
+  for (var i = 0; i < 8; i++) {
+    var lv = ST.lines[i], lock = lv <= 0;
+    var sk = lock + "|" + WS.sh[i] + "|" + shelfCap(lv);
+    if (force || f.shK[i] !== sk) {
+      f.shK[i] = sk; var P = shelfBase(i, lock), n = lock ? 0 : WS.sh[i];
+      for (var q = 0; q < n; q++) P = P.concat(itemParts(i, [-1.2 + (q % 5) * 0.6, q >= 5 ? 1.2 : 0.5, 0.05], 0.85));
+      f.shO[i].parts = P;
+    }
+    var rk = lock + "|" + WS.src[i];
+    if (force || f.srK[i] !== rk) {
+      f.srK[i] = rk; var R = srcBase(i, lock), m = lock ? 0 : WS.src[i];
+      for (var r = 0; r < m; r++) R = R.concat(itemParts(i, [-1.05 + (r % 4) * 0.7, SRCTOP[i], (r < 4 ? -0.35 : 0.4) + (i === 1 ? 0.5 : 0)], 0.9));
+      f.srO[i].parts = R;
+    }
+  }
+  var pn = WS.pile.reduce(function (a, b) { return a + b; }, 0), pk = Math.min(14, Math.ceil(pn / 2));
+  if (force || f.pileN !== pk) { f.pileN = pk; f.pileO.parts = pileParts(pn); }
+}
+function playerParts() {
+  var P = makeHuman({ shirt: [235, 60, 190], skin: [255, 255, 255] }).concat([B3([0, 2.4, 0], [0.7, 0.22, 0.7], [60, 100, 230]), B3([0, 2.36, 0.4], [0.62, 0.06, 0.3], [235, 60, 60])]);
+  for (var k = 0; k < WS.stack.length; k++) P = P.concat(itemParts(WS.stack[k], [0, 2.75 + k * 0.55, 0], 0.9));
+  return P;
+}
 function mkSync() {
   var f = MK; if (!f) return;
   if (f.key !== mkKey()) mkBuild();
-  var h = $("mHud"); if (h) { var t = "🏬 " + ST.size + " · 👩‍💼 " + ST.cash; if (h.getAttribute("data-t") !== t) { h.setAttribute("data-t", t); h.textContent = t; } }
 }
 function mkMsg(t, ms) { var e = $("mMsg"); if (!e) return; e.textContent = t; e.hidden = false; MK && (MK.msgT = performance.now() + (ms || 2200)); }
 function viewStore(m) {
   MK = null;
-  if (!has3d()) { m.innerHTML = '<div class="err"><div class="big">🏪</div><p class="mu">3D ko\'rinish bu qurilmada ishlamaydi. «Yaxshilash» bo\'limidan foydalaning.</p></div>'; return; }
-  m.innerHTML = '<div class="fm" id="mBox"><canvas id="mCv"></canvas><div class="fhud tl" id="mHud"></div><div class="joy" id="mJoy"><div class="knob" id="mKnob"></div></div><div class="fmsg" id="mMsg" hidden></div></div>';
+  if (!has3d()) { m.innerHTML = '<div class="err"><p class="mu">3D ko\'rinish bu qurilmada ishlamaydi. «Yaxshilash» bo\'limidan foydalaning.</p></div>'; return; }
+  m.innerHTML = '<div class="fm" id="mBox"><canvas id="mCv"></canvas><div class="joy" id="mJoy"><div class="knob" id="mKnob"></div></div><div class="fmsg" id="mMsg" hidden></div></div>';
   var box = $("mBox"), top = box.getBoundingClientRect().top;
   box.style.height = Math.max(320, (window.innerHeight || 700) - top - 96) + "px";
   try { tg && tg.disableVerticalSwipes && tg.disableVerticalSwipes(); } catch (e) {}
   mkStart();
 }
 function mkStart() {
-  var cv = $("mCv"), sc = new G3.Scene(cv, { d: 40, pitch: 1.0, f: 1.35 });
-  var uid = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) ? tg.initDataUnsafe.user.id : 1;
-  var pl = sc.add(makeHuman(uid, 0)); pl.sc = [1.1, 1.1, 1.1];
-  MK = { cv: cv, sc: sc, pl: pl, P: { x: 0, z: 0 }, face: Math.PI, yaw: 0, pitch: 1.0, dist: 40, joy: { x: 0, y: 0 }, last: performance.now(), stat: [], pads: [], labels: [], cust: [], pops: [], spawnAt: 0, cw: 0, ch: 0, msgT: 0, key: "", busy: false, G: null, seed: 1 };
-  var f = MK; mkBuild(); f.P.z = f.G.hz - 6;
+  wsInit();
+  var cv = $("mCv"), sc = new G3.Scene(cv, { d: 34, pitch: 0.95, f: 1.35 });
+  var pl = sc.add({ parts: playerParts(), shadow: { y: 0, r: 0.9 }, ph: 0, mv: 0 }); pl.sc = [1.1, 1.1, 1.1];
+  MK = { cv: cv, sc: sc, pl: pl, P: { x: 0, z: 0 }, face: Math.PI, yaw: 0, pitch: 0.95, dist: 34, joy: { x: 0, y: 0 }, last: performance.now(), stat: [], pads: [], shadows: [], cust: [], pops: [], spawnAt: 0, cw: 0, ch: 0, msgT: 0, key: "", busy: false, G: null, seed: 1, tPick: 0, tPut: 0, tCol: 0, nm: 0, sk: "", queue: [], saleAt: 0, atCash: false };
+  var f = MK; mkBuild(); f.P.x = -3.8; f.P.z = f.G.wz + 2.5; f.sk = WS.stack.join(",");
   sc.cam.t = [f.P.x, 0.8, f.P.z]; sc.cam.yaw = 0;
   sc.bg = function (ctx, w, h) { mkGround(sc, ctx, w, h); };
   var joy = $("mJoy"), knob = $("mKnob"), R = 52;
@@ -20124,143 +20310,223 @@ function mkStart() {
   joy.onpointermove = function (ev) { if (f.jOn) jp(ev); };
   var jend = function () { f.jOn = false; f.joy = { x: 0, y: 0 }; knob.style.transform = ""; };
   joy.onpointerup = jend; joy.onpointercancel = jend;
-  var ptr = {}, pd0 = 0, dist0 = 40;
+  var ptr = {}, pd0 = 0, dist0 = 34;
   var pdist = function () { var k = Object.keys(ptr); if (k.length < 2) return 0; var a = ptr[k[0]], b = ptr[k[1]]; return Math.sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y)) || 1; };
   cv.onpointerdown = function (ev) { ev.preventDefault(); try { cv.setPointerCapture(ev.pointerId); } catch (e) {} ptr[ev.pointerId] = { x: ev.clientX, y: ev.clientY }; if (Object.keys(ptr).length === 2) { pd0 = pdist(); dist0 = f.dist; } };
   cv.onpointermove = function (ev) {
     var p = ptr[ev.pointerId]; if (!p) return; var dx = ev.clientX - p.x, dy = ev.clientY - p.y; p.x = ev.clientX; p.y = ev.clientY;
-    if (Object.keys(ptr).length >= 2) { var dn = pdist(); if (dn && pd0) f.dist = Math.max(20, Math.min(75, dist0 * pd0 / dn)); return; }
-    f.yaw -= dx * 0.0075; f.pitch = Math.max(0.5, Math.min(1.3, f.pitch + dy * 0.004));
+    if (Object.keys(ptr).length >= 2) { var dn = pdist(); if (dn && pd0) f.dist = Math.max(18, Math.min(70, dist0 * pd0 / dn)); return; }
+    f.yaw -= dx * 0.0075; f.pitch = Math.max(0.55, Math.min(1.3, f.pitch + dy * 0.004));
   };
   var pe = function (ev) { delete ptr[ev.pointerId]; };
   cv.onpointerup = pe; cv.onpointercancel = pe;
-  cv.onwheel = function (ev) { ev.preventDefault(); f.dist = Math.max(20, Math.min(75, f.dist * (ev.deltaY > 0 ? 1.1 : 0.9))); };
+  cv.onwheel = function (ev) { ev.preventDefault(); f.dist = Math.max(18, Math.min(70, f.dist * (ev.deltaY > 0 ? 1.1 : 0.9))); };
   mkSync(); kick();
+}
+// ---------- yer va qoplamalar ----------
+function rr(ctx, x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
+function txt(ctx, t, x, y, sz, col) { ctx.font = "800 " + sz + "px Trebuchet MS,sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.lineJoin = "round"; ctx.lineWidth = sz * 0.28; ctx.strokeStyle = "rgba(0,0,0,.65)"; ctx.strokeText(t, x, y); ctx.fillStyle = col || "#fff"; ctx.fillText(t, x, y); }
+function cashIco(ctx, x, y, s) { rr(ctx, x - s * 0.6, y - s * 0.38, s * 1.2, s * 0.76, s * 0.14); ctx.fillStyle = "#3dcc5f"; ctx.fill(); ctx.lineWidth = Math.max(1, s * 0.08); ctx.strokeStyle = "#1d7f36"; ctx.stroke(); ctx.beginPath(); ctx.arc(x, y, s * 0.2, 0, 6.3); ctx.fillStyle = "#c4f7cd"; ctx.fill(); }
+function bubble(ctx, x, y, ic, t, d, warn) {
+  var w = (30 + t.length * 8.5) * d, h = 26 * d; rr(ctx, x - w / 2, y - h / 2, w, h, 8 * d); ctx.fillStyle = warn ? "rgba(150,50,40,.85)" : "rgba(70,60,50,.82)"; ctx.fill();
+  if (ic >= 0) { try { ctx.drawImage(thumbCv(ic), x - w / 2 + 3 * d, y - 11.5 * d, 23 * d, 23 * d); } catch (e) {} }
+  txt(ctx, t, x - w / 2 + 28 * d + (w - 28 * d) / 2 - 3 * d, y, 13 * d, "#fff");
 }
 function mkGround(sc, ctx, W, H) {
   var f = MK, G = f && f.G; if (!G) return;
-  var g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, "#4b36a8"); g.addColorStop(1, "#1d1450"); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
-  var hx = G.hx, hz = G.hz, quad = function (x0, z0, x1, z1) { return [[x0, 0, z0], [x1, 0, z0], [x1, 0, z1], [x0, 0, z1]]; };
-  if (sc.polyPath(ctx, quad(-hx - 5, -hz - 1, hx + 5, hz + 10))) { ctx.fillStyle = "#6b5bc0"; ctx.fill(); }
-  if (sc.polyPath(ctx, quad(-2, hz, 2, hz + 10))) { ctx.fillStyle = "#8d7fdc"; ctx.fill(); }
-  if (sc.polyPath(ctx, quad(-hx, -hz, hx, hz))) { ctx.fillStyle = "#f3e8d4"; ctx.fill(); }
-  ctx.fillStyle = "#e4d3b6";
-  for (var i = 0; i < hx; i++) for (var j = 0; j < hz; j++) if ((i + j) & 1) { if (sc.polyPath(ctx, quad(-hx + i * 2, -hz + j * 2, -hx + i * 2 + 2, -hz + j * 2 + 2))) ctx.fill(); }
-  if (sc.polyPath(ctx, quad(-2, hz - 1, 2, hz))) { ctx.fillStyle = "#b56a3a"; ctx.fill(); }
+  ctx.fillStyle = "#6fb84e"; ctx.fillRect(0, 0, W, H);
+  var hx = G.hx, hz = G.hz, wz = G.wz, fe = G.fe, quad = function (x0, z0, x1, z1) { return [[x0, 0, z0], [x1, 0, z0], [x1, 0, z1], [x0, 0, z1]]; };
+  if (sc.polyPath(ctx, quad(-hx - 40, -hz - 40, hx + 40, fe + 40))) { ctx.fillStyle = "#79c455"; ctx.fill(); }
+  if (sc.polyPath(ctx, quad(-hx, wz, hx, fe))) { ctx.fillStyle = "#8fd04a"; ctx.fill(); }
+  ctx.fillStyle = "#83c441";
+  for (var gi = 0; gi < 2 * hx; gi += 4) if (sc.polyPath(ctx, quad(-hx + gi, wz, -hx + gi + 2, fe))) ctx.fill();
+  if (sc.polyPath(ctx, quad(-hx, -hz, hx, wz))) { ctx.fillStyle = "#f7e1a4"; ctx.fill(); }
+  ctx.fillStyle = "#f1d798";
+  for (var i = 0; i < hx; i++) for (var j = 0; j < (hz + wz) / 2 + 1; j++) if ((i + j) & 1) { var z0 = -hz + j * 2, z1 = Math.min(wz, z0 + 2); if (z0 < wz && sc.polyPath(ctx, quad(-hx + i * 2, z0, -hx + i * 2 + 2, z1))) ctx.fill(); }
+  if (sc.polyPath(ctx, quad(G.door[0], wz - 0.4, G.door[1], wz + 0.6))) { ctx.fillStyle = "#e8c97c"; ctx.fill(); }
+  if (sc.polyPath(ctx, quad(-hx - 2.4, G.side[0], -hx + 0.2, G.side[1]))) { ctx.fillStyle = "#e8c97c"; ctx.fill(); }
+  ctx.fillStyle = "rgba(110,85,40,.26)";
+  for (var s = 0; s < f.shadows.length; s++) { var sd = f.shadows[s]; if (sc.polyPath(ctx, quad(sd.x - sd.w / 2 + 0.5, sd.z - sd.d / 2 + 0.5, sd.x + sd.w / 2 + 0.5, sd.z + sd.d / 2 + 0.5))) ctx.fill(); }
   for (var p = 0; p < f.pads.length; p++) {
-    var pd = f.pads[p], x0 = pd.x - pd.w / 2, x1 = pd.x + pd.w / 2, z0 = pd.z - pd.d / 2, z1 = pd.z + pd.d / 2;
-    var base = pd.kind === "col" ? (pd.ok ? "#ffd23f" : "#9a8a50") : pd.kind === "size" ? (pd.ok ? "#4aa3ff" : "#4a6a9a") : (pd.ok ? "#3ddc84" : "#7a8a80");
-    if (sc.polyPath(ctx, quad(x0, z0, x1, z1))) { ctx.fillStyle = base; ctx.fill(); ctx.lineWidth = 3 * sc.dpr; ctx.strokeStyle = "rgba(255,255,255,.85)"; ctx.stroke(); }
-    if (pd.dwell > 0) { var k = Math.min(1, pd.dwell / 0.45), cx = pd.x, cz = pd.z, hw = pd.w / 2 * k, hd = pd.d / 2 * k; if (sc.polyPath(ctx, quad(cx - hw, cz - hd, cx + hw, cz + hd))) { ctx.fillStyle = "rgba(255,255,255,.55)"; ctx.fill(); } }
+    var pd = f.pads[p]; if (pd.max) continue;
+    var x0 = pd.x - pd.w / 2, x1 = pd.x + pd.w / 2, z0b = pd.z - pd.d / 2, z1b = pd.z + pd.d / 2;
+    var base = pd.kind === "size" ? (pd.ok ? "#4aa3ff" : "#5a78a0") : pd.kind === "cash" ? (pd.ok ? "#ffb23f" : "#a08a60") : pd.kind === "bag" ? (pd.ok ? "#c477ff" : "#8a6aa0") : (pd.ok ? "#3ddc84" : "#7a9a88");
+    if (sc.polyPath(ctx, quad(x0, z0b, x1, z1b))) { ctx.fillStyle = base; ctx.fill(); ctx.lineWidth = 3 * sc.dpr; ctx.strokeStyle = "rgba(255,255,255,.9)"; ctx.stroke(); }
+    if (pd.dwell > 0) { var k = Math.min(1, pd.dwell / 0.45), hw = pd.w / 2 * k, hd = pd.d / 2 * k; if (sc.polyPath(ctx, quad(pd.x - hw, pd.z - hd, pd.x + hw, pd.z + hd))) { ctx.fillStyle = "rgba(255,255,255,.55)"; ctx.fill(); } }
   }
+  var cp = G.cashier; if (sc.polyPath(ctx, quad(cp.x - 1.1, cp.z - 0.9, cp.x + 1.1, cp.z + 0.9))) { ctx.fillStyle = "rgba(255,255,255,.35)"; ctx.fill(); ctx.lineWidth = 2 * sc.dpr; ctx.strokeStyle = "rgba(255,255,255,.8)"; ctx.setLineDash([6 * sc.dpr, 5 * sc.dpr]); ctx.stroke(); ctx.setLineDash([]); }
 }
+function mkOverlay(f) {
+  var sc = f.sc, ctx = sc.ctx, d = sc.dpr, G = f.G; ctx.setTransform(1, 0, 0, 1, 0, 0);
+  var P = function (x, y, z) { var p = sc.project([x, y, z]); return p[2][2] > -1 ? null : p; };
+  var i, p;
+  for (i = 0; i < 8; i++) {
+    var lv = ST.lines[i], sh = G.shelves[i], sr = G.src[i];
+    if (lv > 0) {
+      p = P(sh.x, 3.7, sh.z); if (p) bubble(ctx, p[0], p[1], i, WS.sh[i] + "/" + shelfCap(lv), d, WS.sh[i] === 0);
+      p = P(sr.x, 2.9, sr.z); if (p) bubble(ctx, p[0], p[1], i, WS.src[i] + "/8", d, false);
+    } else { p = P(sr.x, 1.6, sr.z); if (p) txt(ctx, "Yopiq", p[0], p[1], 13 * d, "#e8e8f0"); }
+  }
+  for (i = 0; i < f.pads.length; i++) {
+    var pd = f.pads[i]; if (pd.max) continue; p = P(pd.x, 0.1, pd.z); if (!p) continue;
+    var sz = Math.max(9, Math.min(16, 520 / sc.cam.d * 0.5)) * d;
+    txt(ctx, pd.t1, p[0], p[1] - sz * 0.62, sz * 0.85, "#fff"); cashIco(ctx, p[0] - (pd.t2.length * 0.32 + 0.9) * sz * 0.5, p[1] + sz * 0.55, sz * 0.95); txt(ctx, pd.t2, p[0] + sz * 0.5, p[1] + sz * 0.55, sz, pd.ok ? "#c8ffd8" : "#ffc2c2");
+  }
+  p = P(G.counter.x - 2.4, 2.6, G.counter.z); var pn = WS.pile.reduce(function (a, b) { return a + b; }, 0);
+  if (p && pn > 0) { cashIco(ctx, p[0] - 16 * d, p[1], 20 * d); txt(ctx, "x" + pn, p[0] + 8 * d, p[1], 14 * d, "#c8ffd8"); }
+  p = P(G.cashier.x, 3.2, G.cashier.z); if (p && !f.atCash && ST.cash === 0) txt(ctx, "Kassa", p[0], p[1], 13 * d, "#fff");
+  for (i = 0; i < f.cust.length; i++) {
+    var c = f.cust[i]; p = P(c.pos[0], 3.3, c.pos[2]); if (!p) continue;
+    if (c.st === 1 || c.st === 0) bubble(ctx, p[0], p[1], c.li, c.got + "/" + c.q, d, c.st === 1 && WS.sh[c.li] === 0 && c.got < c.q);
+    else if (c.st === 3 && !f.cashOn) bubble(ctx, p[0], p[1], -1, "Kassa", d, true);
+  }
+  p = P(f.pl.pos[0], 4.3 + WS.stack.length * 0.5, f.pl.pos[2]); if (p && WS.stack.length >= ST.carry_max) txt(ctx, "MAX", p[0], p[1], 15 * d, "#ffe566");
+  for (i = 0; i < f.pops.length; i++) { var q = f.pops[i]; p = P(q.pos[0], q.pos[1] + (1 - q.life) * 2.2, q.pos[2]); if (p) { ctx.globalAlpha = Math.min(1, q.life * 2); cashIco(ctx, p[0] - 18 * d, p[1], 16 * d); txt(ctx, "+" + fmtS(q.v), p[0] + 6 * d, p[1], 14 * d, "#c8ffd8"); ctx.globalAlpha = 1; } }
+}
+// ---------- harakat ----------
 function mkPush(f, rx, rz, hw, hd) {
   var P = f.P, dx = P.x - rx, dz = P.z - rz, ox = hw + 0.7 - Math.abs(dx), oz = hd + 0.7 - Math.abs(dz);
   if (ox > 0 && oz > 0) { if (ox < oz) P.x += dx >= 0 ? ox : -ox; else P.z += dz >= 0 ? oz : -oz; }
 }
 function mkPadGo(pd) {
   var f = MK; if (!f || f.busy) return;
-  var act = null, body = null;
-  if (pd.kind === "line") { if (ST.coins < pd.cost) { if (performance.now() > (f.nm || 0)) { f.nm = performance.now() + 2200; mkMsg("🪙 Tanga yetarli emas"); } return; } body = { a: "buy_line", i: pd.i, n: 1 }; }
-  else if (pd.kind === "size") { if (ST.coins < pd.cost) { if (performance.now() > (f.nm || 0)) { f.nm = performance.now() + 2200; mkMsg("🪙 Tanga yetarli emas"); } return; } body = { a: "buy_size" }; }
-  else { if (pend() < 1) { if (performance.now() > (f.nm || 0)) { f.nm = performance.now() + 2200; mkMsg("Hali yig'ilgan tanga yo'q"); } return; } body = { a: "collect" }; }
+  var body = null, need = pd.cost;
+  if (pd.kind === "line") body = { a: "buy_line", i: pd.i, n: 1 }; else if (pd.kind === "size") body = { a: "buy_size" }; else if (pd.kind === "cash") body = { a: "buy_cash" }; else body = { a: "buy_bag" };
+  if (ST.coins < need) { if (performance.now() > f.nm) { f.nm = performance.now() + 2200; mkMsg("Pul yetarli emas"); } return; }
   f.busy = true;
   api("POST", "act", body).then(function (j) {
     f.busy = false; pd.dwell = pd.kind === "line" ? 0.1 : 0;
-    var sp = f.sc, col = [[255, 210, 60], [255, 245, 160], [120, 255, 170]];
-    sp.burst([pd.x, 1.2, pd.z], col, 16); hap("ok");
-    if (pd.kind === "col") toast("💰 +" + fmtS(j.result) + " 🪙"); else if (pd.kind === "size") toast("🏬 Do'kon kengaydi!"); else toast(CAT.lines[pd.i].emoji + " Yaxshilandi!");
+    f.sc.burst([pd.x, 1.2, pd.z], [[255, 210, 60], [255, 245, 160], [120, 255, 170]], 16); hap("ok");
     setState(j.state);
   }).catch(function (e) { f.busy = false; pd.dwell = -1; fail(e); });
 }
+function mkSale() {
+  var f = MK; if (!f || f.busy || performance.now() < f.saleAt) return;
+  var items = {}, any = 0; for (var i = 0; i < 8; i++) if (WS.pile[i] > 0 && ST.lines[i] > 0) { items[i] = WS.pile[i]; any += WS.pile[i]; }
+  if (!any) return;
+  f.busy = true;
+  api("POST", "act", { a: "sale", items: items }).then(function (j) {
+    f.busy = false; for (var k in items) WS.pile[k] -= items[k];
+    f.sc.burst([f.G.counter.x - 2.4, 2, f.G.counter.z], [[255, 210, 60], [120, 255, 170]], 14); hap("ok"); setState(j.state);
+  }).catch(function (e) { f.busy = false; f.saleAt = performance.now() + 4000; if (e.message !== "mk_too_fast") fail(e); });
+}
 function mkSpawn(f) {
-  var un = []; for (var i = 0; i < ST.lines.length; i++) if (ST.lines[i] > 0) un.push(i);
-  if (!un.length || f.cust.length >= 14) return;
-  var G = f.G, li = un[(Math.random() * un.length) | 0], sl = G.slots[li], o = makeHuman((f.seed++) * 7 + 3, 0);
-  o.sc = [0.9, 0.9, 0.9]; o.pos = [(Math.random() - 0.5) * 3, 0, G.hz + 3]; o.rot = [0, Math.PI, 0];
-  o.parts.push(B3([0, 1.35, 0.55], [0.5, 0.5, 0.5], LCOL[li % LCOL.length], { alpha: function (ob) { return ob.item ? 1 : 0; } }));
-  var cx = G.counter.x + (Math.random() - 0.5) * Math.min(6, G.counter.w - 2);
-  o.path = [[(Math.random() - 0.5) * 3, G.hz + 0.5, 0], [sl.x + (Math.random() - 0.5) * 2, sl.z + 1.5, 1.0], [cx, G.counter.z + 1.7, 0.9], [(Math.random() - 0.5) * 3, G.hz + 4, 0]];
-  o.pi = 0; o.wait = 0; f.sc.add(o); f.cust.push(o);
+  var un = []; for (var i = 0; i < 8; i++) if (ST.lines[i] > 0) un.push(i);
+  if (!un.length || f.cust.length >= 3 + ST.size * 2) return;
+  var G = f.G, li = un[(Math.random() * un.length) | 0], sh = G.shelves[li], seed = f.seed++;
+  var P = makeHuman({ shirt: [190 + (seed * 13) % 40, 150, 105], skin: [200, 165, 125], leg: [150, 125, 90] }).concat(hatParts(seed % 4), cartParts(LCOL[li]));
+  var o = { parts: P, shadow: { y: 0, r: 0.9 }, ph: 0, mv: 0, sc: [0.95, 0.95, 0.95], pos: [-G.hx - 3, 0, -2], rot: [0, Math.PI / 2, 0] };
+  o.li = li; o.q = 1 + ((Math.random() * Math.min(3, shelfCap(ST.lines[li]))) | 0); o.got = 0; o.st = 0; o.wait = 0; o.patience = 22; o.t = 0;
+  o.tx = sh.x + (Math.random() - 0.5) * 1.6; o.tz = sh.z + 2.0; o.via = true;
+  f.sc.add(o); f.cust.push(o);
+}
+function mkWalk(o, tx, tz, sp, dt) {
+  var dx = tx - o.pos[0], dz = tz - o.pos[2], dd = Math.sqrt(dx * dx + dz * dz), st = sp * dt;
+  if (dd <= st) { o.pos[0] = tx; o.pos[2] = tz; o.mv += (0 - o.mv) * Math.min(1, dt * 10); return true; }
+  o.pos[0] += dx / dd * st; o.pos[2] += dz / dd * st;
+  var ang = Math.atan2(dx, dz), d2 = ang - o.rot[1]; while (d2 > Math.PI) d2 -= 2 * Math.PI; while (d2 < -Math.PI) d2 += 2 * Math.PI; o.rot[1] += d2 * Math.min(1, dt * 10);
+  o.ph += st * 1.6; o.mv += (1 - o.mv) * Math.min(1, dt * 10); o.pos[1] = Math.abs(Math.sin(o.ph)) * 0.06 * o.mv; return false;
 }
 function mkTick() {
   var f = MK; if (!f || $("mCv") !== f.cv || tab !== "store") { if (f && $("mCv") !== f.cv) mkStop(); return false; }
-  var now = performance.now(), dt = Math.min(0.05, (now - f.last) / 1000); f.last = now; var sc = f.sc, P = f.P, G = f.G, pl = f.pl;
+  var now = performance.now(), dt = Math.min(0.05, (now - f.last) / 1000); f.last = now; var sc = f.sc, P = f.P, G = f.G, pl = f.pl, i;
   if (f.cv.clientWidth !== f.cw || f.cv.clientHeight !== f.ch) { f.cw = f.cv.clientWidth; f.ch = f.cv.clientHeight; sc.resize(); }
   if (f.msgT && now > f.msgT) { f.msgT = 0; var me = $("mMsg"); if (me) me.hidden = true; }
   var jx = f.joy.x, jy = f.joy.y;
   if (KEYS["a"] || KEYS["arrowleft"]) jx -= 1; if (KEYS["d"] || KEYS["arrowright"]) jx += 1; if (KEYS["w"] || KEYS["arrowup"]) jy -= 1; if (KEYS["s"] || KEYS["arrowdown"]) jy += 1;
   var jl = Math.sqrt(jx * jx + jy * jy); if (jl > 1) { jx /= jl; jy /= jl; jl = 1; }
-  var moving = jl > 0.12, v = 7.5;
+  var moving = jl > 0.12, v = 8;
   if (moving) {
     var wv = G3.rotV([jx, 0, jy], 0, f.yaw, 0), wx = wv[0], wz = wv[2];
     P.x += wx * v * dt; P.z += wz * v * dt;
     var ta = Math.atan2(wx, wz), da = ta - f.face; while (da > Math.PI) da -= 2 * Math.PI; while (da < -Math.PI) da += 2 * Math.PI; f.face += da * Math.min(1, dt * 14);
     pl.ph += v * dt * 1.5;
   }
-  for (var si = 0; si < G.slots.length; si++) mkPush(f, G.slots[si].x, G.slots[si].z, 1.9, 0.8);
-  mkPush(f, G.counter.x, G.counter.z, G.counter.w / 2, 0.8);
-  P.x = Math.max(-G.hx + 1, Math.min(G.hx - 1, P.x)); P.z = Math.max(-G.hz + 1.2, Math.min(G.hz - 0.8, P.z));
+  for (i = 0; i < 8; i++) { mkPush(f, G.shelves[i].x, G.shelves[i].z, 1.9, 0.7); mkPush(f, G.src[i].x, G.src[i].z, 1.7, 1.0); }
+  mkPush(f, G.counter.x, G.counter.z, G.counter.w / 2, 0.7);
+  mkPush(f, (-G.hx + G.door[0]) / 2, G.wz, (G.door[0] + G.hx) / 2, 0.3); mkPush(f, (G.door[1] + G.hx) / 2, G.wz, (G.hx - G.door[1]) / 2, 0.3);
+  mkPush(f, -G.hx, (-G.hz + G.side[0]) / 2, 0.4, (G.side[0] + G.hz) / 2); mkPush(f, -G.hx, (G.side[1] + G.wz) / 2, 0.4, (G.wz - G.side[1]) / 2);
+  P.x = Math.max(-G.hx + 0.9, Math.min(G.hx - 0.7, P.x)); P.z = Math.max(-G.hz + 1.2, Math.min(G.fe - 0.8, P.z));
   pl.mv += ((moving ? 1 : 0) - pl.mv) * Math.min(1, dt * 10);
   pl.pos = [P.x, Math.abs(Math.sin(pl.ph)) * 0.08 * pl.mv, P.z]; pl.rot = [0, f.face, 0];
-  // maydonlar
-  for (var pi = 0; pi < f.pads.length; pi++) {
-    var pd = f.pads[pi], inside = Math.abs(P.x - pd.x) < pd.w / 2 && Math.abs(P.z - pd.z) < pd.d / 2;
+  // ishlab chiqarish
+  for (i = 0; i < 8; i++) if (ST.lines[i] > 0 && WS.src[i] < 8) { WS.tp[i] += dt; if (WS.tp[i] >= Math.max(0.9, 3.4 * Math.pow(0.97, ST.lines[i]))) { WS.tp[i] = 0; WS.src[i]++; } }
+  // olish / qo'yish
+  var cm = ST.carry_max, ch = false;
+  if (now > f.tPick) for (i = 0; i < 8; i++) { var sr = G.src[i]; if (ST.lines[i] > 0 && WS.src[i] > 0 && WS.stack.length < cm && Math.abs(P.x - sr.x) < 2.2 && Math.abs(P.z - sr.z) < 2.6) { WS.stack.push(i); WS.src[i]--; f.tPick = now + 150; ch = true; hap("light"); break; } }
+  if (now > f.tPut) for (i = 0; i < 8; i++) { var sh = G.shelves[i], ix = WS.stack.indexOf(i); if (ix >= 0 && ST.lines[i] > 0 && WS.sh[i] < shelfCap(ST.lines[i]) && Math.abs(P.x - sh.x) < 2.6 && Math.abs(P.z - sh.z) < 2.6) { WS.stack.splice(ix, 1); WS.sh[i]++; f.tPut = now + 150; ch = true; hap("light"); break; } }
+  var sk = WS.stack.join(","); if (sk !== f.sk) { f.sk = sk; pl.parts = playerParts(); }
+  // kassa
+  f.atCash = Math.abs(P.x - G.cashier.x) < 2.3 && Math.abs(P.z - G.cashier.z) < 1.8; f.cashOn = ST.cash > 0 || f.atCash;
+  var pn = WS.pile.reduce(function (a, b) { return a + b; }, 0);
+  if (f.atCash && pn > 0) { f.tCol += dt; if (f.tCol > 0.35) { f.tCol = 0; mkSale(); } } else f.tCol = 0;
+  // pad'lar
+  for (i = 0; i < f.pads.length; i++) {
+    var pd = f.pads[i], inside = !pd.max && Math.abs(P.x - pd.x) < pd.w / 2 && Math.abs(P.z - pd.z) < pd.d / 2;
     if (inside) { if (pd.dwell >= 0) pd.dwell += dt; if (pd.dwell >= 0.45) { pd.dwell = 0.44; mkPadGo(pd); } } else pd.dwell = 0;
   }
   // xaridorlar
-  if (now > f.spawnAt) { mkSpawn(f); f.spawnAt = now + Math.max(500, 2600 - Math.log10(ST.rate + 10) * 380) * (0.6 + Math.random() * 0.8); }
-  for (var ci = f.cust.length - 1; ci >= 0; ci--) {
-    var c = f.cust[ci];
-    if (c.wait > 0) { c.wait -= dt; c.mv += (0 - c.mv) * Math.min(1, dt * 10); if (c.wait <= 0) { if (c.pi === 2) { c.item = true; } if (c.pi === 3) { c.item = false; var amt = Math.max(1, Math.round(ST.rate * 2 / 3600)); f.pops.push({ pos: [c.pos[0], 3.4, c.pos[2]], text: "+" + fmtS(amt) + " 🪙", life: 1 }); sc.burst([c.pos[0], 2.0, c.pos[2]], [[255, 210, 60], [255, 245, 160]], 6); } } continue; }
-    var tg0 = c.path[c.pi]; if (!tg0) { var ix = sc.objs.indexOf(c); if (ix >= 0) sc.objs.splice(ix, 1); f.cust.splice(ci, 1); continue; }
-    var dx = tg0[0] - c.pos[0], dz = tg0[1] - c.pos[2], dd = Math.sqrt(dx * dx + dz * dz), st = 4.2 * dt;
-    if (dd <= st) { c.pos[0] = tg0[0]; c.pos[2] = tg0[1]; c.pi++; c.wait = tg0[2]; if (c.pi === 2 && c.wait) c.item = false; if (c.pi === 3) { c.item = true; } if (!c.wait) c.wait = 0.001; }
-    else { c.pos[0] += dx / dd * st; c.pos[2] += dz / dd * st; var ang = Math.atan2(dx, dz), d2 = ang - c.rot[1]; while (d2 > Math.PI) d2 -= 2 * Math.PI; while (d2 < -Math.PI) d2 += 2 * Math.PI; c.rot[1] += d2 * Math.min(1, dt * 10); c.ph += st * 1.6; c.mv += (1 - c.mv) * Math.min(1, dt * 10); }
-    c.pos[1] = Math.abs(Math.sin(c.ph)) * 0.06 * c.mv;
+  if (now > f.spawnAt) { mkSpawn(f); var un = ST.lines.filter(function (x) { return x > 0; }).length; f.spawnAt = now + Math.max(2200, 6500 - un * 350 - ST.size * 400) * (0.7 + Math.random() * 0.6); }
+  for (i = f.cust.length - 1; i >= 0; i--) {
+    var c = f.cust[i], G2 = G, sh2 = G2.shelves[c.li];
+    if (c.st === 0) { if (c.via) { if (mkWalk(c, -G.hx + 1.8, -2, 5, dt)) c.via = false; } else if (mkWalk(c, c.tx, c.tz, 5, dt)) { c.st = 1; c.rot[1] = Math.PI; } }
+    else if (c.st === 1) {
+      c.rot[1] += (Math.PI * 0 - c.rot[1]) * 0; c.t += dt;
+      if (c.got < c.q) { if (WS.sh[c.li] > 0 && c.t > 0.55) { c.t = 0; WS.sh[c.li]--; c.got++; ch = true; } else if (WS.sh[c.li] === 0) { c.patience -= dt; } }
+      if (c.got >= c.q || c.patience <= 0) { if (c.got > 0) { c.st = 2; f.queue.push(c); } else { c.st = 5; } }
+    }
+    else if (c.st === 2 || c.st === 3) {
+      var k = f.queue.indexOf(c), tx = G.counter.x + 2.7 - k * 1.5, tz = G.counter.z + 1.9;
+      if (mkWalk(c, tx, tz, 5, dt) && k === 0) { c.st = 3; c.rot[1] = Math.PI; }
+      if (c.st === 3 && f.cashOn) { c.t += dt * (1 + 0.4 * ST.cash); if (c.t > 1.3) { WS.pile[c.li] += c.got; f.pops.push({ pos: [c.pos[0], 3.2, c.pos[2]], v: c.got * ST.price[c.li], life: 1 }); f.queue.splice(0, 1); c.st = 5; c.got = 0; ch = true; hap("light"); } }
+    }
+    else if (c.st === 5) { if (!c.out) { if (mkWalk(c, -G.hx + 1.8, -2, 5, dt)) c.out = true; } else if (mkWalk(c, -G.hx - 3.5, -2, 5, dt)) { var ix2 = sc.objs.indexOf(c); if (ix2 >= 0) sc.objs.splice(ix2, 1); f.cust.splice(i, 1); } }
   }
-  var labs = f.labels.slice();
-  for (var q = f.pops.length - 1; q >= 0; q--) { var pp = f.pops[q]; pp.life -= dt * 0.8; if (pp.life <= 0) { f.pops.splice(q, 1); continue; } labs.push({ pos: [pp.pos[0], pp.pos[1] + (1 - pp.life) * 2, pp.pos[2]], text: pp.text, size: 15, col: "#ffe566" }); }
-  sc.labels = labs;
+  if (ch) mkDisp(f, false);
+  for (var q = f.pops.length - 1; q >= 0; q--) { f.pops[q].life -= dt * 0.8; if (f.pops[q].life <= 0) f.pops.splice(q, 1); }
   var kk = Math.min(1, dt * 7);
   sc.cam.d += (f.dist - sc.cam.d) * Math.min(1, dt * 6); sc.cam.pitch += (f.pitch - sc.cam.pitch) * Math.min(1, dt * 6); sc.cam.yaw = f.yaw;
   sc.cam.t[0] += (P.x - sc.cam.t[0]) * kk; sc.cam.t[2] += (P.z - sc.cam.t[2]) * kk;
-  sc.render(now);
+  sc.render(now); mkOverlay(f);
   return true;
 }
 // ---------- Yaxshilash ----------
 function viewUp(m) {
-  var h = '<div class="card"><h2>📈 Daromad: ' + fmtS(ST.rate) + '/soat</h2><div class="mu">Ko\'paytirgich: <b>×' + ST.mult + "</b> (kassirlar, do'kon darajasi, franshiza" + (ST.premium ? ", 💎 Premium ×2" : "") + ")</div></div>";
+  var h = '<div class="card"><h2>Daromad: ' + fmtS(ST.rate) + '/soat</h2><div class="mu">Offlayn daromad ko\'paytirgichi: <b>x' + ST.mult + "</b> (kassirlar, do'kon darajasi, franshiza" + (ST.premium ? ", Premium x2" : "") + "). Qo'lda sotilgan buyum narxi ham shunga bog'liq.</div></div>";
   CAT.lines.forEach(function (L, i) {
     var lv = ST.lines[i], mx = lv >= CAT.maxlvl, per = L.inc * ST.mult;
-    h += '<div class="card"><div class="ar"><div style="font-size:34px">' + L.emoji + '</div><div class="grow"><b>' + esc(L.name) + "</b> " + (lv ? "· Lv " + lv : '<span class="mu">(yopiq)</span>') + '<div class="mu">+' + fmtS(per) + "/soat har daraja" + (lv ? " · jami " + fmtS(per * lv) : "") + "</div></div></div>" +
+    h += '<div class="card"><div class="ar">' + thumbImg(i, 46) + '<div class="grow"><b>' + esc(L.name) + "</b> " + (lv ? "· Lv " + lv : '<span class="mu">(yopiq)</span>') + '<div class="mu">+' + fmtS(per) + "/soat har daraja" + (lv ? " · javon sig'imi " + shelfCap(lv) + " · 1 ta narxi " + fmtS(ST.price[i]) : "") + "</div></div></div>" +
       '<div class="bar"><i style="width:' + Math.min(100, lv / CAT.maxlvl * 100) + '%"></i></div>';
-    if (mx) h += '<div class="mu" style="text-align:center">✅ Maksimal daraja</div>';
-    else if (!lv) h += '<button class="btn gn ' + (ST.coins >= L.unlock ? "" : "off") + '" data-l="' + i + '" data-n="1" style="width:100%">🔓 Ochish · 🪙 ' + fmtS(L.unlock) + "</button>";
+    if (mx) h += '<div class="mu" style="text-align:center">Maksimal daraja</div>';
+    else if (!lv) h += '<button class="btn gn ' + (ST.coins >= L.unlock ? "" : "off") + '" data-l="' + i + '" data-n="1" style="width:100%">Ochish · ' + fmtS(L.unlock) + "</button>";
     else {
       var c1 = stepCost(i, lv), ma = maxAfford(i, lv, ST.coins), c10 = lv + 10 <= CAT.maxlvl ? bulkCost(i, lv, 10) : 0;
-      h += '<div class="hb"><button class="btn sm ' + (ST.coins >= c1 ? "" : "off") + '" data-l="' + i + '" data-n="1">×1<small>🪙 ' + fmtS(c1) + "</small></button>" +
-        '<button class="btn sm bl ' + (c10 && ST.coins >= c10 ? "" : "off") + '" data-l="' + i + '" data-n="10">×10<small>' + (c10 ? "🪙 " + fmtS(c10) : "—") + "</small></button>" +
-        '<button class="btn sm gn ' + (ma[0] ? "" : "off") + '" data-l="' + i + '" data-n="max">MAX' + (ma[0] ? " ×" + ma[0] : "") + "<small>" + (ma[0] ? "🪙 " + fmtS(ma[1]) : "—") + "</small></button></div>";
+      h += '<div class="hb"><button class="btn sm ' + (ST.coins >= c1 ? "" : "off") + '" data-l="' + i + '" data-n="1">x1<small>' + fmtS(c1) + "</small></button>" +
+        '<button class="btn sm bl ' + (c10 && ST.coins >= c10 ? "" : "off") + '" data-l="' + i + '" data-n="10">x10<small>' + (c10 ? fmtS(c10) : "-") + "</small></button>" +
+        '<button class="btn sm gn ' + (ma[0] ? "" : "off") + '" data-l="' + i + '" data-n="max">MAX' + (ma[0] ? " x" + ma[0] : "") + "<small>" + (ma[0] ? fmtS(ma[1]) : "-") + "</small></button></div>";
     }
     h += "</div>";
   });
-  h += '<div class="card"><div class="ar"><div style="font-size:34px">👩‍💼</div><div class="grow"><b>Kassirlar</b> · ' + ST.cash + "/" + CAT.cash_max + '<div class="mu">Har biri daromadni +20% oshiradi</div></div></div>' +
-    (ST.cash >= CAT.cash_max ? '<div class="mu" style="text-align:center">✅ Maksimal</div>' : '<button class="btn ' + (ST.coins >= ST.cash_cost ? "" : "off") + '" id="bc" style="width:100%">Yollash · 🪙 ' + fmtS(ST.cash_cost) + "</button>") + "</div>" +
-    '<div class="card"><div class="ar"><div style="font-size:34px">🏬</div><div class="grow"><b>Do\'kon kengaytirish</b> · ' + ST.size + "/" + CAT.size_max + '<div class="mu">Har daraja daromadni +50% oshiradi</div></div></div>' +
-    (ST.size >= CAT.size_max ? '<div class="mu" style="text-align:center">✅ Maksimal</div>' : '<button class="btn bl ' + (ST.coins >= ST.size_cost ? "" : "off") + '" id="bs" style="width:100%">Kengaytirish · 🪙 ' + fmtS(ST.size_cost) + "</button>") + "</div>" +
-    '<div class="card"><h2>🏢 Franshiza</h2><div class="mu">Hammasi (tanga, javonlar, kassirlar, do\'kon) qayta boshlanadi, lekin har bir ball doimiy <b>+10%</b> daromad beradi.<br>Joriy ball: <b>' + ST.fp + "</b> · Bu davrdagi daromad: <b>" + fmtS(ST.earned_run) + "</b> / " + fmtS(CAT.fran_min) + "</div>" +
-    '<button class="btn rd ' + (ST.fran_gain > 0 ? "" : "off") + '" id="bf" style="width:100%;margin-top:10px">' + (ST.fran_gain > 0 ? "🏢 Franshiza qilish (+" + ST.fran_gain + " ball)" : "🔒 " + fmtS(CAT.fran_min) + " daromad kerak") + "</button></div>";
+  var line = function (id, title, sub, cur, mx, cost, cls, btn) {
+    return '<div class="card"><div class="ar"><div class="grow"><b>' + title + "</b> · " + cur + "/" + mx + '<div class="mu">' + sub + "</div></div></div>" +
+      (cur >= mx ? '<div class="mu" style="text-align:center">Maksimal</div>' : '<button class="btn ' + cls + " " + (ST.coins >= cost ? "" : "off") + '" id="' + id + '" style="width:100%">' + btn + " · " + fmtS(cost) + "</button>") + "</div>";
+  };
+  h += line("bc", "Kassirlar", "Kassada o'zi xizmat qiladi, daromadni +20% oshiradi", ST.cash, CAT.cash_max, ST.cash_cost, "", "Yollash") +
+    line("bg", "Qop sig'imi", "Bir vaqtda ko'tarish: " + ST.carry_max + " ta buyum", ST.bag, ST.bag_max, ST.bag_cost, "", "Kattalashtirish") +
+    line("bs", "Do'kon kengaytirish", "Har daraja daromadni +50% oshiradi, do'kon kattalashadi", ST.size, CAT.size_max, ST.size_cost, "bl", "Kengaytirish") +
+    '<div class="card"><h2>Franshiza</h2><div class="mu">Hammasi (pul, javonlar, kassirlar, do\'kon) qayta boshlanadi, lekin har bir ball doimiy <b>+10%</b> daromad beradi.<br>Joriy ball: <b>' + ST.fp + "</b> · Bu davrdagi daromad: <b>" + fmtS(ST.earned_run) + "</b> / " + fmtS(CAT.fran_min) + "</div>" +
+    '<button class="btn rd ' + (ST.fran_gain > 0 ? "" : "off") + '" id="bf" style="width:100%;margin-top:10px">' + (ST.fran_gain > 0 ? "Franshiza qilish (+" + ST.fran_gain + " ball)" : fmtS(CAT.fran_min) + " daromad kerak") + "</button></div>";
   m.innerHTML = h;
   var buy = async function (body, msg) { try { var j = await api("POST", "act", body); setState(j.state); toast(msg); hap("ok"); } catch (e) { fail(e); } };
   Array.prototype.forEach.call(m.querySelectorAll("[data-l]"), function (b) {
-    b.onclick = function () { var n = b.getAttribute("data-n"); buy({ a: "buy_line", i: parseInt(b.getAttribute("data-l"), 10), n: n === "max" ? "max" : parseInt(n, 10) }, "✅ Yaxshilandi"); };
+    b.onclick = function () { var n = b.getAttribute("data-n"); buy({ a: "buy_line", i: parseInt(b.getAttribute("data-l"), 10), n: n === "max" ? "max" : parseInt(n, 10) }, "Yaxshilandi"); };
   });
-  if ($("bc")) $("bc").onclick = function () { buy({ a: "buy_cash" }, "👩‍💼 Kassir yollandi"); };
-  if ($("bs")) $("bs").onclick = function () { buy({ a: "buy_size" }, "🏬 Do'kon kengaydi"); };
+  if ($("bc")) $("bc").onclick = function () { buy({ a: "buy_cash" }, "Kassir yollandi"); };
+  if ($("bg")) $("bg").onclick = function () { buy({ a: "buy_bag" }, "Qop kattalashdi"); };
+  if ($("bs")) $("bs").onclick = function () { buy({ a: "buy_size" }, "Do'kon kengaydi"); };
   $("bf").onclick = function () {
     if (ST.fran_gain <= 0) { toast("Hali daromad yetarli emas"); return; }
-    var go = function () { buy({ a: "franchise" }, "🏢 Franshiza! Yangi boshlanish"); }, q = "Franshiza qilasizmi? Hammasi qayta boshlanadi, +" + ST.fran_gain + " ball olasiz.";
+    var go = function () { WS = null; buy({ a: "franchise" }, "Franshiza! Yangi boshlanish"); }, q = "Franshiza qilasizmi? Hammasi qayta boshlanadi, +" + ST.fran_gain + " ball olasiz.";
     if (tg && tg.showConfirm) tg.showConfirm(q, function (ok) { if (ok) go(); }); else if (confirm(q)) go();
   };
 }
@@ -20268,19 +20534,19 @@ function viewUp(m) {
 function viewBonus(m) {
   var left = ST.daily_left - (Date.now() - T0) / 1000, can = left <= 0;
   var days = [1, 2, 3, 4, 5, 6, 7].map(function (d) { return '<i class="' + (d <= ST.streak ? "on" : "") + '">' + d + "</i>"; }).join("");
-  m.innerHTML = '<div class="card"><h2>🎁 Kunlik bonus</h2><div class="mu">Ketma-ket kunlarda bonus oshadi (7 kungacha). Seriya: ' + ST.streak + ' kun</div><div class="streak">' + days + '</div><button class="btn ' + (can ? "" : "off") + '" id="dl" style="width:100%">' + (can ? "🎁 Bonusni olish" : "⏳ " + dur(left)) + "</button></div>" +
-    '<div class="card"><h2>🎟 Promokod</h2><div class="ar"><input id="pc" maxlength="20" placeholder="KOD" autocapitalize="characters"><button class="btn sm" id="pb">OK</button></div></div>' +
-    '<div class="card"><h2>👥 Do\'st taklif qilish</h2><div class="mu">Har bir do\'st uchun ikkalangizga +' + fmt(ST.ref_bonus) + ' 🪙. Takliflar: ' + ST.refs + '</div><button class="btn bl" id="inv" style="width:100%;margin-top:10px">📨 Havolani ulashish</button></div>';
+  m.innerHTML = '<div class="card"><h2>Kunlik bonus</h2><div class="mu">Ketma-ket kunlarda bonus oshadi (7 kungacha). Seriya: ' + ST.streak + ' kun</div><div class="streak">' + days + '</div><button class="btn ' + (can ? "" : "off") + '" id="dl" style="width:100%">' + (can ? "Bonusni olish" : "Kuting: " + dur(left)) + "</button></div>" +
+    '<div class="card"><h2>Promokod</h2><div class="ar"><input id="pc" maxlength="20" placeholder="KOD" autocapitalize="characters"><button class="btn sm" id="pb">OK</button></div></div>' +
+    '<div class="card"><h2>Do\'st taklif qilish</h2><div class="mu">Har bir do\'st uchun ikkalangizga +' + fmt(ST.ref_bonus) + '. Takliflar: ' + ST.refs + '</div><button class="btn bl" id="inv" style="width:100%;margin-top:10px">Havolani ulashish</button></div>';
   $("dl").onclick = async function () {
-    try { var j = await api("POST", "act", { a: "daily" }); setState(j.state); toast("🎁 +" + fmt(j.result.bonus) + " 🪙"); hap("ok"); } catch (e) { fail(e); }
+    try { var j = await api("POST", "act", { a: "daily" }); setState(j.state); toast("Bonus: +" + fmt(j.result.bonus)); hap("ok"); } catch (e) { fail(e); }
   };
   $("pb").onclick = async function () {
     var c = $("pc").value.trim(); if (!c) return;
-    try { var j = await api("POST", "act", { a: "promo", code: c }); setState(j.state); toast("🎟 +" + fmt(j.result.coins) + " 🪙"); hap("ok"); } catch (e) { fail(e); }
+    try { var j = await api("POST", "act", { a: "promo", code: c }); setState(j.state); toast("Promokod: +" + fmt(j.result.coins)); hap("ok"); } catch (e) { fail(e); }
   };
   $("inv").onclick = function () {
     var link = "https://t.me/" + ST.username + "?start=ref_" + (tg && tg.initDataUnsafe && tg.initDataUnsafe.user ? tg.initDataUnsafe.user.id : "");
-    var u = "https://t.me/share/url?url=" + encodeURIComponent(link) + "&text=" + encodeURIComponent("🏪 Men bilan Mini Market o'ynang! O'z do'koningizni quring:");
+    var u = "https://t.me/share/url?url=" + encodeURIComponent(link) + "&text=" + encodeURIComponent("Men bilan Mini Market o'ynang! O'z do'koningizni quring:");
     if (tg && tg.openTelegramLink) tg.openTelegramLink(u); else window.open(u, "_blank");
   };
 }
@@ -20290,49 +20556,48 @@ async function loadTop() {
   if (tab === "top") render();
 }
 function viewTop(m) {
-  if (TOP == null) { m.innerHTML = '<div class="err"><div class="big">🏆</div><p class="mu">Yuklanmoqda...</p></div>'; return; }
-  var md = ["🥇", "🥈", "🥉"];
-  m.innerHTML = '<div class="card"><h2>🏆 Eng boy do\'kon egalari</h2>' + (TOP.length ? TOP.map(function (r, i) {
-    return '<div class="lb' + (r.me ? " me" : "") + '"><div class="rk">' + (md[i] || (i + 1)) + '</div><div class="nm">' + esc(r.name) + (r.me ? " (siz)" : "") + '</div><div class="mu">📈 ' + fmtS(r.rate) + "/soat · 🏢 " + r.fp + "</div></div>";
+  if (TOP == null) { m.innerHTML = '<div class="err"><p class="mu">Yuklanmoqda...</p></div>'; return; }
+  m.innerHTML = '<div class="card"><h2>Eng boy do\'kon egalari</h2>' + (TOP.length ? TOP.map(function (r, i) {
+    return '<div class="lb' + (r.me ? " me" : "") + '"><div class="rk">' + (i + 1) + '</div><div class="nm">' + esc(r.name) + (r.me ? " (siz)" : "") + '</div><div class="mu">' + fmtS(r.rate) + "/soat · F" + r.fp + "</div></div>";
   }).join("") : '<p class="mu">Hali reyting bo\'sh. Birinchi bo\'ling!</p>') + "</div>";
 }
 // ---------- Admin ----------
 function viewAdmin(m) {
   var a = ADM; if (!a) { m.innerHTML = ""; return; }
   var s = a.stats;
-  var st = [["O'yinchilar", s.players], ["Foydalanuvchilar", s.users], ["Aylanmadagi tanga", s.coins], ["Xaridlar", s.buys], ["Franshizalar", s.franchises], ["Kunlik bonus", s.daily], ["Promokod ishlatilgan", s.promos], ["Bloklangan", s.blocked]];
-  m.innerHTML = '<div class="card"><h2>📊 Statistika</h2><div class="stat">' + st.map(function (x) { return "<div><b>" + fmtS(x[1]) + "</b><span>" + x[0] + "</span></div>"; }).join("") + "</div></div>" +
-    '<div class="card"><h2>🏆 Top o\'yinchilar</h2>' + (a.top.map(function (r, i) { return '<div class="lb"><div class="rk">' + (i + 1) + '</div><div class="nm">' + esc(r.name || "—") + ' <span class="mu">' + r.id + '</span></div><div class="mu">📈 ' + fmtS(r.rate) + " · 🪙 " + fmtS(r.coins) + "</div></div>"; }).join("") || '<p class="mu">Hali yo\'q</p>') + "</div>" +
-    '<div class="card"><h2>🎁 Promokodlar</h2>' + (a.promos.map(function (p) { return '<div class="ar"><div class="grow"><b>' + esc(p.code) + '</b> <span class="mu">🪙 ' + fmt(p.coins) + " · " + p.used + "/" + p.uses + '</span></div><button class="btn rd sm" data-pd="' + esc(p.code) + '">🗑</button></div>'; }).join("") || '<p class="mu">Hali yo\'q</p>') +
-    '<div class="ar"><input id="pcode" placeholder="KOD" maxlength="20"><input id="pcoin" type="number" placeholder="Tanga" style="max-width:100px"><input id="puse" type="number" placeholder="Soni" style="max-width:80px"></div><button class="btn" id="padd" style="width:100%">➕ Promokod yaratish</button></div>' +
-    '<div class="card"><h2>🪙 Tanga berish</h2><div class="ar"><input id="gid" type="number" placeholder="Foydalanuvchi ID"><input id="gam" type="number" placeholder="± miqdor" style="max-width:120px"></div><button class="btn" id="gbtn" style="width:100%">Yuborish</button></div>' +
-    '<div class="card"><h2>🚫 Bloklash</h2><div class="mu">Bloklanganlar: ' + (a.blocked_list.join(", ") || "yo'q") + '</div><div class="ar"><input id="bid" type="number" placeholder="Foydalanuvchi ID"></div><div class="ar"><button class="btn rd" id="bb" style="flex:1">Bloklash</button><button class="btn gn" id="bu" style="flex:1">Ochish</button></div></div>' +
-    '<div class="card"><h2>⚙️ Sozlamalar</h2>' + a.cfg.map(function (c) { return '<div class="ar"><div class="grow">' + esc(c.name) + '</div><input data-ck="' + c.key + '" type="number" value="' + c.value + '" style="max-width:110px"><button class="btn sm" data-cs="' + c.key + '">OK</button></div>'; }).join("") +
-    '<div class="ar"><div class="grow">🛠 Texnik tanaffus</div><button class="btn sm ' + (a.maintenance ? "rd" : "gn") + '" id="mt">' + (a.maintenance ? "Yoqilgan" : "O'chiq") + "</button></div></div>";
+  var st = [["O'yinchilar", s.players], ["Foydalanuvchilar", s.users], ["Aylanmadagi pul", s.coins], ["Xaridlar", s.buys], ["Franshizalar", s.franchises], ["Kunlik bonus", s.daily], ["Promokod ishlatilgan", s.promos], ["Bloklangan", s.blocked]];
+  m.innerHTML = '<div class="card"><h2>Statistika</h2><div class="stat">' + st.map(function (x) { return "<div><b>" + fmtS(x[1]) + "</b><span>" + x[0] + "</span></div>"; }).join("") + "</div></div>" +
+    '<div class="card"><h2>Top o\'yinchilar</h2>' + (a.top.map(function (r, i) { return '<div class="lb"><div class="rk">' + (i + 1) + '</div><div class="nm">' + esc(r.name || "—") + ' <span class="mu">' + r.id + '</span></div><div class="mu">' + fmtS(r.rate) + " · " + fmtS(r.coins) + "</div></div>"; }).join("") || '<p class="mu">Hali yo\'q</p>') + "</div>" +
+    '<div class="card"><h2>Promokodlar</h2>' + (a.promos.map(function (p) { return '<div class="ar"><div class="grow"><b>' + esc(p.code) + '</b> <span class="mu">' + fmt(p.coins) + " · " + p.used + "/" + p.uses + '</span></div><button class="btn rd sm" data-pd="' + esc(p.code) + '">O\'chirish</button></div>'; }).join("") || '<p class="mu">Hali yo\'q</p>') +
+    '<div class="ar"><input id="pcode" placeholder="KOD" maxlength="20"><input id="pcoin" type="number" placeholder="Pul" style="max-width:100px"><input id="puse" type="number" placeholder="Soni" style="max-width:80px"></div><button class="btn" id="padd" style="width:100%">Promokod yaratish</button></div>' +
+    '<div class="card"><h2>Pul berish</h2><div class="ar"><input id="gid" type="number" placeholder="Foydalanuvchi ID"><input id="gam" type="number" placeholder="± miqdor" style="max-width:120px"></div><button class="btn" id="gbtn" style="width:100%">Yuborish</button></div>' +
+    '<div class="card"><h2>Bloklash</h2><div class="mu">Bloklanganlar: ' + (a.blocked_list.join(", ") || "yo'q") + '</div><div class="ar"><input id="bid" type="number" placeholder="Foydalanuvchi ID"></div><div class="ar"><button class="btn rd" id="bb" style="flex:1">Bloklash</button><button class="btn gn" id="bu" style="flex:1">Ochish</button></div></div>' +
+    '<div class="card"><h2>Sozlamalar</h2>' + a.cfg.map(function (c) { return '<div class="ar"><div class="grow">' + esc(c.name.replace(/^\S+\s/, "")) + '</div><input data-ck="' + c.key + '" type="number" value="' + c.value + '" style="max-width:110px"><button class="btn sm" data-cs="' + c.key + '">OK</button></div>'; }).join("") +
+    '<div class="ar"><div class="grow">Texnik tanaffus</div><button class="btn sm ' + (a.maintenance ? "rd" : "gn") + '" id="mt">' + (a.maintenance ? "Yoqilgan" : "O'chiq") + "</button></div></div>";
   var act = async function (body, msg) {
-    try { var j = await api("POST", "act", body); ADM = j.admin || ADM; setState(j.state, j.admin); toast(msg || "✅ Saqlandi"); hap("ok"); } catch (e) { fail(e); }
+    try { var j = await api("POST", "act", body); ADM = j.admin || ADM; setState(j.state, j.admin); toast(msg || "Saqlandi"); hap("ok"); } catch (e) { fail(e); }
   };
-  Array.prototype.forEach.call(m.querySelectorAll("[data-pd]"), function (b) { b.onclick = function () { act({ a: "admin_promo_del", code: b.getAttribute("data-pd") }, "🗑 O'chirildi"); }; });
+  Array.prototype.forEach.call(m.querySelectorAll("[data-pd]"), function (b) { b.onclick = function () { act({ a: "admin_promo_del", code: b.getAttribute("data-pd") }, "O'chirildi"); }; });
   $("padd").onclick = function () { act({ a: "admin_promo_add", code: $("pcode").value, coins: $("pcoin").value, uses: $("puse").value }); };
   $("gbtn").onclick = function () { act({ a: "admin_give", id: $("gid").value, amount: $("gam").value }); };
-  $("bb").onclick = function () { act({ a: "admin_block", id: $("bid").value, block: true }, "🚫 Bloklandi"); };
-  $("bu").onclick = function () { act({ a: "admin_block", id: $("bid").value, block: false }, "✅ Blokdan chiqarildi"); };
+  $("bb").onclick = function () { act({ a: "admin_block", id: $("bid").value, block: true }, "Bloklandi"); };
+  $("bu").onclick = function () { act({ a: "admin_block", id: $("bid").value, block: false }, "Blokdan chiqarildi"); };
   $("mt").onclick = function () { act({ a: "admin_cfg", key: "maintenance", value: !a.maintenance }); };
   Array.prototype.forEach.call(m.querySelectorAll("[data-cs]"), function (b) {
     b.onclick = function () { var k = b.getAttribute("data-cs"), inp = m.querySelector('[data-ck="' + k + '"]'); act({ a: "admin_cfg", key: k, value: inp.value }); };
   });
 }
 $("colBtn").onclick = async function () {
-  if (!ST || pend() < 1) { toast("Hali yig'ilgan tanga yo'q"); return; }
-  try { var j = await api("POST", "act", { a: "collect" }); setState(j.state); toast("💰 +" + fmtS(j.result) + " 🪙"); hap("ok"); } catch (e) { fail(e); }
+  if (!ST || pend() < 1) { toast("Hali offlayn daromad yo'q"); return; }
+  try { var j = await api("POST", "act", { a: "collect" }); setState(j.state); toast("Yig'ildi: +" + fmtS(j.result)); hap("ok"); } catch (e) { fail(e); }
 };
 async function start() {
   try {
     var j = await api("GET", "state");
     CAT = j.catalog; setState(j.state, j.admin);
-  } catch (e) { fail(e); if (e.message !== "gate") $("m").innerHTML = '<div class="err"><div class="big">⚠️</div><p>' + esc(ERR[e.message] || "Xatolik") + "</p></div>"; }
+  } catch (e) { fail(e); if (e.message !== "gate") $("m").innerHTML = '<div class="err"><p>' + esc(ERR[e.message] || "Xatolik") + "</p></div>"; }
 }
-setInterval(function () { if (ST) { head(); if (tab === "bonus") { var d = $("dl"); if (d) { var left = ST.daily_left - (Date.now() - T0) / 1000; if (left <= 0) render(); else d.textContent = "⏳ " + dur(left); } } } }, 1000);
+setInterval(function () { if (ST) { head(); if (tab === "bonus") { var d = $("dl"); if (d) { var left = ST.daily_left - (Date.now() - T0) / 1000; if (left <= 0) render(); else d.textContent = "Kuting: " + dur(left); } } } }, 1000);
 start();
 
 </script>
