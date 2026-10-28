@@ -26269,6 +26269,33 @@ async def main():
         save_data()
         logging.info(f"Nakrutka bot qoldiqlari tozalandi: {len(_gone)} ta bot.")
 
+    # «Roblox tuxum bot» va «Mini Market tycoon bot» turlari butunlay olib tashlandi —
+    # bazadagi qoldiqlar (botlar, sozlamalar, belgilar) tozalanadi.
+    # (Bir marta deploy qilingach bu blokni o'chirib tashlash mumkin.)
+    _old_types = {"roblox": "Roblox tuxum bot", "market": "Mini Market tycoon bot"}
+    _gone2 = [t for t, i in data["bots"].items() if i.get("type") in _old_types]
+    for _t in _gone2:
+        _binfo = data["bots"][_t]
+        _task = running_bots.pop(_t, None)
+        if _task:
+            _task.cancel()
+        try:
+            await main_bot.send_message(
+                _binfo["admin_id"],
+                f"⚠️ \"{_binfo['name']}\" boti ({_old_types[_binfo['type']]} turi) platformadan olib tashlandi va endi ishlamaydi.",
+            )
+        except Exception:
+            pass
+        del data["bots"][_t]
+    _flags_cleaned = False
+    for _k in ("_egg_menu_added", "_mk_menu_added"):
+        if _k in data:
+            data.pop(_k, None)
+            _flags_cleaned = True
+    if _gone2 or _flags_cleaned:
+        save_data()
+        logging.info(f"Tuxum/Market bot qoldiqlari tozalandi: {len(_gone2)} ta bot.")
+
     autotext_build()
     asyncio.create_task(start_web_server())
 
