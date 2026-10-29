@@ -625,6 +625,7 @@ BOT_TYPES = {
     "openbudget": "🗳 Open Budget bot",
     "nakrutka": "🚀 Nakrutka bot",
     "download": "📥 Yuklovchi bot",
+    "subs": "💳 Obuna (pullik kanal) boti",
 }
 
 # 🎬 MEDIA BOT turlari (ichki bot turi o'zgarmaydi: "kino_pro" — barcha kino funksiyalari saqlanadi).
@@ -691,6 +692,7 @@ DEFAULT_PRICES = {
     "openbudget": 120_000,
     "nakrutka": 120_000,
     "download": 120_000,
+    "subs": 120_000,
 }
 DEFAULT_MONTHLY_RATE = 0.2  # keyingi oylar uchun narxning 20 foizi (standart) — eskirgan, endi ishlatilmaydi
 
@@ -869,6 +871,16 @@ try:
     if "download" not in data["bot_menu"] and not data.get("_dl_menu_added"):
         data["bot_menu"]["download"] = {"name": BOT_TYPES["download"], "enabled": True}
         data["_dl_menu_added"] = True
+        save_data()
+except Exception:
+    pass
+
+
+# Yangi «Obuna boti» turi bir marta avtomatik menyuga qo'shiladi
+try:
+    if "subs" not in data["bot_menu"] and not data.get("_sb_menu_added"):
+        data["bot_menu"]["subs"] = {"name": BOT_TYPES["subs"], "enabled": True}
+        data["_sb_menu_added"] = True
         save_data()
 except Exception:
     pass
@@ -1467,6 +1479,13 @@ def tariff_card_text(tid: str, t: dict) -> str:
 
 # Har bir bot turi uchun tavsif (bot yaratish oynasida ko'rsatiladi)
 BOT_DESCRIPTIONS = {
+    "subs": (
+        "<i>Yopiq kanal yoki guruhingizga pullik obuna soting: to'lov tushsa, bot odamni avtomatik kiritadi, muddat tugasa — chiqaradi.</i>\n\n"
+        "💳 Chek, Click/Payme/Octo va Telegram Stars orqali to'lov, 📚 cheksiz tariflar, 🔗 shaxsiy kirish havolasi, ⏰ avtomatik eslatma, "
+        "🧪 bepul sinov, 🏷 promokodlar, 🎀 sovg'a kodlari, 👥 referal, 🎁 kunlik bonus, 🧊 obunani muzlatish.\n\n"
+        "📊 Admin panelda 60+ funksiya: statistika va daromad grafigi, foydalanuvchi kartochkasi, kun qo'shish/ayirish, ommaviy xabar, "
+        "CSV eksport, sozlamalar, FAQ, bloklash va boshqalar."
+    ),
     "download": (
         "<i>TikTok, Instagram va YouTube havolasini yuboring — bot uni Telegram videosiga aylantirib beradi.</i>\n\n"
         "🎧 MP3 yuklash, ♻️ kesh (bir xil video qayta yuklanmaydi), ⏱ kunlik limit va 💎 Premium.\n\n"
@@ -7355,6 +7374,7 @@ def setup_premium_system(dp: Dispatcher, token: str, admin_id: int):
             return
         uid = callback.from_user.id
         amount, title = 0, ""
+        _sb_order_extra = ("", 0)
         if kind == "premium":
             t = info["premium_tariffs"].get(ref)
             if t:
@@ -7370,6 +7390,13 @@ def setup_premium_system(dp: Dispatcher, token: str, admin_id: int):
                     amount, title = price_n, f"⭐ {stars_n:,} Stars (hisobga yuborish kerak)"
             except ValueError:
                 pass
+        elif kind in ("sbplan", "sbgift"):
+            _pl = info.get("sb", {}).get("plans", {}).get(ref)
+            if _pl and _pl.get("active", True) and sb_plan_left(_pl) != 0:
+                _pr, _bn, _pc = sb_price(info, uid, ref, (info.get("sb", {}).get("subs", {}).get(str(uid)) or {}).get("promo", ""))
+                if _pr > 0:
+                    amount, title = _pr, ("🎀 Sovg'a: " if kind == "sbgift" else "📚 ") + _pl["name"]
+                    _sb_order_extra = (_pc, _bn)
         elif kind == "shoporder":
             o = info.get("shop_orders", {}).get(ref)
             if o and o.get("user_id") == uid and not o.get("paid"):
@@ -7378,6 +7405,8 @@ def setup_premium_system(dp: Dispatcher, token: str, admin_id: int):
             await callback.answer("❌ Ma'lumot topilmadi, qaytadan urinib ko'ring.", show_alert=True)
             return
         order_id = auto_create_order(info, uid, kind, ref, amount, title, prov)
+        if kind in ("sbplan", "sbgift"):
+            info["auto_orders"][order_id]["promo"], info["auto_orders"][order_id]["bonus"] = _sb_order_extra
         pname = AUTO_PROVIDERS[prov]["title"]
         if prov == "tgpay":
             try:
@@ -17902,8 +17931,2553 @@ def setup_download_bot(dp: Dispatcher, token: str):
 # ===================== /YUKLOVCHI BOT =====================
 
 
+# ===================== 💳 OBUNA BOT (pullik kanal / guruh) =====================
+# Yopiq kanal yoki guruhga pullik obuna sotadigan bot turi: tariflar, to'lov (chek + avtomatik tizimlar),
+# faqat to'lagan odamni kanalga kiritish, muddat tugaganda avtomatik chiqarish va eslatmalar.
+import csv as _sb_csv
+import io as _sb_io
+import random as _sb_random
+
+SB_CFG_DEFAULTS = {
+    "welcome": "",          # /start da ko'rsatiladigan matn
+    "support": "",          # yordam uchun aloqa (@username yoki havola)
+    "pay_note": "",         # to'lov oynasida qo'shimcha eslatma
+    "rules": "",            # qoidalar matni
+    "expire_text": "",      # muddat tugaganda yuboriladigan qo'shimcha matn
+    "ref_days": 3,          # taklif qilingan do'st to'lov qilganda beriladigan bonus kunlar
+    "ref_points": 20,       # do'st qo'shilganda beriladigan ball
+    "daily_points": 5,      # kunlik bonus (ball)
+    "points_per_day": 100,  # nechta ball = 1 kun obuna
+    "trial_days": 0,        # bepul sinov kunlari (0 = o'chiq)
+    "trial_plan": "",       # sinov beriladigan tarif ID
+    "remind": "3,1",        # necha kun qolganda eslatma (vergul bilan)
+    "grace_h": 0,           # muddat tugagach necha soat kutish
+    "auto_kick": 1,         # muddat tugaganda kanaldan avtomatik chiqarish
+    "link_ttl_h": 24,       # kirish havolasi amal qilish vaqti (soat)
+    "join_request": 1,      # havola «so'rov» rejimida (faqat to'laganlar tasdiqlanadi)
+    "ref_on": 1,            # referal tizimi
+    "daily_on": 1,          # kunlik bonus
+    "gift_on": 1,           # sovg'a qilish
+    "stars_on": 1,          # Telegram Stars orqali to'lov
+    "max_pending": 3,       # bir foydalanuvchining kutilayotgan to'lovlari limiti
+    "min_points_swap": 1,   # ballni kunga almashtirishning minimal kunlari
+}
+
+# (yorliq, tur) — admin sozlamalar muharriri uchun
+SB_CFG_META = {
+    "welcome": ("👋 Xush kelibsiz matni", "text"),
+    "support": ("🆘 Aloqa (@username / havola)", "text"),
+    "pay_note": ("📝 To'lov eslatmasi", "text"),
+    "rules": ("📜 Qoidalar matni", "text"),
+    "expire_text": ("⌛ Muddat tugash matni", "text"),
+    "ref_days": ("👥 Referal bonus (kun)", "int"),
+    "ref_points": ("👥 Referal ball", "int"),
+    "daily_points": ("🎁 Kunlik bonus (ball)", "int"),
+    "points_per_day": ("🔄 Necha ball = 1 kun", "int"),
+    "trial_days": ("🧪 Sinov muddati (kun, 0=o'chiq)", "int"),
+    "trial_plan": ("🧪 Sinov tarifi ID", "text"),
+    "remind": ("🔔 Eslatma kunlari (3,1)", "list"),
+    "grace_h": ("⏳ Imtiyozli muddat (soat)", "int"),
+    "auto_kick": ("🚪 Avto-chiqarish", "toggle"),
+    "link_ttl_h": ("🔗 Havola muddati (soat)", "int"),
+    "join_request": ("🛡 Havola «so'rov» rejimi", "toggle"),
+    "ref_on": ("👥 Referal tizimi", "toggle"),
+    "daily_on": ("🎁 Kunlik bonus", "toggle"),
+    "gift_on": ("🎀 Sovg'a qilish", "toggle"),
+    "stars_on": ("⭐ Stars to'lovi", "toggle"),
+    "max_pending": ("⏱ Kutilayotgan to'lov limiti", "int"),
+}
+
+
+def sb_init(info: dict) -> dict:
+    sb = info.setdefault("sb", {})
+    for k in ("channels", "plans", "subs", "payments", "promos", "gifts", "rev_days", "rev_methods"):
+        sb.setdefault(k, {})
+    sb.setdefault("faq", [])
+    sb.setdefault("log", [])
+    st = sb.setdefault("stats", {})
+    for k in ("revenue", "payments", "approved", "rejected", "trials", "gifts", "promos", "daily", "kicks",
+              "links", "expired", "swaps"):
+        st.setdefault(k, 0)
+    cfg = sb.setdefault("cfg", {})
+    for k, v in SB_CFG_DEFAULTS.items():
+        cfg.setdefault(k, v)
+    return sb
+
+
+def sb_fmt(n) -> str:
+    try:
+        return f"{int(n):,}".replace(",", " ")
+    except (TypeError, ValueError):
+        return "0"
+
+
+def _sb_dt(s):
+    try:
+        return datetime.fromisoformat(s)
+    except Exception:
+        return None
+
+
+def _sb_iso(dt) -> str:
+    return dt.isoformat(timespec="seconds")
+
+
+def sb_date(s) -> str:
+    d = _sb_dt(s) if isinstance(s, str) else s
+    return d.strftime("%d.%m.%Y") if d else "—"
+
+
+def sb_datetime(s) -> str:
+    d = _sb_dt(s) if isinstance(s, str) else s
+    return d.strftime("%d.%m.%Y %H:%M") if d else "—"
+
+
+def sb_dur(sec) -> str:
+    sec = max(0, int(sec))
+    d, r = divmod(sec, 86400)
+    h, r = divmod(r, 3600)
+    m = r // 60
+    if d:
+        return f"{d} kun {h} soat" if h else f"{d} kun"
+    if h:
+        return f"{h} soat {m} daq" if m else f"{h} soat"
+    return f"{m} daq"
+
+
+def sb_log(info: dict, kind: str, text: str, uid=None):
+    sb = sb_init(info)
+    sb["log"].append({"t": _sb_iso(datetime.now()), "k": kind, "u": uid, "x": str(text)[:300]})
+    if len(sb["log"]) > 500:
+        del sb["log"][:len(sb["log"]) - 500]
+
+
+# ---------------- foydalanuvchi ----------------
+def sb_user(info: dict, uid, name=None, now=None) -> dict:
+    sb = sb_init(info)
+    key = str(uid)
+    u = sb["subs"].get(key)
+    if u is None:
+        u = {
+            "name": name or "", "joined": _sb_iso(now or datetime.now()), "ref_by": None, "refs": 0, "refs_paid": 0,
+            "ref_rewarded": False, "points": 0, "streak": 0, "last_daily": "", "trial_used": False,
+            "subs": {}, "history": [], "spent": 0, "notes": "", "tags": [], "promo": "", "banked_days": 0,
+        }
+        sb["subs"][key] = u
+    elif name:
+        u["name"] = name
+    return u
+
+
+def sb_uname(info: dict, uid) -> str:
+    u = sb_init(info)["subs"].get(str(uid)) or {}
+    return u.get("name") or f"ID {uid}"
+
+
+def sb_left(rec: dict, now=None) -> int:
+    """Obunaning qolgan soniyalari (muzlatilgan bo'lsa — muzlatilgan vaqt)."""
+    if rec.get("paused"):
+        return int(rec.get("left_s", 0))
+    until = _sb_dt(rec.get("until", ""))
+    if not until:
+        return 0
+    return int((until - (now or datetime.now())).total_seconds())
+
+
+def sb_active(u: dict, now=None) -> dict:
+    now = now or datetime.now()
+    return {pid: r for pid, r in u.get("subs", {}).items() if sb_left(r, now) > 0}
+
+
+def sb_user_chats(info: dict, u: dict, now=None) -> set:
+    """Foydalanuvchi hozir kira oladigan kanal/guruhlar (faol obunalar bo'yicha)."""
+    sb = sb_init(info)
+    chats = set()
+    for pid in sb_active(u, now):
+        plan = sb["plans"].get(pid)
+        if not plan:
+            continue
+        for cid in plan.get("channels", []):
+            ch = sb["channels"].get(str(cid))
+            if ch:
+                chats.add(int(ch["chat_id"]))
+    return chats
+
+
+def sb_plan_chats(info: dict, pid: str) -> list:
+    sb = sb_init(info)
+    plan = sb["plans"].get(pid) or {}
+    out = []
+    for cid in plan.get("channels", []):
+        ch = sb["channels"].get(str(cid))
+        if ch and int(ch["chat_id"]) not in out:
+            out.append(int(ch["chat_id"]))
+    return out
+
+
+# ---------------- tariflar ----------------
+def sb_plans_sorted(info: dict, only_active=True) -> list:
+    sb = sb_init(info)
+    items = [(pid, p) for pid, p in sb["plans"].items() if p.get("active", True) or not only_active]
+    items.sort(key=lambda x: (int(x[1].get("sort", 0)), int(x[1].get("price", 0))))
+    return items
+
+
+def sb_plan_new(info: dict, name: str, days: int, price: int, channels=None, desc: str = "") -> str:
+    sb = sb_init(info)
+    pid = uuid.uuid4().hex[:6]
+    sb["plans"][pid] = {
+        "name": name.strip()[:60], "days": int(days), "price": int(price), "desc": desc[:600],
+        "active": True, "channels": list(channels or []), "limit": 0, "sold": 0,
+        "sort": len(sb["plans"]) + 1, "badge": "", "old_price": 0, "created": _sb_iso(datetime.now()),
+    }
+    return pid
+
+
+def sb_plan_left(plan: dict) -> int:
+    """Sotish limiti bo'yicha qolgan joy (-1 = cheksiz)."""
+    lim = int(plan.get("limit", 0) or 0)
+    return -1 if lim <= 0 else max(0, lim - int(plan.get("sold", 0)))
+
+
+def sb_plan_card(plan: dict, pid: str = "") -> str:
+    left = sb_plan_left(plan)
+    t = f"📚 <b>{html_escape(plan['name'])}</b>\n⏳ Muddat: <b>{plan['days']} kun</b>\n💰 Narx: <b>{sb_fmt(plan['price'])} so'm</b>"
+    if plan.get("old_price") and int(plan["old_price"]) > int(plan["price"]):
+        pct = round(100 - int(plan["price"]) * 100 / int(plan["old_price"]))
+        t += f" <s>{sb_fmt(plan['old_price'])}</s> (-{pct}%)"
+    if plan.get("badge"):
+        t += f"\n{html_escape(plan['badge'])}"
+    if plan.get("desc"):
+        t += f"\n\n{html_escape(plan['desc'])}"
+    if left >= 0:
+        t += f"\n\n🔥 Qolgan joy: <b>{left}</b>"
+    return t
+
+
+# ---------------- obuna berish / o'zgartirish ----------------
+def sb_revenue_add(info: dict, amount: int, method: str, now=None):
+    sb = sb_init(info)
+    if amount <= 0:
+        return
+    day = (now or datetime.now()).strftime("%Y-%m-%d")
+    sb["rev_days"][day] = int(sb["rev_days"].get(day, 0)) + int(amount)
+    sb["rev_methods"][method or "boshqa"] = int(sb["rev_methods"].get(method or "boshqa", 0)) + int(amount)
+    sb["stats"]["revenue"] += int(amount)
+    if len(sb["rev_days"]) > 400:
+        for k in sorted(sb["rev_days"])[:len(sb["rev_days"]) - 400]:
+            sb["rev_days"].pop(k, None)
+
+
+def sb_grant(info: dict, uid, pid: str, days: int, src: str = "admin", amount: int = 0, method: str = "",
+             note: str = "", now=None):
+    """Foydalanuvchiga tarif bo'yicha kun beradi (faol bo'lsa — ustiga qo'shadi). Yangi muddat (datetime) qaytaradi."""
+    sb = sb_init(info)
+    now = now or datetime.now()
+    u = sb_user(info, uid, now=now)
+    rec = u["subs"].get(pid)
+    until = None
+    if rec and rec.get("paused"):
+        rec["left_s"] = int(rec.get("left_s", 0)) + int(days) * 86400
+    else:
+        start = now
+        if rec is None:
+            rec = {"since": _sb_iso(now)}
+            u["subs"][pid] = rec
+        elif sb_left(rec, now) > 0:
+            start = _sb_dt(rec["until"]) or now
+        else:
+            rec["since"] = _sb_iso(now)
+        until = start + timedelta(days=int(days))
+        rec["until"] = _sb_iso(until)
+        rec["rem"] = []
+        rec.pop("expired_at", None)
+        rec.pop("kicked", None)
+    rec["src"] = src
+    u["history"].append({"t": _sb_iso(now), "plan": pid, "days": int(days), "amount": int(amount), "src": src,
+                         "method": method, "note": note[:80]})
+    if len(u["history"]) > 100:
+        del u["history"][:len(u["history"]) - 100]
+    plan = sb["plans"].get(pid)
+    if plan and src in ("pay", "gift"):
+        plan["sold"] = int(plan.get("sold", 0)) + 1
+    if amount > 0:
+        u["spent"] = int(u.get("spent", 0)) + int(amount)
+        sb_revenue_add(info, amount, method, now)
+    return until
+
+
+def sb_extend(info: dict, uid, pid: str, days: int, now=None) -> bool:
+    """Admin: kunlarni qo'shish yoki ayirish (days manfiy bo'lishi mumkin)."""
+    now = now or datetime.now()
+    u = sb_user(info, uid, now=now)
+    rec = u["subs"].get(pid)
+    if not rec:
+        return False
+    if rec.get("paused"):
+        rec["left_s"] = max(0, int(rec.get("left_s", 0)) + int(days) * 86400)
+        return True
+    cur = _sb_dt(rec.get("until", "")) or now
+    base = cur if cur > now else now
+    new = base + timedelta(days=int(days)) if days >= 0 else cur + timedelta(days=int(days))
+    rec["until"] = _sb_iso(new if new > now else now)
+    rec["rem"] = []
+    if new > now:
+        rec.pop("expired_at", None)
+        rec.pop("kicked", None)
+    return True
+
+
+def sb_revoke(info: dict, uid, pid=None) -> list:
+    u = sb_user(info, uid)
+    gone = [pid] if pid else list(u["subs"])
+    out = []
+    for p in gone:
+        if u["subs"].pop(p, None) is not None:
+            out.append(p)
+    return out
+
+
+def sb_pause(info: dict, uid, pid: str, now=None) -> bool:
+    now = now or datetime.now()
+    rec = sb_user(info, uid).get("subs", {}).get(pid)
+    if not rec or rec.get("paused") or sb_left(rec, now) <= 0:
+        return False
+    rec["left_s"] = sb_left(rec, now)
+    rec["paused"] = True
+    return True
+
+
+def sb_resume(info: dict, uid, pid: str, now=None) -> bool:
+    now = now or datetime.now()
+    rec = sb_user(info, uid).get("subs", {}).get(pid)
+    if not rec or not rec.get("paused"):
+        return False
+    rec["until"] = _sb_iso(now + timedelta(seconds=int(rec.get("left_s", 0))))
+    rec["paused"] = False
+    rec.pop("left_s", None)
+    rec["rem"] = []
+    return True
+
+
+def sb_bonus_days(info: dict, uid, days: int, now=None) -> str:
+    """Bonus kun: faol obunaning eng uzog muddatiga qo'shadi; faol bo'lmasa — omborga (keyingi xaridda beriladi)."""
+    now = now or datetime.now()
+    u = sb_user(info, uid, now=now)
+    act = sb_active(u, now)
+    if not act:
+        u["banked_days"] = int(u.get("banked_days", 0)) + int(days)
+        return "banked"
+    pid = max(act, key=lambda p: sb_left(act[p], now))
+    sb_extend(info, uid, pid, int(days), now)
+    u["history"].append({"t": _sb_iso(now), "plan": pid, "days": int(days), "amount": 0, "src": "bonus", "method": "", "note": ""})
+    return "extended"
+
+
+# ---------------- to'lovlar ----------------
+def sb_new_payment(info: dict, uid, pid: str, amount: int, method: str, file_id: str = "", promo: str = "",
+                   gift: bool = False, bonus_days: int = 0) -> str:
+    sb = sb_init(info)
+    plan = sb["plans"][pid]
+    payid = uuid.uuid4().hex[:8]
+    sb["payments"][payid] = {
+        "uid": int(uid), "plan": pid, "amount": int(amount), "method": method, "status": "pending",
+        "created": _sb_iso(datetime.now()), "file_id": file_id, "promo": promo, "gift": bool(gift),
+        "days": int(plan["days"]) + int(bonus_days), "by": 0, "at": "", "note": "",
+    }
+    sb["stats"]["payments"] += 1
+    if len(sb["payments"]) > 3000:
+        for k in sorted(sb["payments"], key=lambda x: sb["payments"][x]["created"])[:len(sb["payments"]) - 3000]:
+            if sb["payments"][k]["status"] != "pending":
+                sb["payments"].pop(k, None)
+    return payid
+
+
+def sb_pending_of(info: dict, uid) -> list:
+    sb = sb_init(info)
+    return [k for k, p in sb["payments"].items() if p["uid"] == int(uid) and p["status"] == "pending"]
+
+
+def sb_pending_all(info: dict) -> list:
+    sb = sb_init(info)
+    items = [(k, p) for k, p in sb["payments"].items() if p["status"] == "pending"]
+    items.sort(key=lambda x: x[1]["created"])
+    return items
+
+
+# ---------------- promokod ----------------
+def sb_promo_get(info: dict, code: str):
+    return sb_init(info)["promos"].get((code or "").strip().upper())
+
+
+def sb_promo_check(info: dict, uid, code: str, pid=None, now=None):
+    """('ok', promo) yoki (xato_kodi, None)."""
+    p = sb_promo_get(info, code)
+    now = now or datetime.now()
+    if not p or not p.get("active", True):
+        return "none", None
+    if p.get("expires") and (_sb_dt(p["expires"]) or now) < now:
+        return "expired", None
+    if int(p.get("limit", 0)) > 0 and int(p.get("used", 0)) >= int(p["limit"]):
+        return "over", None
+    if int(uid) in [int(x) for x in p.get("users", [])]:
+        return "used", None
+    if p.get("plans") and pid and pid not in p["plans"]:
+        return "plan", None
+    return "ok", p
+
+
+def sb_price(info: dict, uid, pid: str, code: str = ""):
+    """(yakuniy narx, bonus kun, ishlatilgan kod). Kod yaroqsiz bo'lsa — oddiy narx."""
+    sb = sb_init(info)
+    plan = sb["plans"][pid]
+    price = int(plan["price"])
+    bonus = 0
+    used = ""
+    if code:
+        st, p = sb_promo_check(info, uid, code, pid)
+        if st == "ok":
+            if int(p.get("percent", 0)) > 0:
+                price = price * (100 - min(100, int(p["percent"]))) // 100
+            if int(p.get("fixed", 0)) > 0:
+                price = max(0, price - int(p["fixed"]))
+            bonus = int(p.get("days", 0))
+            used = code.strip().upper()
+    return price, bonus, used
+
+
+def sb_promo_consume(info: dict, uid, code: str):
+    p = sb_promo_get(info, code)
+    if not p:
+        return
+    p["used"] = int(p.get("used", 0)) + 1
+    p.setdefault("users", []).append(int(uid))
+    sb_init(info)["stats"]["promos"] += 1
+
+
+def sb_promo_new(info: dict, code: str, percent=0, fixed=0, days=0, limit=0, expires_days=0, plans=None) -> str:
+    sb = sb_init(info)
+    code = code.strip().upper()
+    sb["promos"][code] = {
+        "percent": int(percent), "fixed": int(fixed), "days": int(days), "limit": int(limit), "used": 0,
+        "users": [], "plans": list(plans or []), "active": True, "created": _sb_iso(datetime.now()),
+        "expires": _sb_iso(datetime.now() + timedelta(days=int(expires_days))) if int(expires_days) > 0 else "",
+    }
+    return code
+
+
+def sb_promo_line(code: str, p: dict) -> str:
+    parts = []
+    if p.get("percent"):
+        parts.append(f"-{p['percent']}%")
+    if p.get("fixed"):
+        parts.append(f"-{sb_fmt(p['fixed'])} so'm")
+    if p.get("days"):
+        parts.append(f"+{p['days']} kun")
+    lim = f"{p.get('used', 0)}/{p['limit']}" if int(p.get("limit", 0)) > 0 else f"{p.get('used', 0)}/∞"
+    exp = f" · ⏰ {sb_date(p['expires'])}" if p.get("expires") else ""
+    on = "✅" if p.get("active", True) else "⏸"
+    return f"{on} <code>{html_escape(code)}</code> — {' '.join(parts) or '—'} · {lim}{exp}"
+
+
+# ---------------- sovg'a kodlar ----------------
+def sb_gift_new(info: dict, pid: str, days: int, by: int = 0) -> str:
+    sb = sb_init(info)
+    while True:
+        code = "GIFT-" + "".join(_sb_random.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(8))
+        if code not in sb["gifts"]:
+            break
+    sb["gifts"][code] = {"plan": pid, "days": int(days), "by": int(by), "created": _sb_iso(datetime.now()),
+                         "used_by": 0, "used_at": ""}
+    return code
+
+
+def sb_gift_redeem(info: dict, uid, code: str, now=None):
+    """('ok', pid, days) yoki (xato, None, 0)."""
+    sb = sb_init(info)
+    g = sb["gifts"].get((code or "").strip().upper())
+    if not g:
+        return "none", None, 0
+    if g.get("used_by"):
+        return "used", None, 0
+    if g["plan"] not in sb["plans"]:
+        return "noplan", None, 0
+    now = now or datetime.now()
+    g["used_by"] = int(uid)
+    g["used_at"] = _sb_iso(now)
+    sb_grant(info, uid, g["plan"], int(g["days"]), src="gift", method="sovg'a", note=code, now=now)
+    sb["stats"]["gifts"] += 1
+    return "ok", g["plan"], int(g["days"])
+
+
+# ---------------- kunlik bonus, ball, referal, sinov ----------------
+def sb_daily(info: dict, uid, now=None):
+    sb = sb_init(info)
+    cfg = sb["cfg"]
+    now = now or datetime.now()
+    if not int(cfg.get("daily_on", 1)) or int(cfg.get("daily_points", 0)) <= 0:
+        return ("off",)
+    u = sb_user(info, uid, now=now)
+    last = _sb_dt(u.get("last_daily", ""))
+    if last:
+        gap = (now - last).total_seconds()
+        if gap < 20 * 3600:
+            return ("wait", int(20 * 3600 - gap))
+        u["streak"] = int(u.get("streak", 0)) + 1 if gap < 48 * 3600 else 1
+    else:
+        u["streak"] = 1
+    pts = int(cfg["daily_points"]) + min(int(u["streak"]) - 1, 6)
+    u["points"] = int(u.get("points", 0)) + pts
+    u["last_daily"] = _sb_iso(now)
+    sb["stats"]["daily"] += 1
+    return ("ok", pts, int(u["streak"]))
+
+
+def sb_swap_points(info: dict, uid, days: int = 1, now=None):
+    """Ballarni obuna kuniga almashtiradi: ('ok', sarflangan ball) yoki xato kodi."""
+    sb = sb_init(info)
+    now = now or datetime.now()
+    u = sb_user(info, uid, now=now)
+    per = max(1, int(sb["cfg"].get("points_per_day", 100)))
+    days = max(1, int(days))
+    if days < int(sb["cfg"].get("min_points_swap", 1)):
+        return ("min", None)
+    cost = per * days
+    if int(u.get("points", 0)) < cost:
+        return ("few", cost)
+    if not sb_active(u, now):
+        return ("noactive", cost)
+    u["points"] = int(u["points"]) - cost
+    sb_bonus_days(info, uid, days, now)
+    sb["stats"]["swaps"] += 1
+    return ("ok", cost)
+
+
+def sb_set_referrer(info: dict, uid, ref_id: int) -> bool:
+    """Yangi foydalanuvchini taklif qilgan odamga bog'laydi, taklif qiluvchiga ball beradi."""
+    sb = sb_init(info)
+    if not int(sb["cfg"].get("ref_on", 1)) or int(ref_id) == int(uid):
+        return False
+    ref = sb["subs"].get(str(ref_id))
+    u = sb_user(info, uid)
+    if ref is None or u.get("ref_by"):
+        return False
+    u["ref_by"] = int(ref_id)
+    ref["refs"] = int(ref.get("refs", 0)) + 1
+    ref["points"] = int(ref.get("points", 0)) + int(sb["cfg"].get("ref_points", 0))
+    return True
+
+
+def sb_ref_reward(info: dict, uid, now=None):
+    """Taklif qilingan odam birinchi marta to'laganda taklif qiluvchiga bonus kun. (ref_id, days) yoki None."""
+    sb = sb_init(info)
+    u = sb_user(info, uid)
+    ref_id = u.get("ref_by")
+    days = int(sb["cfg"].get("ref_days", 0))
+    if not ref_id or u.get("ref_rewarded") or not int(sb["cfg"].get("ref_on", 1)):
+        return None
+    u["ref_rewarded"] = True
+    ref = sb["subs"].get(str(ref_id))
+    if ref is None:
+        return None
+    ref["refs_paid"] = int(ref.get("refs_paid", 0)) + 1
+    if days > 0:
+        sb_bonus_days(info, ref_id, days, now)
+        return int(ref_id), days
+    return None
+
+
+def sb_trial(info: dict, uid, now=None):
+    """('ok', pid, days) yoki xato kodi: off / used / noplan."""
+    sb = sb_init(info)
+    cfg = sb["cfg"]
+    now = now or datetime.now()
+    days = int(cfg.get("trial_days", 0))
+    if days <= 0:
+        return "off", None, 0
+    u = sb_user(info, uid, now=now)
+    if u.get("trial_used") or u.get("spent"):
+        return "used", None, 0
+    pid = cfg.get("trial_plan", "")
+    if pid not in sb["plans"]:
+        return "noplan", None, 0
+    u["trial_used"] = True
+    sb_grant(info, uid, pid, days, src="trial", method="sinov", now=now)
+    sb["stats"]["trials"] += 1
+    return "ok", pid, days
+
+
+# ---------------- qidiruv, ro'yxatlar, statistika ----------------
+def sb_find_users(info: dict, query: str, limit: int = 10) -> list:
+    sb = sb_init(info)
+    q = (query or "").strip().lstrip("@").lower()
+    if not q:
+        return []
+    if q.isdigit() and q in sb["subs"]:
+        return [int(q)]
+    out = []
+    for k, u in sb["subs"].items():
+        if q in (u.get("name") or "").lower().lstrip("@") or q == k:
+            out.append(int(k))
+            if len(out) >= limit:
+                break
+    return out
+
+
+def sb_list_users(info: dict, kind: str, now=None) -> list:
+    """kind: active | expiring | expired | trial | never | paused | top | refs. [(uid, u, qo'shimcha matn)]"""
+    sb = sb_init(info)
+    now = now or datetime.now()
+    out = []
+    for k, u in sb["subs"].items():
+        act = sb_active(u, now)
+        uid = int(k)
+        if kind == "active" and act:
+            best = max(sb_left(r, now) for r in act.values())
+            out.append((uid, u, sb_dur(best), best))
+        elif kind == "expiring" and act:
+            best = max(sb_left(r, now) for r in act.values())
+            if best <= 3 * 86400:
+                out.append((uid, u, sb_dur(best), best))
+        elif kind == "expired" and u.get("subs") and not act:
+            last = max((_sb_dt(r.get("until", "")) or now) for r in u["subs"].values())
+            out.append((uid, u, sb_date(last), -(now - last).total_seconds()))
+        elif kind == "trial" and u.get("trial_used"):
+            out.append((uid, u, "sinov", 0))
+        elif kind == "never" and not u.get("subs") and not u.get("spent"):
+            out.append((uid, u, "", 0))
+        elif kind == "paused" and any(r.get("paused") for r in u.get("subs", {}).values()):
+            out.append((uid, u, "muzlatilgan", 0))
+        elif kind == "top" and int(u.get("spent", 0)) > 0:
+            out.append((uid, u, f"{sb_fmt(u['spent'])} so'm", -int(u["spent"])))
+        elif kind == "refs" and int(u.get("refs", 0)) > 0:
+            out.append((uid, u, f"{u['refs']} ta ({u.get('refs_paid', 0)} to'ladi)", -int(u["refs"])))
+    out.sort(key=lambda x: x[3])
+    return [(a, b, c) for a, b, c, _ in out]
+
+
+def sb_stats(info: dict, now=None) -> dict:
+    sb = sb_init(info)
+    now = now or datetime.now()
+    users = len(set(info.get("users", [])) | {int(k) for k in sb["subs"]})
+    active = expiring = expired = trial = buyers = paused = 0
+    for u in sb["subs"].values():
+        act = sb_active(u, now)
+        if act:
+            active += 1
+            if max(sb_left(r, now) for r in act.values()) <= 3 * 86400:
+                expiring += 1
+        elif u.get("subs"):
+            expired += 1
+        if u.get("trial_used"):
+            trial += 1
+        if int(u.get("spent", 0)) > 0:
+            buyers += 1
+        if any(r.get("paused") for r in u.get("subs", {}).values()):
+            paused += 1
+    rd = sb["rev_days"]
+    today = now.strftime("%Y-%m-%d")
+    r7 = sum(v for k, v in rd.items() if k >= (now - timedelta(days=6)).strftime("%Y-%m-%d"))
+    r30 = sum(v for k, v in rd.items() if k >= (now - timedelta(days=29)).strftime("%Y-%m-%d"))
+    st = sb["stats"]
+    return {
+        "users": users, "active": active, "expiring": expiring, "expired": expired, "trial": trial,
+        "buyers": buyers, "paused": paused, "pending": len(sb_pending_all(info)),
+        "revenue": int(st["revenue"]), "today": int(rd.get(today, 0)), "week": int(r7), "month": int(r30),
+        "conv": round(buyers * 100 / users, 1) if users else 0.0, "approved": st["approved"],
+        "rejected": st["rejected"], "refs": sum(int(u.get("refs", 0)) for u in sb["subs"].values()),
+        "promos_used": st["promos"], "gifts": st["gifts"], "kicks": st["kicks"], "links": st["links"],
+        "blocked": len(info.get("blocked_users", [])), "channels": len(sb["channels"]), "plans": len(sb["plans"]),
+        "by_method": dict(sb["rev_methods"]),
+        "avg_check": int(st["revenue"] / st["approved"]) if st["approved"] else 0,
+        "arpu": int(st["revenue"] / buyers) if buyers else 0,
+        "days": [(d, int(rd.get(d, 0))) for d in [(now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(13, -1, -1)]],
+    }
+
+
+def sb_plan_stats(info: dict, now=None) -> list:
+    sb = sb_init(info)
+    now = now or datetime.now()
+    out = []
+    for pid, p in sb_plans_sorted(info, only_active=False):
+        act = sum(1 for u in sb["subs"].values() if pid in sb_active(u, now))
+        rev = sum(h["amount"] for u in sb["subs"].values() for h in u.get("history", []) if h.get("plan") == pid)
+        out.append({"id": pid, "name": p["name"], "sold": int(p.get("sold", 0)), "active": act, "revenue": int(rev),
+                    "price": int(p["price"]), "on": bool(p.get("active", True))})
+    return out
+
+
+def sb_export_users_csv(info: dict, now=None) -> bytes:
+    sb = sb_init(info)
+    now = now or datetime.now()
+    buf = _sb_io.StringIO()
+    w = _sb_csv.writer(buf)
+    w.writerow(["id", "ism", "qo'shilgan", "tariflar", "tugash", "sarflangan", "takliflar", "ball", "eslatma", "teglar"])
+    for k, u in sb["subs"].items():
+        act = sb_active(u, now)
+        names = ", ".join(sb["plans"].get(p, {}).get("name", p) for p in act)
+        until = max((_sb_dt(r["until"]) for r in act.values() if r.get("until")), default=None)
+        w.writerow([k, u.get("name", ""), sb_date(u.get("joined", "")), names, sb_date(until) if until else "",
+                    u.get("spent", 0), u.get("refs", 0), u.get("points", 0), u.get("notes", ""), ",".join(u.get("tags", []))])
+    return ("﻿" + buf.getvalue()).encode("utf-8")
+
+
+def sb_export_payments_csv(info: dict) -> bytes:
+    sb = sb_init(info)
+    buf = _sb_io.StringIO()
+    w = _sb_csv.writer(buf)
+    w.writerow(["id", "sana", "foydalanuvchi", "tarif", "summa", "usul", "holat", "promokod", "sovg'a", "kun"])
+    for k, p in sorted(sb["payments"].items(), key=lambda x: x[1]["created"]):
+        w.writerow([k, sb_datetime(p["created"]), p["uid"], sb["plans"].get(p["plan"], {}).get("name", p["plan"]),
+                    p["amount"], p["method"], p["status"], p.get("promo", ""), "ha" if p.get("gift") else "", p.get("days", "")])
+    return ("﻿" + buf.getvalue()).encode("utf-8")
+
+
+def sb_remind_days(cfg: dict) -> list:
+    out = []
+    for x in str(cfg.get("remind", "")).replace(" ", "").split(","):
+        if x.isdigit() and 0 < int(x) <= 60:
+            out.append(int(x))
+    return sorted(set(out), reverse=True)
+
+
+def sb_card(info: dict, uid, now=None) -> str:
+    """Admin uchun foydalanuvchi kartochkasi."""
+    sb = sb_init(info)
+    now = now or datetime.now()
+    u = sb["subs"].get(str(uid))
+    if u is None:
+        return "❌ Foydalanuvchi topilmadi."
+    lines = [f"👤 <b>{html_escape(u.get('name') or 'Nomsiz')}</b> · <code>{uid}</code>",
+             f"📅 Qo'shilgan: {sb_date(u.get('joined', ''))}"]
+    if not u.get("subs"):
+        lines.append("📭 Obunasi yo'q")
+    for pid, r in u.get("subs", {}).items():
+        name = sb["plans"].get(pid, {}).get("name", pid)
+        left = sb_left(r, now)
+        if r.get("paused"):
+            lines.append(f"🧊 {html_escape(name)} — muzlatilgan ({sb_dur(left)} qolgan)")
+        elif left > 0:
+            lines.append(f"✅ {html_escape(name)} — {sb_date(r['until'])} gacha ({sb_dur(left)})")
+        else:
+            lines.append(f"⌛ {html_escape(name)} — tugagan ({sb_date(r.get('until', ''))})")
+    lines.append(f"💰 Sarflagan: {sb_fmt(u.get('spent', 0))} so'm · ⭐ Ball: {u.get('points', 0)}")
+    lines.append(f"👥 Takliflar: {u.get('refs', 0)} (to'lagan: {u.get('refs_paid', 0)})")
+    if u.get("ref_by"):
+        lines.append(f"🔗 Taklif qilgan: <code>{u['ref_by']}</code>")
+    if u.get("banked_days"):
+        lines.append(f"🏦 Omborda bonus kun: {u['banked_days']}")
+    if uid in info.get("blocked_users", []):
+        lines.append("🚫 Bloklangan")
+    if u.get("tags"):
+        lines.append("🏷 " + ", ".join(html_escape(t) for t in u["tags"]))
+    if u.get("notes"):
+        lines.append(f"📝 {html_escape(u['notes'])}")
+    return "\n".join(lines)
+
+
+async def sb_chat_check(bot, chat_ref) -> dict:
+    """Kanal/guruhni tekshiradi: bot admin bo'lishi va havola yaratish/chiqarish huquqi bor-yo'qligi."""
+    chat = await bot.get_chat(chat_ref)
+    me = await bot.get_me()
+    m = await bot.get_chat_member(chat.id, me.id)
+    st = getattr(m.status, "value", str(m.status))
+    ok = st in ("administrator", "creator")
+    invite = bool(ok and (st == "creator" or getattr(m, "can_invite_users", False)))
+    restrict = bool(ok and (st == "creator" or getattr(m, "can_restrict_members", False)))
+    return {"chat_id": chat.id, "title": chat.title or str(chat.id), "username": chat.username or "",
+            "type": chat.type, "admin": ok, "invite": invite, "restrict": restrict}
+
+
+async def sb_make_links(bot, info: dict, uid, pids, now=None):
+    """Foydalanuvchi uchun kirish havolalari. ([(sarlavha, havola)], [xatolar])"""
+    sb = sb_init(info)
+    now = now or datetime.now()
+    ttl = max(1, int(sb["cfg"].get("link_ttl_h", 24)))
+    req = bool(int(sb["cfg"].get("join_request", 1)))
+    links, errors, seen = [], [], set()
+    for pid in pids:
+        for cid in (sb["plans"].get(pid) or {}).get("channels", []):
+            ch = sb["channels"].get(str(cid))
+            if not ch or int(ch["chat_id"]) in seen:
+                continue
+            seen.add(int(ch["chat_id"]))
+            try:
+                kw = {"chat_id": int(ch["chat_id"]), "name": f"u{uid}"[:32],
+                      "expire_date": now + timedelta(hours=ttl)}
+                if req:
+                    kw["creates_join_request"] = True
+                else:
+                    kw["member_limit"] = 1
+                inv = await bot.create_chat_invite_link(**kw)
+                links.append((ch.get("title") or str(ch["chat_id"]), inv.invite_link))
+                sb["stats"]["links"] += 1
+            except Exception as e:
+                errors.append(f"{ch.get('title') or ch['chat_id']}: {e}")
+    return links, errors
+
+
+async def sb_kick(bot, info: dict, uid, chat_ids) -> list:
+    """Foydalanuvchini kanallardan chiqaradi (qayta qo'shilish mumkin bo'lishi uchun ban + unban)."""
+    sb = sb_init(info)
+    done = []
+    for cid in chat_ids:
+        try:
+            await bot.ban_chat_member(int(cid), int(uid))
+            await bot.unban_chat_member(int(cid), int(uid), only_if_banned=True)
+            done.append(int(cid))
+            sb["stats"]["kicks"] += 1
+        except Exception as e:
+            logging.info(f"Obuna bot: chiqarib bo'lmadi ({uid} / {cid}): {e}")
+    return done
+
+
+# ---------------- Telegram qismi ----------------
+from aiogram.types import ChatJoinRequest
+
+
+class SbAdmin(StatesGroup):
+    inp = State()       # admin matn/fayl kiritishi (data: act, ...)
+
+
+class SbUser(StatesGroup):
+    promo = State()
+    gift = State()
+    check = State()     # chek rasmi kutilmoqda
+
+
+_SB_LOOPS = {}
+SB_PAGE = 8
+SB_PLAN_FIELDS = {
+    "name": ("✏️ Nom", "text"), "price": ("💰 Narx", "int"), "days": ("⏳ Muddat (kun)", "int"),
+    "desc": ("📝 Tavsif", "text"), "limit": ("🔢 Sotuv limiti", "int"), "old_price": ("🏷 Eski narx", "int"),
+    "badge": ("🔖 Belgi", "text"), "sort": ("🔀 Tartib raqami", "int"),
+}
+SB_AUDIENCES = {
+    "all": "👥 Hammaga", "active": "✅ Faol obunachilarga", "expiring": "⏰ Muddati tugayotganlarga",
+    "expired": "⌛ Muddati tugaganlarga", "never": "🆕 Hech qachon to'lamaganlarga", "trial": "🧪 Sinovdagilarga",
+}
+SB_LIST_TITLES = {
+    "active": "✅ Faol obunachilar", "expiring": "⏰ Tugayotganlar (3 kun ichida)", "expired": "⌛ Muddati tugaganlar",
+    "trial": "🧪 Sinov olganlar", "never": "🆕 Hech qachon to'lamaganlar", "paused": "🧊 Muzlatilganlar",
+    "top": "💎 Top xaridorlar", "refs": "👥 Top taklif qiluvchilar",
+}
+
+
+def _ik(rows):
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _b(text, cb=None, url=None):
+    if url:
+        return InlineKeyboardButton(text=str(text)[:64], url=url)
+    return InlineKeyboardButton(text=str(text)[:64], callback_data=cb)
+
+
+def _sb_admin_ids(info: dict) -> list:
+    return [a for a in info.get("admin_ids", [info.get("admin_id")]) if a]
+
+
+def _sb_app_url(info: dict) -> str:
+    fn = globals().get("get_subsapp_url")
+    try:
+        return fn(info.get("id")) if fn else ""
+    except Exception:
+        return ""
+
+
+def sb_audience(info: dict, kind: str, now=None) -> list:
+    sb = sb_init(info)
+    if kind == "all":
+        ids = set(info.get("users", [])) | {int(k) for k in sb["subs"]}
+    else:
+        ids = {uid for uid, _, _ in sb_list_users(info, kind, now)}
+    ids -= set(info.get("blocked_users", []))
+    return sorted(ids)
+
+
+async def sb_notify_admins(bot, info: dict, text: str, kb=None, photo=None):
+    for aid in _sb_admin_ids(info):
+        try:
+            if photo:
+                await bot.send_photo(aid, photo, caption=text, reply_markup=kb)
+            else:
+                await bot.send_message(aid, text, reply_markup=kb)
+        except Exception as e:
+            logging.info(f"Obuna bot: adminga xabar yuborilmadi ({aid}): {e}")
+
+
+async def sb_deliver(bot, info: dict, uid, pids, head: str = "✅ <b>Obuna faol!</b>"):
+    """Foydalanuvchiga kanal/guruhga kirish havolalarini yuboradi."""
+    sb = sb_init(info)
+    links, errors = await sb_make_links(bot, info, uid, pids)
+    rows = [[_b(f"🔗 {t}", url=l)] for t, l in links]
+    ttl = int(sb["cfg"].get("link_ttl_h", 24))
+    if links:
+        txt = (f"{head}\n\nKanalga kirish uchun pastdagi tugmani bosing. Havola <b>{ttl} soat</b> amal qiladi va faqat siz uchun."
+               + ("\n\n🛡 «So'rov yuborish» tugmasini bosing — bot uni avtomatik tasdiqlaydi." if int(sb["cfg"].get("join_request", 1)) else ""))
+    else:
+        txt = head
+    try:
+        await bot.send_message(uid, txt, reply_markup=_ik(rows) if rows else None)
+    except Exception as e:
+        logging.info(f"Obuna bot: foydalanuvchiga yuborilmadi ({uid}): {e}")
+    if errors:
+        await sb_notify_admins(bot, info, "⚠️ <b>Kirish havolasi yaratilmadi</b>\n\n" + "\n".join(html_escape(x) for x in errors[:5])
+                               + "\n\nBot kanalda admin ekanini va «Foydalanuvchilarni taklif qilish» huquqi borligini tekshiring.")
+
+
+async def sb_complete_payment(bot, info: dict, payid: str, label: str, by: int = 0) -> bool:
+    """To'lovni tasdiqlaydi: obuna beradi (yoki sovg'a kodi yaratadi), referal bonusini hisoblaydi, havolalarni yuboradi."""
+    sb = sb_init(info)
+    pay = sb["payments"].get(payid)
+    if not pay or pay["status"] == "approved":
+        return False
+    plan = sb["plans"].get(pay["plan"])
+    if not plan:
+        raise RuntimeError("tarif topilmadi")
+    now = datetime.now()
+    uid, pid, amount = int(pay["uid"]), pay["plan"], int(pay["amount"])
+    pay["status"] = "approved"
+    pay["at"] = _sb_iso(now)
+    pay["by"] = int(by)
+    pay["method"] = label or pay.get("method", "")
+    sb["stats"]["approved"] += 1
+    u = sb_user(info, uid, now=now)
+    if pay.get("promo"):
+        sb_promo_consume(info, uid, pay["promo"])
+        if (u.get("promo") or "").upper() == pay["promo"].upper():
+            u["promo"] = ""
+    if pay.get("gift"):
+        code = sb_gift_new(info, pid, int(pay["days"]), uid)
+        plan["sold"] = int(plan.get("sold", 0)) + 1
+        if amount > 0:
+            u["spent"] = int(u.get("spent", 0)) + amount
+            sb_revenue_add(info, amount, label, now)
+        u["history"].append({"t": _sb_iso(now), "plan": pid, "days": int(pay["days"]), "amount": amount,
+                             "src": "gift_buy", "method": label, "note": code})
+        sb_log(info, "gift", f"{uid} sovg'a kodi sotib oldi: {plan['name']} ({amount})", uid)
+        save_data()
+        try:
+            await bot.send_message(uid, (
+                f"🎀 <b>Sovg'a kodi tayyor!</b>\n\n<code>{code}</code>\n\n📚 {html_escape(plan['name'])} — {int(pay['days'])} kun\n\n"
+                "Kodni do'stingizga yuboring: u botda «🎀 Sovg'a kodi» tugmasi orqali faollashtiradi."))
+        except Exception as e:
+            logging.info(f"Obuna bot: sovg'a kodi yuborilmadi ({uid}): {e}")
+        return True
+    until = sb_grant(info, uid, pid, int(pay["days"]), "pay", amount, label, now=now)
+    if int(u.get("banked_days", 0)) > 0:
+        sb_extend(info, uid, pid, int(u["banked_days"]), now)
+        u["banked_days"] = 0
+    rew = sb_ref_reward(info, uid, now) if amount > 0 else None
+    sb_log(info, "pay", f"{uid} to'ladi: {plan['name']} — {amount} so'm ({label})", uid)
+    save_data()
+    rec = u["subs"].get(pid, {})
+    await sb_deliver(bot, info, uid, [pid], head=(
+        f"✅ <b>To'lov qabul qilindi!</b>\n\n📚 {html_escape(plan['name'])}\n"
+        f"⏳ Amal qilish muddati: <b>{sb_date(rec.get('until', until))}</b> gacha"))
+    if rew:
+        try:
+            await bot.send_message(rew[0], f"🎉 Siz taklif qilgan do'stingiz obuna oldi! Sizga <b>+{rew[1]} kun</b> bonus berildi.")
+        except Exception:
+            pass
+    return True
+
+
+async def sb_sweep(bot, info: dict, now=None) -> dict:
+    """Muddatni tekshiradi: eslatma yuboradi, tugaganlarni belgilaydi va kanaldan chiqaradi."""
+    sb = sb_init(info)
+    cfg = sb["cfg"]
+    now = now or datetime.now()
+    rem_days = sorted(sb_remind_days(cfg))
+    grace = timedelta(hours=max(0, int(cfg.get("grace_h", 0))))
+    res = {"reminded": 0, "expired": 0, "kicked": 0}
+    for key, u in list(sb["subs"].items()):
+        uid = int(key)
+        for pid, rec in list(u.get("subs", {}).items()):
+            if rec.get("paused"):
+                continue
+            until = _sb_dt(rec.get("until", ""))
+            if not until:
+                continue
+            left = (until - now).total_seconds()
+            plan = sb["plans"].get(pid)
+            pname = html_escape(plan["name"]) if plan else pid
+            if left > 0:
+                target = next((d for d in rem_days if left <= d * 86400), None)
+                if target is not None and target not in rec.setdefault("rem", []):
+                    for d in rem_days:
+                        if d >= target and d not in rec["rem"]:
+                            rec["rem"].append(d)
+                    rows = [[_b("🔄 Uzaytirish", f"sbp|{pid}|n")]] if plan else None
+                    try:
+                        await bot.send_message(uid, (
+                            f"⏰ <b>Obuna tugashiga {sb_dur(left)} qoldi</b>\n\n📚 {pname}\n"
+                            f"📅 Tugash sanasi: {sb_date(until)}\n\nUzilib qolmasligi uchun hoziroq uzaytiring 👇"),
+                            reply_markup=_ik(rows) if rows else None)
+                        res["reminded"] += 1
+                    except Exception:
+                        pass
+                    await asyncio.sleep(0.05)
+                continue
+            if not rec.get("expired_at"):
+                rec["expired_at"] = _sb_iso(now)
+                sb["stats"]["expired"] += 1
+                res["expired"] += 1
+                sb_log(info, "expire", f"{uid} obunasi tugadi: {pid}", uid)
+                extra = ("\n\n" + cfg["expire_text"]) if cfg.get("expire_text") else ""
+                try:
+                    await bot.send_message(uid, (
+                        f"⌛ <b>Obunangiz muddati tugadi</b>\n\n📚 {pname}\n\nDavom ettirish uchun yangi obuna oling 👇" + extra),
+                        reply_markup=_ik([[_b("📚 Tariflar", "sbl")]]))
+                except Exception:
+                    pass
+            if int(cfg.get("auto_kick", 1)) and not rec.get("kicked") and (now - until) >= grace and not is_admin(info, uid):
+                keep = sb_user_chats(info, u, now)
+                chats = [c for c in sb_plan_chats(info, pid) if c not in keep]
+                if chats:
+                    done = await sb_kick(bot, info, uid, chats)
+                    res["kicked"] += len(done)
+                rec["kicked"] = True
+                await asyncio.sleep(0.05)
+    for k, p in sb["payments"].items():
+        if p["status"] == "pending" and (_sb_dt(p["created"]) or now) < now - timedelta(days=7):
+            p["status"] = "expired"
+    if res["reminded"] or res["expired"] or res["kicked"]:
+        save_data()
+    return res
+
+
+async def sb_loop(token: str, bot):
+    await asyncio.sleep(45)
+    while True:
+        info = data["bots"].get(token)
+        if not info or token not in running_bots:
+            _SB_LOOPS.pop(token, None)
+            return
+        try:
+            if is_active(info):
+                await sb_sweep(bot, info)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.exception("Obuna bot: tekshiruv tsiklida xato")
+        await asyncio.sleep(600)
+
+
+def setup_subs_bot(dp: Dispatcher, token: str):
+    info = data["bots"][token]
+    admin_id = info["admin_id"]
+    sb = sb_init(info)
+    setup_subscription_handlers(dp, token, admin_id)
+    setup_admin_management(dp, token)
+    setup_premium_system(dp, token, admin_id)
+    setup_global_buttons_handler(dp, lambda m, s: sstart(m))
+
+    def is_blocked(uid: int) -> bool:
+        return uid in info.get("blocked_users", [])
+
+    def staff(ev) -> bool:
+        return is_admin(info, ev.from_user.id)
+
+    def me(ev):
+        fu = ev.from_user
+        name = ("@" + fu.username) if fu.username else (fu.full_name or "")
+        return sb_user(info, fu.id, name=name)
+
+    def admin_kb():
+        n = len(sb_pending_all(info))
+        return ReplyKeyboardMarkup(keyboard=[
+            [KeyboardButton(text="📊 Statistika"), KeyboardButton(text="💰 Moliya")],
+            [KeyboardButton(text="📚 Tarif boshqaruvi"), KeyboardButton(text="📡 Kanallar")],
+            [KeyboardButton(text="👥 Foydalanuvchilar"), KeyboardButton(text="🔎 Qidirish")],
+            [KeyboardButton(text=f"⏳ To'lovlar ({n})"), KeyboardButton(text="🏷 Promokodlar")],
+            [KeyboardButton(text="🎀 Sovg'a kodlar"), KeyboardButton(text="📢 Xabar yuborish")],
+            [KeyboardButton(text="⚙️ Sozlamalar"), KeyboardButton(text="❓ FAQ boshqaruvi")],
+            [KeyboardButton(text="📜 Jurnal"), KeyboardButton(text="📤 Eksport")],
+            [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
+            [KeyboardButton(text="💳 To'lov tizimlar"), KeyboardButton(text="🛠 Texnik tanaffus")],
+            [KeyboardButton(text="🎮 Foydalanuvchi rejimi")],
+        ] + get_global_button_rows(), resize_keyboard=True)
+
+    def user_kb(uid: int):
+        cfg = sb["cfg"]
+        rows = []
+        if _sb_app_url(info):
+            rows.append([KeyboardButton(text="📱 Mini app")])
+        rows += [
+            [KeyboardButton(text="📚 Tariflar"), KeyboardButton(text="📦 Mening obunam")],
+            [KeyboardButton(text="🎁 Kunlik bonus"), KeyboardButton(text="👥 Do'stlarni taklif qilish")],
+            [KeyboardButton(text="🏷 Promokod"), KeyboardButton(text="🎀 Sovg'a kodi")],
+        ]
+        u = sb["subs"].get(str(uid)) or {}
+        if int(cfg.get("trial_days", 0)) > 0 and not u.get("trial_used") and not u.get("spent"):
+            rows.append([KeyboardButton(text="🧪 Bepul sinov")])
+        rows.append([KeyboardButton(text="❓ Savol-javob"), KeyboardButton(text="🆘 Aloqa")])
+        rows.append([KeyboardButton(text="📜 Qoidalar")])
+        if is_admin(info, uid):
+            rows.append([KeyboardButton(text="🛠 Admin panel")])
+        return ReplyKeyboardMarkup(keyboard=rows + get_global_button_rows(), resize_keyboard=True)
+
+    async def gate(ev) -> bool:
+        uid = ev.from_user.id
+        is_cb = hasattr(ev, "data")
+
+        async def deny(text):
+            if is_cb:
+                await ev.answer(text, show_alert=True)
+            else:
+                await ev.answer(text)
+        if not await check_active(ev, info, admin_id):
+            return False
+        if is_admin(info, uid):
+            return True
+        if is_blocked(uid):
+            await deny("🚫 Siz ushbu botdan foydalanish huquqidan mahrum qilingansiz.")
+            return False
+        if info.get("maintenance_mode"):
+            await deny("🛠 Bot texnik tanaffusda. Birozdan keyin qayting.")
+            return False
+        if not await require_subscription(ev, info, admin_id):
+            return False
+        return True
+
+    async def show(ev, text, kb=None):
+        if isinstance(ev, CallbackQuery):
+            try:
+                await ev.message.edit_text(text[:4000], reply_markup=kb)
+            except TelegramBadRequest:
+                await ev.message.answer(text[:4000], reply_markup=kb)
+            await ev.answer()
+        else:
+            await ev.answer(text[:4000], reply_markup=kb)
+
+    # =============================== FOYDALANUVCHI ===============================
+    @dp.message(Command("start"))
+    async def sstart(message: Message, state: FSMContext = None):
+        uid = message.from_user.id
+        if state is not None:
+            await state.clear()
+        if not await check_active(message, info, admin_id):
+            return
+        new_user = str(uid) not in sb["subs"]
+        if uid not in info["users"]:
+            info["users"].append(uid)
+        u = me(message)
+        arg = ""
+        parts = (message.text or "").split(maxsplit=1)
+        if len(parts) > 1 and (message.text or "").startswith("/start"):
+            arg = parts[1].strip()
+        if new_user and not is_blocked(uid) and arg.startswith("ref_") and arg[4:].isdigit():
+            rid = int(arg[4:])
+            if sb_set_referrer(info, uid, rid):
+                try:
+                    await message.bot.send_message(rid, f"👥 Do'stingiz botga qo'shildi! Sizga <b>+{sb['cfg']['ref_points']} ball</b> berildi.")
+                except Exception:
+                    pass
+        save_data()
+        if is_admin(info, uid):
+            await message.answer("💳 <b>Obuna boti boshqaruvi</b>\n\nPastdagi menyudan foydalaning 👇", reply_markup=admin_kb())
+            return
+        if not await gate(message):
+            return
+        welcome = sb["cfg"].get("welcome") or (
+            "👋 <b>Xush kelibsiz!</b>\n\nBu yerda yopiq kanal/guruhga obuna bo'lishingiz mumkin. "
+            "To'lovdan so'ng kirish havolasi avtomatik yuboriladi.\n\n📚 Boshlash uchun «Tariflar» tugmasini bosing.")
+        await message.answer(welcome, reply_markup=user_kb(uid))
+        if arg.startswith("buy_") and arg[4:] in sb["plans"]:
+            await plan_view(message, arg[4:], "n")
+
+    @dp.message(F.text == "🛠 Admin panel")
+    async def s_back_admin(message: Message, state: FSMContext):
+        if staff(message):
+            await state.clear()
+            await message.answer("🛠 Admin panel", reply_markup=admin_kb())
+
+    @dp.message(F.text == "🎮 Foydalanuvchi rejimi")
+    async def s_user_mode(message: Message, state: FSMContext):
+        if staff(message):
+            await state.clear()
+            me(message)
+            await message.answer("🎮 Foydalanuvchi rejimi. Qaytish: «🛠 Admin panel».", reply_markup=user_kb(message.from_user.id))
+
+    @dp.message(F.text == "📱 Mini app")
+    async def s_open_app(message: Message):
+        if not await gate(message):
+            return
+        url = _sb_app_url(info)
+        if not url:
+            await message.answer("⚠️ Mini app manzili sozlanmagan.")
+            return
+        me(message)
+        save_data()
+        await message.answer("📱 <b>Mini app</b>\n\nTariflar, obunangiz va bonuslar bir joyda 👇",
+                             reply_markup=_ik([[InlineKeyboardButton(text="📱 Ochish", web_app=WebAppInfo(url=url))]]))
+
+    # ---------- tariflar ----------
+    async def plans_list(ev):
+        items = sb_plans_sorted(info)
+        if not items:
+            await show(ev, "📭 Hozircha tariflar mavjud emas.")
+            return
+        rows = []
+        for pid, p in items:
+            left = sb_plan_left(p)
+            tag = " ❌ tugagan" if left == 0 else ""
+            rows.append([_b(f"{p['name']} — {sb_fmt(p['price'])} so'm / {p['days']} kun{tag}", f"sbp|{pid}|n")])
+        await show(ev, "📚 <b>Tariflar</b>\n\nO'zingizga mosini tanlang 👇", _ik(rows))
+
+    @dp.message(F.text == "📚 Tariflar")
+    async def s_plans(message: Message, state: FSMContext):
+        if not await gate(message):
+            return
+        await state.clear()
+        me(message)
+        await plans_list(message)
+
+    @dp.callback_query(F.data == "sbl")
+    async def s_plans_cb(callback: CallbackQuery):
+        if not await gate(callback):
+            return
+        await plans_list(callback)
+
+    async def plan_view(ev, pid: str, mode: str):
+        plan = sb["plans"].get(pid)
+        uid = ev.from_user.id
+        if not plan or not plan.get("active", True):
+            await show(ev, "❌ Bu tarif mavjud emas.")
+            return
+        u = me(ev)
+        left = sb_plan_left(plan)
+        if left == 0:
+            await show(ev, sb_plan_card(plan) + "\n\n😔 Bu tarif bo'yicha joylar tugagan.", _ik([[_b("◀️ Tariflar", "sbl")]]))
+            return
+        code = u.get("promo", "")
+        price, bonus, used = sb_price(info, uid, pid, code)
+        text = sb_plan_card(plan)
+        if used:
+            text += f"\n\n🏷 Promokod <code>{html_escape(used)}</code>: yakuniy narx <b>{sb_fmt(price)} so'm</b>" + (f" · +{bonus} kun" if bonus else "")
+        elif code:
+            u["promo"] = ""
+        if mode == "g":
+            text = "🎀 <b>Sovg'a sifatida olish</b>\n\n" + text + "\n\nTo'lovdan so'ng sovg'a kodi beriladi — uni do'stingizga yuborasiz."
+        rows = []
+        if price <= 0:
+            rows.append([_b("🎁 Bepul olish", f"sbfree|{pid}|{mode}")])
+        else:
+            if int(sb["cfg"].get("stars_on", 1)):
+                rows.append([_b(f"⭐ {somz_to_stars(price)} Stars orqali", f"sbst|{pid}|{mode}")])
+            for psid, ps in info["payment_systems"].items():
+                rows.append([_b(f"💳 {ps['name']}", f"sbm|{pid}|{psid}|{mode}")])
+            rows += auto_pay_buttons(info, "sbplan" if mode == "n" else "sbgift", pid)
+            if not rows:
+                text += "\n\n⚠️ Hozircha to'lov usullari sozlanmagan. Administrator bilan bog'laning."
+        rows.append([_b("🏷 Promokod kiritish", f"sbpr|{pid}|{mode}")])
+        if int(sb["cfg"].get("gift_on", 1)):
+            rows.append([_b("🎀 Sovg'a qilish", f"sbp|{pid}|g")] if mode == "n" else [_b("🛒 O'zim uchun", f"sbp|{pid}|n")])
+        rows.append([_b("◀️ Tariflar", "sbl")])
+        await show(ev, text, _ik(rows))
+
+    @dp.callback_query(F.data.startswith("sbp|"))
+    async def s_plan_cb(callback: CallbackQuery):
+        if not await gate(callback):
+            return
+        _, pid, mode = callback.data.split("|")
+        await plan_view(callback, pid, mode)
+
+    # ---------- promokod ----------
+    @dp.callback_query(F.data.startswith("sbpr|"))
+    async def s_promo_for_plan(callback: CallbackQuery, state: FSMContext):
+        if not await gate(callback):
+            return
+        _, pid, mode = callback.data.split("|")
+        await state.set_state(SbUser.promo)
+        await state.update_data(back_pid=pid, back_mode=mode)
+        await callback.message.answer("🏷 Promokodni yuboring (bekor qilish: /start):")
+        await callback.answer()
+
+    @dp.message(F.text == "🏷 Promokod")
+    async def s_promo_ask(message: Message, state: FSMContext):
+        if not await gate(message):
+            return
+        await state.set_state(SbUser.promo)
+        await state.update_data(back_pid="", back_mode="n")
+        await message.answer("🏷 Promokodni yuboring (bekor qilish: /start):")
+
+    @dp.message(SbUser.promo, F.text)
+    async def s_promo_do(message: Message, state: FSMContext):
+        d = await state.get_data()
+        await state.clear()
+        u = me(message)
+        code = (message.text or "").strip().upper()
+        st, p = sb_promo_check(info, message.from_user.id, code, d.get("back_pid") or None)
+        msgs = {"none": "❌ Bunday promokod yo'q.", "expired": "⌛ Promokod muddati tugagan.", "over": "😔 Promokod limiti tugagan.",
+                "used": "⚠️ Siz bu promokoddan foydalangansiz.", "plan": "⚠️ Bu promokod tanlangan tarifga to'g'ri kelmaydi."}
+        if st != "ok":
+            await message.answer(msgs.get(st, "❌ Xatolik."))
+            return
+        u["promo"] = code
+        save_data()
+        await message.answer("✅ Promokod qabul qilindi: " + sb_promo_line(code, p).split("— ", 1)[-1].split(" · ")[0]
+                             + "\n\nEndi tarifni tanlang — chegirma avtomatik qo'llanadi.")
+        if d.get("back_pid") in sb["plans"]:
+            await plan_view(message, d["back_pid"], d.get("back_mode", "n"))
+        else:
+            await plans_list(message)
+
+    # ---------- to'lov: bepul, Stars, chek ----------
+    def _make_pay(uid, pid, mode, method):
+        u = sb_user(info, uid)
+        price, bonus, used = sb_price(info, uid, pid, u.get("promo", ""))
+        return sb_new_payment(info, uid, pid, price, method, promo=used, gift=(mode == "g"), bonus_days=bonus), price
+
+    def _can_buy(uid, pid):
+        plan = sb["plans"].get(pid)
+        if not plan or not plan.get("active", True):
+            return "❌ Bu tarif mavjud emas."
+        if sb_plan_left(plan) == 0:
+            return "😔 Bu tarif bo'yicha joylar tugagan."
+        return ""
+
+    @dp.callback_query(F.data.startswith("sbfree|"))
+    async def s_free(callback: CallbackQuery):
+        if not await gate(callback):
+            return
+        _, pid, mode = callback.data.split("|")
+        err = _can_buy(callback.from_user.id, pid)
+        if err:
+            await callback.answer(err, show_alert=True)
+            return
+        uid = callback.from_user.id
+        u = me(callback)
+        if sb_price(info, uid, pid, u.get("promo", ""))[0] > 0:
+            await callback.answer("❌ Narx o'zgargan, qayta urinib ko'ring.", show_alert=True)
+            return
+        payid, _ = _make_pay(uid, pid, mode, "promokod")
+        await sb_complete_payment(callback.bot, info, payid, "promokod")
+        await callback.answer("✅ Tayyor!")
+
+    @dp.callback_query(F.data.startswith("sbst|"))
+    async def s_stars(callback: CallbackQuery):
+        if not await gate(callback):
+            return
+        _, pid, mode = callback.data.split("|")
+        err = _can_buy(callback.from_user.id, pid)
+        if err:
+            await callback.answer(err, show_alert=True)
+            return
+        uid = callback.from_user.id
+        u = me(callback)
+        plan = sb["plans"][pid]
+        price, _, _ = sb_price(info, uid, pid, u.get("promo", ""))
+        if price <= 0:
+            await callback.answer("❌ Narx o'zgargan, qayta urinib ko'ring.", show_alert=True)
+            return
+        await callback.bot.send_invoice(
+            chat_id=uid, title=(("🎀 " if mode == "g" else "📚 ") + plan["name"])[:32],
+            description=f"{plan['days']} kunlik obuna" + (" (sovg'a)" if mode == "g" else ""),
+            payload=f"sb{'g' if mode == 'g' else 'n'}_{pid}", currency="XTR",
+            prices=[LabeledPrice(label=plan["name"][:60], amount=somz_to_stars(price))])
+        await callback.answer()
+
+    @dp.message(F.successful_payment.invoice_payload.regexp(r"^sb[ng]_"))
+    async def s_stars_ok(message: Message):
+        payload = message.successful_payment.invoice_payload
+        mode, pid = ("g" if payload.startswith("sbg_") else "n"), payload.split("_", 1)[1]
+        if pid not in sb["plans"]:
+            await message.answer("❌ Tarif topilmadi. Administratorga murojaat qiling.")
+            return
+        uid = message.from_user.id
+        me(message)
+        payid, _ = _make_pay(uid, pid, mode, "Stars")
+        await sb_complete_payment(message.bot, info, payid, "Stars")
+
+    @dp.callback_query(F.data.startswith("sbm|"))
+    async def s_manual(callback: CallbackQuery, state: FSMContext):
+        if not await gate(callback):
+            return
+        _, pid, psid, mode = callback.data.split("|")
+        err = _can_buy(callback.from_user.id, pid)
+        ps = info["payment_systems"].get(psid)
+        if err or not ps:
+            await callback.answer(err or "❌ To'lov usuli topilmadi.", show_alert=True)
+            return
+        uid = callback.from_user.id
+        if len(sb_pending_of(info, uid)) >= int(sb["cfg"].get("max_pending", 3)):
+            await callback.answer("⏳ Sizda ko'rib chiqilayotgan to'lovlar ko'p. Avval ular tasdiqlansin.", show_alert=True)
+            return
+        u = me(callback)
+        price, _, _ = sb_price(info, uid, pid, u.get("promo", ""))
+        await state.set_state(SbUser.check)
+        await state.update_data(pid=pid, psid=psid, mode=mode)
+        note = ("\n\n" + sb["cfg"]["pay_note"]) if sb["cfg"].get("pay_note") else ""
+        await callback.message.answer(
+            f"💳 <b>{html_escape(ps['name'])}</b>\n\n🔢 Raqami: <code>{html_escape(str(ps['number']))}</code>\n👤 Egasi: {html_escape(str(ps['owner']))}\n\n"
+            f"💰 To'lov summasi: <b>{sb_fmt(price)} so'm</b>\n\nTo'lovni amalga oshirgach, chek (skrinshot) rasmini shu yerga yuboring. Bekor qilish: /start" + note)
+        await callback.answer()
+
+    @dp.message(SbUser.check, F.photo)
+    async def s_check(message: Message, state: FSMContext):
+        d = await state.get_data()
+        await state.clear()
+        pid, psid, mode = d.get("pid"), d.get("psid"), d.get("mode", "n")
+        ps = info["payment_systems"].get(psid)
+        if pid not in sb["plans"] or not ps:
+            await message.answer("❌ Ma'lumot topilmadi, qaytadan urinib ko'ring.")
+            return
+        uid = message.from_user.id
+        u = me(message)
+        if len(sb_pending_of(info, uid)) >= int(sb["cfg"].get("max_pending", 3)):
+            await message.answer("⏳ Sizda ko'rib chiqilayotgan to'lovlar ko'p. Avval ular tasdiqlansin.")
+            return
+        fid = message.photo[-1].file_id
+        payid, price = _make_pay(uid, pid, mode, ps["name"])
+        sb["payments"][payid]["file_id"] = fid
+        save_data()
+        plan = sb["plans"][pid]
+        pay = sb["payments"][payid]
+        gift_tag = " 🎀 (sovg'a)" if mode == "g" else ""
+        caption = (f"🧾 <b>Yangi to'lov</b>{gift_tag}\n\n📚 {html_escape(plan['name'])} ({pay['days']} kun)\n"
+                   f"💰 {sb_fmt(price)} so'm" + (f" · 🏷 {html_escape(pay['promo'])}" if pay.get("promo") else "") +
+                   f"\n💳 {html_escape(ps['name'])}\n👤 {html_escape(sb_uname(info, uid))} · <code>{uid}</code>\n🆔 <code>{payid}</code>")
+        kb = _ik([[_b("✅ Tasdiqlash", f"sbok|{payid}"), _b("❌ Rad etish", f"sbno|{payid}")]])
+        await sb_notify_admins(message.bot, info, caption, kb, photo=fid)
+        await message.answer("✅ Chekingiz qabul qilindi!\n\nAdminlar tez orada ko'rib chiqadi. Tasdiqlangach kirish havolasi shu yerga yuboriladi.")
+
+    @dp.message(SbUser.check)
+    async def s_check_bad(message: Message):
+        await message.answer("📸 Iltimos, to'lov chekini <b>rasm</b> ko'rinishida yuboring (bekor qilish: /start).")
+
+    @dp.callback_query(F.data.startswith("sbok|"))
+    async def s_pay_ok(callback: CallbackQuery):
+        if not staff(callback):
+            return
+        payid = callback.data.split("|", 1)[1]
+        pay = sb["payments"].get(payid)
+        if not pay:
+            await callback.answer("❌ To'lov topilmadi.", show_alert=True)
+            return
+        if pay["status"] != "pending":
+            await callback.answer(f"ℹ️ Bu to'lov allaqachon: {pay['status']}", show_alert=True)
+            return
+        try:
+            await sb_complete_payment(callback.bot, info, payid, pay["method"], by=callback.from_user.id)
+        except Exception as e:
+            await callback.answer(f"❌ Xato: {e}", show_alert=True)
+            return
+        try:
+            cap = (callback.message.caption or callback.message.text or "") + "\n\n✅ TASDIQLANDI"
+            if callback.message.photo:
+                await callback.message.edit_caption(caption=cap)
+            else:
+                await callback.message.edit_text(cap)
+        except Exception:
+            pass
+        await callback.answer("✅ Tasdiqlandi")
+
+    @dp.callback_query(F.data.startswith("sbno|"))
+    async def s_pay_no(callback: CallbackQuery):
+        if not staff(callback):
+            return
+        payid = callback.data.split("|", 1)[1]
+        pay = sb["payments"].get(payid)
+        if not pay or pay["status"] != "pending":
+            await callback.answer("ℹ️ To'lov topilmadi yoki allaqachon ko'rib chiqilgan.", show_alert=True)
+            return
+        pay["status"] = "rejected"
+        pay["at"] = _sb_iso(datetime.now())
+        pay["by"] = callback.from_user.id
+        sb["stats"]["rejected"] += 1
+        sb_log(info, "reject", f"{pay['uid']} to'lovi rad etildi ({payid})", pay["uid"])
+        save_data()
+        try:
+            await callback.bot.send_message(pay["uid"], "❌ <b>To'lovingiz tasdiqlanmadi.</b>\n\nAgar xato bo'lgan deb o'ylasangiz, administrator bilan bog'laning.")
+        except Exception:
+            pass
+        try:
+            cap = (callback.message.caption or callback.message.text or "") + "\n\n❌ RAD ETILDI"
+            if callback.message.photo:
+                await callback.message.edit_caption(caption=cap)
+            else:
+                await callback.message.edit_text(cap)
+        except Exception:
+            pass
+        await callback.answer("❌ Rad etildi")
+
+    # ---------- avtomatik to'lov bajaruvchisi ----------
+    async def _auto_fulfill_sb(bot, order):
+        pid = order["ref"]
+        if pid not in sb["plans"]:
+            raise RuntimeError("tarif topilmadi")
+        label = AUTO_PROVIDERS[order["provider"]]["title"]
+        payid = sb_new_payment(info, order["uid"], pid, int(order["amount"]), label, promo=order.get("promo", ""),
+                               gift=(order["kind"] == "sbgift"), bonus_days=int(order.get("bonus", 0)))
+        await sb_complete_payment(bot, info, payid, label)
+
+    AUTO_FULFILL[(token, "sbplan")] = _auto_fulfill_sb
+    AUTO_FULFILL[(token, "sbgift")] = _auto_fulfill_sb
+
+    # ---------- mening obunam ----------
+    @dp.message(F.text == "📦 Mening obunam")
+    async def s_mysubs(message: Message, state: FSMContext):
+        if not await gate(message):
+            return
+        await state.clear()
+        u = me(message)
+        now = datetime.now()
+        lines = [f"📦 <b>Mening obunam</b>\n\n⭐ Ball: <b>{u.get('points', 0)}</b> · 💰 Sarflangan: {sb_fmt(u.get('spent', 0))} so'm"]
+        rows = []
+        if not u.get("subs"):
+            lines.append("\n📭 Hozircha obunangiz yo'q.")
+            rows.append([_b("📚 Tariflar", "sbl")])
+        for pid, rec in u.get("subs", {}).items():
+            plan = sb["plans"].get(pid)
+            nm = html_escape(plan["name"]) if plan else pid
+            left = sb_left(rec, now)
+            if rec.get("paused"):
+                lines.append(f"\n🧊 <b>{nm}</b> — muzlatilgan ({sb_dur(left)} qolgan)")
+            elif left > 0:
+                lines.append(f"\n✅ <b>{nm}</b>\n   📅 {sb_date(rec['until'])} gacha · ⏳ {sb_dur(left)}")
+                rows.append([_b(f"🔗 {nm} — kirish havolasi"[:60], f"sbln|{pid}")])
+            else:
+                lines.append(f"\n⌛ <b>{nm}</b> — tugagan ({sb_date(rec.get('until', ''))})")
+            if plan:
+                rows.append([_b(f"🔄 {plan['name']} — uzaytirish"[:60], f"sbp|{pid}|n")])
+        if int(u.get("points", 0)) >= int(sb["cfg"].get("points_per_day", 100)) and sb_active(u, now):
+            rows.append([_b(f"🔄 Ballni kunga almashtirish ({sb['cfg']['points_per_day']} ball = 1 kun)", "sbsw")])
+        await message.answer("\n".join(lines), reply_markup=_ik(rows) if rows else None)
+
+    @dp.callback_query(F.data.startswith("sbln|"))
+    async def s_link(callback: CallbackQuery):
+        if not await gate(callback):
+            return
+        pid = callback.data.split("|", 1)[1]
+        u = me(callback)
+        if pid not in sb_active(u):
+            await callback.answer("❌ Bu obuna faol emas.", show_alert=True)
+            return
+        await sb_deliver(callback.bot, info, callback.from_user.id, [pid], head="🔗 <b>Kirish havolasi</b>")
+        save_data()
+        await callback.answer()
+
+    @dp.callback_query(F.data == "sbsw")
+    async def s_swap(callback: CallbackQuery):
+        if not await gate(callback):
+            return
+        r = sb_swap_points(info, callback.from_user.id, 1)
+        if r[0] == "ok":
+            save_data()
+            await callback.answer("✅ +1 kun obunaga qo'shildi!", show_alert=True)
+        elif r[0] == "few":
+            await callback.answer(f"❌ Ball yetmaydi (kerak: {r[1]}).", show_alert=True)
+        elif r[0] == "noactive":
+            await callback.answer("❌ Faol obuna yo'q.", show_alert=True)
+        else:
+            await callback.answer("❌ Hozir mumkin emas.", show_alert=True)
+
+    # ---------- bonus, referal, sinov, sovg'a ----------
+    @dp.message(F.text == "🎁 Kunlik bonus")
+    async def s_daily(message: Message):
+        if not await gate(message):
+            return
+        me(message)
+        r = sb_daily(info, message.from_user.id)
+        if r[0] == "off":
+            await message.answer("ℹ️ Kunlik bonus hozir o'chirilgan.")
+        elif r[0] == "wait":
+            await message.answer(f"⏳ Keyingi bonusgacha: <b>{sb_dur(r[1])}</b>")
+        else:
+            save_data()
+            per = int(sb["cfg"].get("points_per_day", 100))
+            await message.answer(f"🎁 Kunlik bonus: <b>+{r[1]} ball</b> (seriya: {r[2]} kun)\n\n💡 {per} ball = 1 kun obuna («📦 Mening obunam» orqali almashtiriladi).")
+
+    @dp.message(F.text == "👥 Do'stlarni taklif qilish")
+    async def s_invite(message: Message):
+        if not await gate(message):
+            return
+        uid = message.from_user.id
+        u = me(message)
+        if not int(sb["cfg"].get("ref_on", 1)):
+            await message.answer("ℹ️ Referal tizimi hozir o'chirilgan.")
+            return
+        uname = info.get("username") or (await message.bot.me()).username
+        c = sb["cfg"]
+        await message.answer(
+            f"👥 <b>Do'stlarni taklif qiling</b>\n\n• Do'stingiz botga qo'shilsa: <b>+{c['ref_points']} ball</b>\n"
+            f"• Do'stingiz birinchi marta obuna olsa: <b>+{c['ref_days']} kun</b> obuna\n\n🔗 Havolangiz:\nhttps://t.me/{uname}?start=ref_{uid}\n\n"
+            f"Taklif qilinganlar: <b>{u.get('refs', 0)}</b> · to'laganlar: <b>{u.get('refs_paid', 0)}</b>")
+
+    @dp.message(F.text == "🧪 Bepul sinov")
+    async def s_trial(message: Message):
+        if not await gate(message):
+            return
+        me(message)
+        st, pid, days = sb_trial(info, message.from_user.id)
+        if st == "ok":
+            save_data()
+            await sb_deliver(message.bot, info, message.from_user.id, [pid], head=f"🧪 <b>Bepul sinov faollashdi: {days} kun</b>")
+            save_data()
+        elif st == "used":
+            await message.answer("⚠️ Siz bepul sinovdan foydalangansiz.")
+        else:
+            await message.answer("ℹ️ Bepul sinov hozir mavjud emas.")
+
+    @dp.message(F.text == "🎀 Sovg'a kodi")
+    async def s_gift_ask(message: Message, state: FSMContext):
+        if not await gate(message):
+            return
+        await state.set_state(SbUser.gift)
+        await message.answer("🎀 Sovg'a kodini yuboring (bekor qilish: /start):")
+
+    @dp.message(SbUser.gift, F.text)
+    async def s_gift_do(message: Message, state: FSMContext):
+        await state.clear()
+        me(message)
+        st, pid, days = sb_gift_redeem(info, message.from_user.id, message.text)
+        if st != "ok":
+            await message.answer({"none": "❌ Bunday sovg'a kodi yo'q.", "used": "⚠️ Bu kod allaqachon ishlatilgan.",
+                                  "noplan": "⚠️ Bu kod tarifi endi mavjud emas."}.get(st, "❌ Xatolik."))
+            return
+        save_data()
+        await sb_deliver(message.bot, info, message.from_user.id, [pid], head=f"🎀 <b>Sovg'a faollashdi: +{days} kun!</b>")
+        save_data()
+
+    # ---------- FAQ, qoidalar, aloqa ----------
+    @dp.message(F.text == "❓ Savol-javob")
+    async def s_faq(message: Message):
+        if not await gate(message):
+            return
+        if not sb["faq"]:
+            await message.answer("ℹ️ Savol-javoblar hozircha yo'q.")
+            return
+        rows = [[_b(f"❓ {q['q']}"[:60], f"sbf|{i}")] for i, q in enumerate(sb["faq"][:30])]
+        await message.answer("❓ <b>Ko'p beriladigan savollar</b>", reply_markup=_ik(rows))
+
+    @dp.callback_query(F.data.startswith("sbf|"))
+    async def s_faq_cb(callback: CallbackQuery):
+        i = int(callback.data.split("|", 1)[1])
+        if 0 <= i < len(sb["faq"]):
+            q = sb["faq"][i]
+            await callback.message.answer(f"❓ <b>{html_escape(q['q'])}</b>\n\n{html_escape(q['a'])}")
+        await callback.answer()
+
+    @dp.message(F.text == "📜 Qoidalar")
+    async def s_rules(message: Message):
+        if not await gate(message):
+            return
+        await message.answer(sb["cfg"].get("rules") or "📜 Qoidalar hozircha kiritilmagan.")
+
+    @dp.message(F.text == "🆘 Aloqa")
+    async def s_support(message: Message):
+        if not await gate(message):
+            return
+        sp = (sb["cfg"].get("support") or "").strip()
+        if sp.startswith("@"):
+            sp = "https://t.me/" + sp[1:]
+        await message.answer("🆘 <b>Yordam kerakmi?</b>\n\n" + (f"Administrator bilan bog'laning: {html_escape(sp)}" if sp else "Aloqa ma'lumoti kiritilmagan."))
+
+    # ---------- yopiq kanalga kirish so'rovi ----------
+    @dp.chat_join_request()
+    async def s_join_request(req: ChatJoinRequest):
+        cid, uid = req.chat.id, req.from_user.id
+        if cid not in {int(c["chat_id"]) for c in sb["channels"].values()}:
+            return
+        u = sb["subs"].get(str(uid)) or {"subs": {}}
+        ok = is_admin(info, uid) or (not is_blocked(uid) and cid in sb_user_chats(info, u))
+        try:
+            if ok:
+                await req.approve()
+            else:
+                await req.decline()
+                try:
+                    await req.bot.send_message(uid, "❌ Kirish rad etildi: faol obunangiz yo'q. Obuna olish uchun botga /start yuboring.")
+                except Exception:
+                    pass
+        except Exception as e:
+            logging.info(f"Obuna bot: so'rovni qayta ishlab bo'lmadi ({uid}/{cid}): {e}")
+
+    # =============================== ADMIN PANEL ===============================
+    def reg_btn(text):
+        def deco(fn):
+            @dp.message(F.text == text)
+            async def _h(message: Message, state: FSMContext):
+                if not staff(message):
+                    return
+                await state.clear()
+                await fn(message)
+            return fn
+        return deco
+
+    def bar(v, mx, width=12):
+        return "█" * (max(1, round(v * width / mx)) if mx and v else 0)
+
+    # ---------- statistika / moliya ----------
+    async def adm_stats(ev, sub="main"):
+        now = datetime.now()
+        s = sb_stats(info, now)
+        nav = [_b("📈 14 kun", "sa|st|chart"), _b("📚 Tariflar", "sa|st|plans"), _b("💳 Usullar", "sa|st|methods")]
+        if sub == "main":
+            text = (f"📊 <b>Statistika</b>\n\n👥 Foydalanuvchilar: <b>{s['users']}</b>\n✅ Faol obunachilar: <b>{s['active']}</b>\n"
+                    f"⏰ Tugayotgan (3 kun): <b>{s['expiring']}</b>\n⌛ Muddati tugagan: <b>{s['expired']}</b>\n🧪 Sinov olgan: <b>{s['trial']}</b>\n"
+                    f"🧊 Muzlatilgan: <b>{s['paused']}</b>\n💎 Xaridorlar: <b>{s['buyers']}</b> (konversiya {s['conv']}%)\n"
+                    f"⏳ Kutilayotgan to'lov: <b>{s['pending']}</b>\n👥 Takliflar: <b>{s['refs']}</b>\n🚫 Bloklangan: <b>{s['blocked']}</b>\n"
+                    f"📡 Kanallar: <b>{s['channels']}</b> · 📚 Tariflar: <b>{s['plans']}</b>\n🚪 Chiqarilganlar: <b>{s['kicks']}</b> · 🔗 Havolalar: <b>{s['links']}</b>")
+        elif sub == "fin":
+            text = (f"💰 <b>Moliya</b>\n\nBugun: <b>{sb_fmt(s['today'])}</b> so'm\n7 kun: <b>{sb_fmt(s['week'])}</b> so'm\n30 kun: <b>{sb_fmt(s['month'])}</b> so'm\n"
+                    f"Jami: <b>{sb_fmt(s['revenue'])}</b> so'm\n\n🧾 Tasdiqlangan to'lovlar: {s['approved']} · rad etilgan: {s['rejected']}\n"
+                    f"💳 O'rtacha chek: {sb_fmt(s['avg_check'])} so'm\n👤 Xaridor boshiga: {sb_fmt(s['arpu'])} so'm\n🏷 Promokod ishlatilgan: {s['promos_used']} · 🎀 sovg'alar: {s['gifts']}")
+        elif sub == "chart":
+            mx = max([v for _, v in s["days"]] + [1])
+            text = "📈 <b>Oxirgi 14 kun daromadi</b>\n\n<code>" + "\n".join(f"{d[8:]}.{d[5:7]} {bar(v, mx):<12} {sb_fmt(v)}" for d, v in s["days"]) + "</code>"
+        elif sub == "plans":
+            rows_ = sb_plan_stats(info, now)
+            text = "📚 <b>Tariflar bo'yicha</b>\n\n" + ("\n".join(
+                f"{'✅' if r['on'] else '⏸'} <b>{html_escape(r['name'])}</b>\n   sotilgan: {r['sold']} · faol: {r['active']} · daromad: {sb_fmt(r['revenue'])} so'm" for r in rows_) or "Tarif yo'q.")
+        else:
+            tot = sum(s["by_method"].values()) or 1
+            text = "💳 <b>To'lov usullari bo'yicha</b>\n\n" + ("\n".join(
+                f"• {html_escape(k)}: <b>{sb_fmt(v)}</b> so'm ({round(v * 100 / tot)}%)" for k, v in sorted(s["by_method"].items(), key=lambda x: -x[1])) or "Hali to'lov yo'q.")
+        rows = [nav, [_b("🔄 Yangilash", f"sa|st|{sub}"), _b("🧾 To'lovlar tarixi", "sa|py|hist"), _b("📤 CSV", "sa|ex|pay")]]
+        await show(ev, text, _ik(rows))
+
+    @reg_btn("📊 Statistika")
+    async def _a_stats(message):
+        await adm_stats(message, "main")
+
+    @reg_btn("💰 Moliya")
+    async def _a_fin(message):
+        await adm_stats(message, "fin")
+
+    # ---------- kanallar ----------
+    async def adm_channels(ev):
+        rows = [[_b(f"{'💬' if c['type'] in ('group', 'supergroup') else '📣'} {c['title']}", f"sa|ch|v|{cid}")] for cid, c in sb["channels"].items()]
+        rows.append([_b("➕ Kanal / guruh qo'shish", "sa|ch|add")])
+        text = ("📡 <b>Kanallar va guruhlar</b>\n\nObuna sotiladigan yopiq kanal yoki guruhlar. Bot ularda <b>admin</b> bo'lishi va "
+                "«Foydalanuvchilarni taklif qilish» hamda «Foydalanuvchilarni cheklash» huquqlariga ega bo'lishi kerak.")
+        if not sb["channels"]:
+            text += "\n\n📭 Hozircha qo'shilmagan."
+        await show(ev, text, _ik(rows))
+
+    @reg_btn("📡 Kanallar")
+    async def _a_channels(message):
+        await adm_channels(message)
+
+    async def adm_channel_view(ev, cid, check=False):
+        c = sb["channels"].get(cid)
+        if not c:
+            await show(ev, "❌ Kanal topilmadi.")
+            return
+        text = f"📡 <b>{html_escape(c['title'])}</b>\nID: <code>{c['chat_id']}</code>\nTuri: {c['type']}" + (f"\nUsername: @{c['username']}" if c.get("username") else "")
+        used = [p["name"] for p in sb["plans"].values() if cid in p.get("channels", [])]
+        text += "\n📚 Tariflar: " + (", ".join(html_escape(x) for x in used) if used else "biriktirilmagan")
+        if check:
+            try:
+                r = await sb_chat_check(ev.bot, c["chat_id"])
+                text += (f"\n\n🔍 <b>Tekshiruv</b>\nBot admin: {'✅' if r['admin'] else '❌'}\nHavola yaratish: {'✅' if r['invite'] else '❌'}\n"
+                         f"Chiqarish huquqi: {'✅' if r['restrict'] else '❌'}")
+            except Exception as e:
+                text += f"\n\n❌ Tekshirib bo'lmadi: {html_escape(str(e))}"
+        await show(ev, text, _ik([[_b("🔍 Tekshirish", f"sa|ch|chk|{cid}"), _b("🗑 O'chirish", f"sa|ch|del|{cid}")], [_b("◀️ Orqaga", "sa|ch|list")]]))
+
+    # ---------- tariflar ----------
+    async def adm_plans(ev):
+        rows = [[_b(f"{'✅' if p.get('active', True) else '⏸'} {p['name']} · {sb_fmt(p['price'])}", f"sa|pl|v|{pid}")] for pid, p in sb_plans_sorted(info, only_active=False)]
+        rows.append([_b("➕ Tarif qo'shish", "sa|pl|add")])
+        await show(ev, "📚 <b>Tariflar</b>" + ("" if rows[:-1] else "\n\n📭 Hozircha tarif yo'q. Avval kanal qo'shing, keyin tarif yarating."), _ik(rows))
+
+    @reg_btn("📚 Tarif boshqaruvi")
+    async def _a_plans(message):
+        await adm_plans(message)
+
+    async def adm_plan_view(ev, pid):
+        p = sb["plans"].get(pid)
+        if not p:
+            await show(ev, "❌ Tarif topilmadi.")
+            return
+        chans = ", ".join(html_escape(sb["channels"][c]["title"]) for c in p.get("channels", []) if c in sb["channels"]) or "❗ biriktirilmagan"
+        text = (sb_plan_card(p) + f"\n\n{'✅ Faol' if p.get('active', True) else '⏸ O‘chirilgan'} · sotilgan: {p.get('sold', 0)} · tartib: {p.get('sort', 0)}\n📡 Kanallar: {chans}\n🆔 <code>{pid}</code>")
+        rows, row = [], []
+        for f, (lab, _) in SB_PLAN_FIELDS.items():
+            row.append(_b(lab, f"sa|pl|e|{pid}|{f}"))
+            if len(row) == 2:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+        rows.append([_b("📡 Kanallar", f"sa|pl|ch|{pid}"), _b("⏸ Yoqish/o'chirish", f"sa|pl|t|{pid}")])
+        rows.append([_b("🗑 O'chirish", f"sa|pl|d|{pid}"), _b("◀️ Orqaga", "sa|pl|list")])
+        await show(ev, text, _ik(rows))
+
+    async def adm_plan_channels(ev, pid):
+        pl = sb["plans"].get(pid)
+        if not pl:
+            await show(ev, "❌ Tarif topilmadi.")
+            return
+        rows = [[_b(f"{'✅' if cid in pl.get('channels', []) else '▫️'} {c['title']}", f"sa|pl|tc|{pid}|{cid}")] for cid, c in sb["channels"].items()]
+        rows.append([_b("◀️ Orqaga", f"sa|pl|v|{pid}")])
+        await show(ev, "📡 Bu tarif qaysi kanal/guruhlarga kirish beradi?" + ("" if sb["channels"] else "\n\n❗ Avval «📡 Kanallar» bo'limida kanal qo'shing."), _ik(rows))
+
+    # ---------- foydalanuvchilar ----------
+    async def adm_users_menu(ev):
+        rows, row = [], []
+        for k, t in SB_LIST_TITLES.items():
+            row.append(_b(t, f"sa|ul|{k}|0"))
+            if len(row) == 2:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+        rows.append([_b("🔄 Muddatni hozir tekshirish", "sa|ul|sweep|0")])
+        await show(ev, "👥 <b>Foydalanuvchilar</b>\n\nRo'yxatni tanlang yoki «🔎 Qidirish» orqali ID/ism bo'yicha toping.", _ik(rows))
+
+    @reg_btn("👥 Foydalanuvchilar")
+    async def _a_users(message):
+        await adm_users_menu(message)
+
+    async def adm_user_list(ev, kind, page):
+        items = sb_list_users(info, kind)
+        tot = len(items)
+        chunk = items[page * SB_PAGE:(page + 1) * SB_PAGE]
+        lines = [f"{SB_LIST_TITLES.get(kind, kind)} — <b>{tot}</b> ta\n"]
+        rows = []
+        for uid, u, extra in chunk:
+            lines.append(f"• {html_escape(u.get('name') or 'Nomsiz')} <code>{uid}</code> {extra}")
+            rows.append([_b(f"👤 {u.get('name') or uid} {extra}"[:60], f"sa|u|v|{uid}")])
+        nav = []
+        if page > 0:
+            nav.append(_b("⬅️", f"sa|ul|{kind}|{page - 1}"))
+        nav.append(_b(f"{page + 1}/{max(1, -(-tot // SB_PAGE))}", "sa|noop"))
+        if (page + 1) * SB_PAGE < tot:
+            nav.append(_b("➡️", f"sa|ul|{kind}|{page + 1}"))
+        rows.append(nav)
+        if kind in ("expiring", "expired", "never", "active", "trial"):
+            rows.append([_b("📢 Shularga xabar yuborish", f"sa|bc|aud|{kind}")])
+        rows.append([_b("◀️ Orqaga", "sa|ul|menu|0")])
+        await show(ev, "\n".join(lines) if chunk else lines[0] + "\n📭 Bo'sh.", _ik(rows))
+
+    async def adm_user_card(ev, uid):
+        text = sb_card(info, uid)
+        if str(uid) not in sb["subs"]:
+            await show(ev, text)
+            return
+        blocked = uid in info.get("blocked_users", [])
+        rows = [
+            [_b("➕ Kun / obuna berish", f"sa|u|ad|{uid}"), _b("❌ Obunani bekor qilish", f"sa|u|rv|{uid}")],
+            [_b("🧊 Muzlatish", f"sa|u|ps|{uid}"), _b("▶️ Davom ettirish", f"sa|u|rs|{uid}")],
+            [_b("🔗 Havola yuborish", f"sa|u|ln|{uid}"), _b("🚪 Kanaldan chiqarish", f"sa|u|kk|{uid}")],
+            [_b("📝 Izoh", f"sa|u|nt|{uid}"), _b("🏷 Teg", f"sa|u|tg|{uid}"), _b("⭐ Ball", f"sa|u|pt|{uid}")],
+            [_b("✉️ Xabar yuborish", f"sa|u|ms|{uid}"), _b("📜 Tarix", f"sa|u|hs|{uid}")],
+            [_b("✅ Blokdan chiqarish" if blocked else "🚫 Bloklash", f"sa|u|bl|{uid}")],
+        ]
+        await show(ev, text, _ik(rows))
+
+    @dp.message(F.text == "🔎 Qidirish")
+    async def _a_search2(message: Message, state: FSMContext):
+        if not staff(message):
+            return
+        await state.set_state(SbAdmin.inp)
+        await state.update_data(act="u_search")
+        await message.answer("🔎 Foydalanuvchi ID, ism yoki @username yuboring (bekor qilish: /start):")
+
+    # ---------- to'lovlar ----------
+    async def adm_payments(ev, sub="pend"):
+        if sub == "pend":
+            items = sb_pending_all(info)
+            lines = [f"⏳ <b>Kutilayotgan to'lovlar</b> — {len(items)} ta\n"]
+            rows = []
+            for payid, p in items[:15]:
+                plan = sb["plans"].get(p["plan"], {}).get("name", p["plan"])
+                lines.append(f"• {html_escape(sb_uname(info, p['uid']))} · {html_escape(plan)} · {sb_fmt(p['amount'])} so'm · {sb_datetime(p['created'])}")
+                rows.append([_b(f"🧾 {sb_uname(info, p['uid'])} — {sb_fmt(p['amount'])}"[:60], f"sa|py|v|{payid}")])
+            rows.append([_b("📜 Tarix", "sa|py|hist"), _b("🔄 Yangilash", "sa|py|pend")])
+            await show(ev, "\n".join(lines) if items else lines[0] + "\n✅ Hammasi ko'rib chiqilgan.", _ik(rows))
+        else:
+            em = {"approved": "✅", "pending": "⏳", "rejected": "❌", "expired": "⌛"}
+            items = sorted(sb["payments"].items(), key=lambda x: x[1]["created"], reverse=True)[:20]
+            lines = ["📜 <b>Oxirgi to'lovlar</b>\n"] + [
+                f"{em.get(p['status'], '•')} {sb_datetime(p['created'])} · {html_escape(sb_uname(info, p['uid']))} · {sb_fmt(p['amount'])} · {html_escape(p['method'])}" for _, p in items]
+            await show(ev, "\n".join(lines) if items else "📭 To'lovlar yo'q.", _ik([[_b("⏳ Kutilayotganlar", "sa|py|pend")]]))
+
+    @dp.message(F.text.startswith("⏳ To'lovlar"))
+    async def _a_pay(message: Message, state: FSMContext):
+        if staff(message):
+            await state.clear()
+            await adm_payments(message, "pend")
+
+    # ---------- promokodlar ----------
+    async def adm_promos(ev):
+        rows = [[_b(f"{'⏸' if not p.get('active', True) else '✅'} {c}", f"sa|pm|v|{c}")] for c, p in list(sb["promos"].items())[:40]]
+        rows.append([_b("➕ Promokod yaratish", "sa|pm|add")])
+        lines = ["🏷 <b>Promokodlar</b>\n"] + [sb_promo_line(c, p) for c, p in list(sb["promos"].items())[:40]]
+        await show(ev, "\n".join(lines) if sb["promos"] else lines[0] + "\n📭 Hozircha yo'q.", _ik(rows))
+
+    @reg_btn("🏷 Promokodlar")
+    async def _a_promos(message):
+        await adm_promos(message)
+
+    # ---------- sovg'a kodlar ----------
+    async def adm_gifts(ev):
+        items = sorted(sb["gifts"].items(), key=lambda x: x[1]["created"], reverse=True)[:20]
+        lines = ["🎀 <b>Sovg'a kodlar</b>\n"] + [
+            f"{'✅ ishlatilgan' if g.get('used_by') else '🆕 bo`sh'} · <code>{c}</code> · {html_escape(sb['plans'].get(g['plan'], {}).get('name', '?'))} · {g['days']} kun" for c, g in items]
+        rows = [[_b("➕ Kod yaratish", "sa|gf|add")]]
+        for c, g in items[:8]:
+            if not g.get("used_by"):
+                rows.append([_b(f"🗑 {c}", f"sa|gf|d|{c}")])
+        await show(ev, "\n".join(lines) if items else lines[0] + "\n📭 Hozircha yo'q.", _ik(rows))
+
+    @reg_btn("🎀 Sovg'a kodlar")
+    async def _a_gifts(message):
+        await adm_gifts(message)
+
+    # ---------- xabar yuborish ----------
+    async def adm_bc_menu(ev):
+        rows = [[_b(f"{t} ({len(sb_audience(info, k))})", f"sa|bc|aud|{k}")] for k, t in SB_AUDIENCES.items()]
+        await show(ev, "📢 <b>Xabar yuborish</b>\n\nKimga yuboramiz?", _ik(rows))
+
+    @reg_btn("📢 Xabar yuborish")
+    async def _a_bc(message):
+        await adm_bc_menu(message)
+
+    # ---------- sozlamalar ----------
+    async def adm_settings(ev):
+        c = sb["cfg"]
+        lines = ["⚙️ <b>Sozlamalar</b>\n"]
+        rows, row = [], []
+        for k, (lab, typ) in SB_CFG_META.items():
+            v = c.get(k)
+            if typ == "toggle":
+                lines.append(f"{lab}: {'✅ yoqilgan' if int(v) else '❌ o‘chirilgan'}")
+                row.append(_b(f"{'✅' if int(v) else '❌'} {lab}"[:30], f"sa|cf|t|{k}"))
+            else:
+                shown = html_escape(str(v)[:40]) + ("…" if len(str(v)) > 40 else "") if str(v) else "—"
+                lines.append(f"{lab}: <b>{shown}</b>")
+                row.append(_b(lab[:30], f"sa|cf|e|{k}"))
+            if len(row) == 2:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+        await show(ev, "\n".join(lines), _ik(rows))
+
+    @reg_btn("⚙️ Sozlamalar")
+    async def _a_settings(message):
+        await adm_settings(message)
+
+    # ---------- FAQ boshqaruvi ----------
+    async def adm_faq(ev):
+        lines = ["❓ <b>Savol-javoblar</b>\n"] + [f"{i + 1}. {html_escape(q['q'])}" for i, q in enumerate(sb["faq"])]
+        rows = [[_b("➕ Qo'shish", "sa|fq|add")]] + [[_b(f"🗑 {i + 1}. {q['q']}"[:60], f"sa|fq|d|{i}")] for i, q in enumerate(sb["faq"][:30])]
+        await show(ev, "\n".join(lines) if sb["faq"] else lines[0] + "\n📭 Hozircha yo'q.", _ik(rows))
+
+    @reg_btn("❓ FAQ boshqaruvi")
+    async def _a_faq(message):
+        await adm_faq(message)
+
+    # ---------- jurnal, eksport, tanaffus ----------
+    @reg_btn("📜 Jurnal")
+    async def _a_log(message):
+        items = sb["log"][-25:][::-1]
+        await message.answer("📜 <b>Jurnal</b> (oxirgi 25)\n\n" + ("\n".join(f"{sb_datetime(x['t'])} · {html_escape(x['x'])}" for x in items) or "Bo'sh."))
+
+    @reg_btn("📤 Eksport")
+    async def _a_export(message):
+        await message.answer("📤 <b>Eksport</b>", reply_markup=_ik([
+            [_b("👥 Foydalanuvchilar (CSV)", "sa|ex|usr"), _b("🧾 To'lovlar (CSV)", "sa|ex|pay")],
+            [_b("💾 To'liq zaxira (JSON)", "sa|ex|json")]]))
+
+    @reg_btn("🛠 Texnik tanaffus")
+    async def _a_maint(message):
+        info["maintenance_mode"] = not info.get("maintenance_mode", False)
+        save_data()
+        await message.answer("🛠 Texnik tanaffus: " + ("✅ <b>YOQILDI</b> (foydalanuvchilar uchun bot to'xtaydi)" if info["maintenance_mode"] else "❌ o'chirildi"))
+
+    # =============== admin callback yo'naltiruvchisi ===============
+    @dp.callback_query(F.data.startswith("sa|"))
+    async def adm_cb(callback: CallbackQuery, state: FSMContext):
+        if not staff(callback):
+            await callback.answer()
+            return
+        p = callback.data.split("|")
+        sec, act = p[1], (p[2] if len(p) > 2 else "")
+        arg = p[3:] if len(p) > 3 else []
+        bot_ = callback.bot
+        if sec == "noop":
+            await callback.answer()
+            return
+        if sec == "st":
+            await adm_stats(callback, act or "main")
+            return
+        # ----- kanallar
+        if sec == "ch":
+            if act == "list":
+                await adm_channels(callback)
+            elif act == "v":
+                await adm_channel_view(callback, arg[0])
+            elif act == "chk":
+                await adm_channel_view(callback, arg[0], check=True)
+            elif act == "add":
+                await state.set_state(SbAdmin.inp)
+                await state.update_data(act="ch_add")
+                await callback.message.answer(
+                    "📡 Kanal yoki guruhni qo'shish:\n\n1) Botni kanal/guruhga <b>admin</b> qiling (taklif qilish va cheklash huquqlari bilan)\n"
+                    "2) Quyidagilardan birini yuboring:\n• kanaldan <b>forward</b> qilingan xabar\n• <code>@username</code> (ochiq kanal)\n• ID raqami (<code>-100...</code>)\n\nBekor qilish: /start")
+                await callback.answer()
+            elif act == "del":
+                cid = arg[0]
+                sb["channels"].pop(cid, None)
+                for pl in sb["plans"].values():
+                    if cid in pl.get("channels", []):
+                        pl["channels"].remove(cid)
+                sb_log(info, "admin", f"kanal o'chirildi {cid}")
+                save_data()
+                await adm_channels(callback)
+            return
+        # ----- tariflar
+        if sec == "pl":
+            if act == "list":
+                await adm_plans(callback)
+            elif act == "v":
+                await adm_plan_view(callback, arg[0])
+            elif act == "add":
+                await state.set_state(SbAdmin.inp)
+                await state.update_data(act="pl_add1")
+                await callback.message.answer("📚 Yangi tarif nomini yuboring (masalan: <i>Oylik VIP</i>). Bekor qilish: /start")
+                await callback.answer()
+            elif act == "e":
+                pid, f = arg[0], arg[1]
+                lab, typ = SB_PLAN_FIELDS[f]
+                await state.set_state(SbAdmin.inp)
+                await state.update_data(act="pl_edit", pid=pid, field=f)
+                hint = " (tozalash: <code>-</code>)" if f in ("desc", "badge") else (" (0 — cheksiz)" if f == "limit" else "")
+                await callback.message.answer(f"{lab}: yangi qiymatni yuboring{hint}. Bekor qilish: /start")
+                await callback.answer()
+            elif act == "t":
+                pl = sb["plans"].get(arg[0])
+                if pl:
+                    pl["active"] = not pl.get("active", True)
+                    save_data()
+                await adm_plan_view(callback, arg[0])
+            elif act == "ch":
+                await adm_plan_channels(callback, arg[0])
+            elif act == "tc":
+                pl = sb["plans"].get(arg[0])
+                if pl and arg[1] in sb["channels"]:
+                    if arg[1] in pl.setdefault("channels", []):
+                        pl["channels"].remove(arg[1])
+                    else:
+                        pl["channels"].append(arg[1])
+                    save_data()
+                await adm_plan_channels(callback, arg[0])
+            elif act == "d":
+                await show(callback, "🗑 Tarifni o'chirasizmi? Mavjud obunalar o'zgarmaydi, lekin yangi sotib bo'lmaydi.",
+                           _ik([[_b("✅ Ha, o'chirish", f"sa|pl|dok|{arg[0]}"), _b("❌ Yo'q", f"sa|pl|v|{arg[0]}")]]))
+            elif act == "dok":
+                sb["plans"].pop(arg[0], None)
+                if sb["cfg"].get("trial_plan") == arg[0]:
+                    sb["cfg"]["trial_plan"] = ""
+                sb_log(info, "admin", f"tarif o'chirildi {arg[0]}")
+                save_data()
+                await adm_plans(callback)
+            return
+        # ----- foydalanuvchi ro'yxatlari
+        if sec == "ul":
+            if act == "menu":
+                await adm_users_menu(callback)
+            elif act == "sweep":
+                await callback.answer("⏳ Tekshirilmoqda...")
+                r = await sb_sweep(bot_, info)
+                await callback.message.answer(f"🔄 Tekshiruv tugadi.\n🔔 Eslatma: {r['reminded']}\n⌛ Tugagan: {r['expired']}\n🚪 Chiqarilgan: {r['kicked']}")
+            else:
+                await adm_user_list(callback, act, int(arg[0]) if arg else 0)
+            return
+        # ----- foydalanuvchi amallari
+        if sec == "u":
+            uid = int(arg[0]) if arg else 0
+            if act == "v":
+                await adm_user_card(callback, uid)
+            elif act == "ad":
+                rows = [[_b(f"{pl['name']} ({pl['days']} kun)", f"sa|u|ad2|{uid}|{pid}")] for pid, pl in sb_plans_sorted(info, only_active=False)]
+                rows.append([_b("◀️ Orqaga", f"sa|u|v|{uid}")])
+                await show(callback, "➕ Qaysi tarif bo'yicha kun beramiz?", _ik(rows))
+            elif act == "ad2":
+                await state.set_state(SbAdmin.inp)
+                await state.update_data(act="u_days", uid=uid, pid=arg[1])
+                await callback.message.answer("⏳ Necha kun? (musbat son — qo'shish/berish, manfiy — ayirish). Bekor qilish: /start")
+                await callback.answer()
+            elif act == "rv":
+                await show(callback, "❌ Foydalanuvchining barcha obunalari bekor qilinadi va kanallardan chiqariladi. Davom etamizmi?",
+                           _ik([[_b("✅ Ha", f"sa|u|rv2|{uid}"), _b("❌ Yo'q", f"sa|u|v|{uid}")]]))
+            elif act == "rv2":
+                u = sb_user(info, uid)
+                chats = {c for pid in list(u["subs"]) for c in sb_plan_chats(info, pid)}
+                sb_revoke(info, uid)
+                done = await sb_kick(bot_, info, uid, chats) if chats else []
+                sb_log(info, "admin", f"{uid} obunalari bekor qilindi", uid)
+                save_data()
+                try:
+                    await bot_.send_message(uid, "ℹ️ Obunangiz administrator tomonidan bekor qilindi.")
+                except Exception:
+                    pass
+                await callback.message.answer(f"✅ Bekor qilindi. Chiqarildi: {len(done)} ta kanal.")
+                await adm_user_card(callback, uid)
+            elif act in ("ps", "rs"):
+                u = sb_user(info, uid)
+                n = sum(1 for pid in list(u["subs"]) if (sb_pause if act == "ps" else sb_resume)(info, uid, pid))
+                save_data()
+                await callback.answer(f"{'🧊 Muzlatildi' if act == 'ps' else '▶️ Davom ettirildi'}: {n} ta", show_alert=True)
+                await adm_user_card(callback, uid)
+            elif act == "ln":
+                u = sb_user(info, uid)
+                pids = list(sb_active(u))
+                if not pids:
+                    await callback.answer("❌ Faol obuna yo'q.", show_alert=True)
+                    return
+                await sb_deliver(bot_, info, uid, pids, head="🔗 <b>Kirish havolasi</b> (administrator yubordi)")
+                save_data()
+                await callback.answer("✅ Yuborildi", show_alert=True)
+            elif act == "kk":
+                u = sb_user(info, uid)
+                chats = set()
+                for pid in u["subs"]:
+                    chats |= set(sb_plan_chats(info, pid))
+                done = await sb_kick(bot_, info, uid, chats)
+                sb_log(info, "admin", f"{uid} kanallardan chiqarildi ({len(done)})", uid)
+                save_data()
+                await callback.answer(f"🚪 Chiqarildi: {len(done)} ta kanal", show_alert=True)
+            elif act in ("nt", "tg", "pt", "ms"):
+                prompts = {"nt": "📝 Izoh matnini yuboring (tozalash: <code>-</code>)", "tg": "🏷 Teg yuboring (olib tashlash: <code>-teg</code>)",
+                           "pt": "⭐ Ball miqdorini yuboring (manfiy — ayirish)", "ms": "✉️ Foydalanuvchiga yuboriladigan xabarni yuboring"}
+                await state.set_state(SbAdmin.inp)
+                await state.update_data(act="u_" + act, uid=uid)
+                await callback.message.answer(prompts[act] + ". Bekor qilish: /start")
+                await callback.answer()
+            elif act == "hs":
+                u = sb_user(info, uid)
+                hist = u.get("history", [])[-12:][::-1]
+                text = f"📜 <b>Tarix</b> — {html_escape(sb_uname(info, uid))}\n\n" + ("\n".join(
+                    f"{sb_datetime(h['t'])} · {html_escape(sb['plans'].get(h['plan'], {}).get('name', h['plan']))} · {h['days']:+d} kun · {sb_fmt(h['amount'])} so'm · {html_escape(h['src'])}" for h in hist) or "Bo'sh.")
+                await show(callback, text, _ik([[_b("◀️ Orqaga", f"sa|u|v|{uid}")]]))
+            elif act == "bl":
+                bl = info.setdefault("blocked_users", [])
+                if uid in bl:
+                    bl.remove(uid)
+                elif is_admin(info, uid):
+                    await callback.answer("❌ Adminni bloklab bo'lmaydi.", show_alert=True)
+                    return
+                else:
+                    bl.append(uid)
+                    u = sb_user(info, uid)
+                    chats = set()
+                    for pid in sb_active(u):
+                        chats |= set(sb_plan_chats(info, pid))
+                    if chats:
+                        await sb_kick(bot_, info, uid, chats)
+                sb_log(info, "admin", f"{uid} bloklash holati o'zgardi", uid)
+                save_data()
+                await adm_user_card(callback, uid)
+            return
+        # ----- to'lovlar
+        if sec == "py":
+            if act in ("pend", "hist"):
+                await adm_payments(callback, act)
+            elif act == "v":
+                pay = sb["payments"].get(arg[0])
+                if not pay:
+                    await callback.answer("❌ Topilmadi", show_alert=True)
+                    return
+                plan = sb["plans"].get(pay["plan"], {}).get("name", pay["plan"])
+                cap = (f"🧾 <b>To'lov</b> <code>{arg[0]}</code>\n\n👤 {html_escape(sb_uname(info, pay['uid']))} · <code>{pay['uid']}</code>\n📚 {html_escape(plan)} ({pay['days']} kun)\n"
+                       f"💰 {sb_fmt(pay['amount'])} so'm · {html_escape(pay['method'])}\n🕒 {sb_datetime(pay['created'])}\nHolat: {pay['status']}")
+                kb = _ik([[_b("✅ Tasdiqlash", f"sbok|{arg[0]}"), _b("❌ Rad etish", f"sbno|{arg[0]}")]]) if pay["status"] == "pending" else None
+                if pay.get("file_id"):
+                    await bot_.send_photo(callback.from_user.id, pay["file_id"], caption=cap, reply_markup=kb)
+                else:
+                    await bot_.send_message(callback.from_user.id, cap, reply_markup=kb)
+                await callback.answer()
+            return
+        # ----- promokodlar
+        if sec == "pm":
+            if act == "add":
+                await state.set_state(SbAdmin.inp)
+                await state.update_data(act="pm_add")
+                await callback.message.answer(
+                    "🏷 Promokod yaratish. Bitta qatorda yuboring:\n<code>KOD foiz chegirma_so'm bonus_kun limit amal_kun</code>\n\n"
+                    "Masalan: <code>YANGI20 20 0 0 100 30</code> — 20% chegirma, 100 marta, 30 kun amal qiladi.\n"
+                    "Faqat bonus kun: <code>BONUS7 0 0 7 50 0</code>\n(0 — o'chiq/cheksiz). Bekor qilish: /start")
+                await callback.answer()
+            elif act == "v":
+                pr = sb["promos"].get(arg[0])
+                if not pr:
+                    await callback.answer("❌", show_alert=True)
+                    return
+                await show(callback, "🏷 " + sb_promo_line(arg[0], pr) + f"\n\n👥 Ishlatganlar: {len(pr.get('users', []))}",
+                           _ik([[_b("⏸ Yoqish/o'chirish", f"sa|pm|t|{arg[0]}"), _b("🗑 O'chirish", f"sa|pm|d|{arg[0]}")], [_b("◀️ Orqaga", "sa|pm|list")]]))
+            elif act == "t":
+                pr = sb["promos"].get(arg[0])
+                if pr:
+                    pr["active"] = not pr.get("active", True)
+                    save_data()
+                await adm_promos(callback)
+            elif act == "d":
+                sb["promos"].pop(arg[0], None)
+                save_data()
+                await adm_promos(callback)
+            elif act == "list":
+                await adm_promos(callback)
+            return
+        # ----- sovg'a kodlar
+        if sec == "gf":
+            if act == "add":
+                rows = [[_b(f"{pl['name']} ({pl['days']} kun)", f"sa|gf|pl|{pid}")] for pid, pl in sb_plans_sorted(info, only_active=False)]
+                await show(callback, "🎀 Qaysi tarif uchun kod yaratamiz?", _ik(rows) if rows else None)
+            elif act == "pl":
+                await state.set_state(SbAdmin.inp)
+                await state.update_data(act="gf_days", pid=arg[0])
+                await callback.message.answer("⏳ Necha kunlik bo'lsin? (tarif muddati uchun <code>0</code>). Bekor qilish: /start")
+                await callback.answer()
+            elif act == "d":
+                g = sb["gifts"].get(arg[0])
+                if g and not g.get("used_by"):
+                    sb["gifts"].pop(arg[0], None)
+                    save_data()
+                await adm_gifts(callback)
+            return
+        # ----- ommaviy xabar
+        if sec == "bc":
+            if act == "aud":
+                if arg[0] not in SB_AUDIENCES:
+                    await callback.answer()
+                    return
+                await state.set_state(SbAdmin.inp)
+                await state.update_data(act="bc_msg", aud=arg[0])
+                await callback.message.answer(f"📢 <b>{SB_AUDIENCES[arg[0]]}</b> ({len(sb_audience(info, arg[0]))} kishi)\n\nYuboriladigan xabarni yuboring (matn, rasm, video — istalgan). Bekor qilish: /start")
+                await callback.answer()
+            elif act == "go":
+                d = await state.get_data()
+                await state.clear()
+                ids = sb_audience(info, d.get("aud", "all"))
+                await callback.answer("🚀 Yuborish boshlandi")
+                await callback.message.edit_reply_markup(reply_markup=None)
+
+                async def _run(ids=ids, chat=d["from_chat"], mid=d["mid"], admin=callback.from_user.id, b=bot_):
+                    ok = bad = 0
+                    for x in ids:
+                        try:
+                            await b.copy_message(x, chat, mid)
+                            ok += 1
+                        except Exception:
+                            bad += 1
+                        await asyncio.sleep(0.05)
+                    sb_log(info, "bc", f"xabar yuborildi: {ok} ok / {bad} xato")
+                    save_data()
+                    try:
+                        await b.send_message(admin, f"✅ Yuborildi: {ok}\n❌ Yetmadi: {bad}")
+                    except Exception:
+                        pass
+                asyncio.create_task(_run())
+            elif act == "no":
+                await state.clear()
+                await callback.message.edit_reply_markup(reply_markup=None)
+                await callback.answer("Bekor qilindi")
+            return
+        # ----- sozlamalar
+        if sec == "cf":
+            if act == "list":
+                await adm_settings(callback)
+                return
+            k = arg[0] if arg else ""
+            if k not in SB_CFG_META:
+                await callback.answer()
+                return
+            if act == "t":
+                sb["cfg"][k] = 0 if int(sb["cfg"].get(k, 0)) else 1
+                save_data()
+                await adm_settings(callback)
+            elif act == "e":
+                lab, typ = SB_CFG_META[k]
+                await state.set_state(SbAdmin.inp)
+                await state.update_data(act="cf_set", key=k)
+                hint = {"int": "butun son", "text": "matn (tozalash: <code>-</code>)", "list": "kunlar vergul bilan, masalan <code>3,1</code> (o'chirish: <code>-</code>)"}[typ]
+                await callback.message.answer(f"{lab}\nJoriy: <b>{html_escape(str(sb['cfg'].get(k, '')) or '—')}</b>\n\nYangi qiymatni yuboring — {hint}. Bekor qilish: /start")
+                await callback.answer()
+            return
+        # ----- FAQ
+        if sec == "fq":
+            if act == "add":
+                await state.set_state(SbAdmin.inp)
+                await state.update_data(act="faq_add")
+                await callback.message.answer("❓ Savol va javobni shu ko'rinishda yuboring:\n<code>Savol matni | Javob matni</code>\n\nBekor qilish: /start")
+                await callback.answer()
+            elif act == "d":
+                i = int(arg[0])
+                if 0 <= i < len(sb["faq"]):
+                    sb["faq"].pop(i)
+                    save_data()
+                await adm_faq(callback)
+            return
+        # ----- eksport
+        if sec == "ex":
+            if act == "usr":
+                await bot_.send_document(callback.from_user.id, BufferedInputFile(sb_export_users_csv(info), filename="foydalanuvchilar.csv"))
+            elif act == "pay":
+                await bot_.send_document(callback.from_user.id, BufferedInputFile(sb_export_payments_csv(info), filename="tolovlar.csv"))
+            elif act == "json":
+                raw = json.dumps(sb, ensure_ascii=False, indent=1).encode("utf-8")
+                await bot_.send_document(callback.from_user.id, BufferedInputFile(raw, filename="obuna_zaxira.json"))
+            await callback.answer()
+            return
+        await callback.answer()
+
+    # =============== admin kiritish (FSM) ===============
+    @dp.message(SbAdmin.inp)
+    async def adm_input(message: Message, state: FSMContext):
+        if not staff(message):
+            return
+        d = await state.get_data()
+        act = d.get("act")
+        text = (message.text or "").strip()
+
+        async def done(msg, kb=None):
+            await state.clear()
+            save_data()
+            await message.answer(msg, reply_markup=kb)
+
+        def num(s, lo=None):
+            try:
+                v = int(s.replace(" ", ""))
+            except (ValueError, AttributeError):
+                return None
+            return v if lo is None or v >= lo else None
+
+        # --- kanal qo'shish
+        if act == "ch_add":
+            ref = None
+            fo = getattr(message, "forward_origin", None)
+            if fo is not None and getattr(fo, "chat", None) is not None:
+                ref = fo.chat.id
+            elif getattr(message, "forward_from_chat", None):
+                ref = message.forward_from_chat.id
+            elif text:
+                t = text.replace("https://t.me/", "").replace("http://t.me/", "").replace("t.me/", "").strip("/ ")
+                ref = int(t) if t.lstrip("-").isdigit() else ("@" + t.lstrip("@"))
+            if ref is None:
+                await message.answer("❌ Kanaldan xabar forward qiling yoki @username / ID yuboring.")
+                return
+            try:
+                r = await sb_chat_check(message.bot, ref)
+            except Exception as e:
+                await message.answer(f"❌ Kanal topilmadi yoki bot unda yo'q: {html_escape(str(e))}\n\nBotni kanalga admin qilib, qayta yuboring.")
+                return
+            if not r["admin"]:
+                await message.answer("❌ Bot bu kanalda admin emas. Avval botni admin qiling, so'ng qayta yuboring.")
+                return
+            cid = uuid.uuid4().hex[:6]
+            sb["channels"][cid] = {"chat_id": r["chat_id"], "title": r["title"], "username": r["username"], "type": r["type"], "added": _sb_iso(datetime.now())}
+            if len(sb["channels"]) == 1:
+                for pl in sb["plans"].values():
+                    pl.setdefault("channels", []).append(cid)
+            sb_log(info, "admin", f"kanal qo'shildi: {r['title']}")
+            warn = "" if (r["invite"] and r["restrict"]) else "\n\n⚠️ Botda «taklif qilish» yoki «cheklash» huquqi yo'q — havola/chiqarish ishlamasligi mumkin."
+            await done(f"✅ Qo'shildi: <b>{html_escape(r['title'])}</b>{warn}")
+            return
+        # --- tarif qo'shish (3 qadam)
+        if act == "pl_add1":
+            if not text:
+                await message.answer("❌ Nom matn bo'lishi kerak.")
+                return
+            await state.update_data(act="pl_add2", name=text[:60])
+            await message.answer("⏳ Muddat necha kun? (masalan: 30)")
+            return
+        if act == "pl_add2":
+            v = num(text, 1)
+            if v is None:
+                await message.answer("❌ Musbat butun son yuboring.")
+                return
+            await state.update_data(act="pl_add3", days=v)
+            await message.answer("💰 Narx necha so'm? (masalan: 100000)")
+            return
+        if act == "pl_add3":
+            v = num(text, 0)
+            if v is None:
+                await message.answer("❌ Butun son yuboring.")
+                return
+            chans = list(sb["channels"]) if len(sb["channels"]) == 1 else []
+            pid = sb_plan_new(info, d["name"], d["days"], v, chans)
+            sb_log(info, "admin", f"tarif yaratildi: {d['name']}")
+            await done("✅ Tarif yaratildi." + ("" if chans else "\n\n❗ Endi tarifni oching va «📡 Kanallar» orqali kanal biriktiring."), _ik([[_b("📚 Tarifni ochish", f"sa|pl|v|{pid}")]]))
+            return
+        # --- tarif tahriri
+        if act == "pl_edit":
+            pl = sb["plans"].get(d["pid"])
+            f = d["field"]
+            if not pl:
+                await done("❌ Tarif topilmadi.")
+                return
+            typ = SB_PLAN_FIELDS[f][1]
+            if typ == "int":
+                v = num(text, 1 if f == "days" else 0)
+                if v is None:
+                    await message.answer("❌ To'g'ri butun son yuboring.")
+                    return
+            else:
+                v = "" if text == "-" and f in ("desc", "badge") else text[:600 if f == "desc" else 60]
+                if f == "name" and not v:
+                    await message.answer("❌ Nom bo'sh bo'lmasin.")
+                    return
+            pl[f] = v
+            await done("✅ Saqlandi.", _ik([[_b("📚 Tarifga qaytish", f"sa|pl|v|{d['pid']}")]]))
+            return
+        # --- foydalanuvchi qidirish
+        if act == "u_search":
+            found = sb_find_users(info, text)
+            await state.clear()
+            if not found:
+                await message.answer("❌ Topilmadi.")
+            elif len(found) == 1:
+                await adm_user_card(message, found[0])
+            else:
+                await message.answer("🔎 Natijalar:", reply_markup=_ik([[_b(f"👤 {sb_uname(info, x)} · {x}"[:60], f"sa|u|v|{x}")] for x in found]))
+            return
+        # --- kun berish/ayirish
+        if act == "u_days":
+            v = num(text)
+            if v is None or v == 0:
+                await message.answer("❌ 0 dan farqli butun son yuboring.")
+                return
+            uid, pid = d["uid"], d["pid"]
+            if pid not in sb["plans"]:
+                await done("❌ Tarif topilmadi.")
+                return
+            if v > 0:
+                sb_grant(info, uid, pid, v, "admin", note="admin")
+                sb_log(info, "admin", f"{uid}: +{v} kun ({sb['plans'][pid]['name']})", uid)
+                save_data()
+                await sb_deliver(message.bot, info, uid, [pid], head=f"🎁 <b>Administrator sizga +{v} kun obuna berdi!</b>")
+            else:
+                ok = sb_extend(info, uid, pid, v)
+                sb_log(info, "admin", f"{uid}: {v} kun", uid)
+                if not ok:
+                    await done("❌ Foydalanuvchida bu tarif obunasi yo'q.")
+                    return
+            await done("✅ Bajarildi.", _ik([[_b("👤 Kartochka", f"sa|u|v|{uid}")]]))
+            return
+        if act == "u_nt":
+            sb_user(info, d["uid"])["notes"] = "" if text == "-" else text[:300]
+            await done("✅ Saqlandi.", _ik([[_b("👤 Kartochka", f"sa|u|v|{d['uid']}")]]))
+            return
+        if act == "u_tg":
+            u = sb_user(info, d["uid"])
+            if text.startswith("-") and len(text) > 1:
+                t = text[1:].strip()
+                if t in u["tags"]:
+                    u["tags"].remove(t)
+            elif text and text != "-":
+                if text[:30] not in u["tags"]:
+                    u["tags"].append(text[:30])
+            await done("✅ Saqlandi.", _ik([[_b("👤 Kartochka", f"sa|u|v|{d['uid']}")]]))
+            return
+        if act == "u_pt":
+            v = num(text)
+            if v is None:
+                await message.answer("❌ Butun son yuboring.")
+                return
+            u = sb_user(info, d["uid"])
+            u["points"] = max(0, int(u.get("points", 0)) + v)
+            await done(f"✅ Ball: {u['points']}", _ik([[_b("👤 Kartochka", f"sa|u|v|{d['uid']}")]]))
+            return
+        if act == "u_ms":
+            try:
+                await message.bot.copy_message(d["uid"], message.chat.id, message.message_id)
+                await done("✅ Yuborildi.")
+            except Exception as e:
+                await done(f"❌ Yuborib bo'lmadi: {html_escape(str(e))}")
+            return
+        # --- promokod yaratish
+        if act == "pm_add":
+            parts = text.split()
+            if len(parts) < 2 or not re.fullmatch(r"[A-Za-z0-9_\-]{3,20}", parts[0]):
+                await message.answer("❌ Format noto'g'ri. Kod 3–20 ta lotin harf/raqam bo'lishi kerak.")
+                return
+            nums = [num(x, 0) for x in parts[1:6]]
+            if any(x is None for x in nums):
+                await message.answer("❌ Qiymatlar musbat butun son bo'lishi kerak.")
+                return
+            nums += [0] * (5 - len(nums))
+            percent, fixed, days, limit, exp = nums
+            if percent > 100:
+                await message.answer("❌ Foiz 100 dan oshmasin.")
+                return
+            if not (percent or fixed or days):
+                await message.answer("❌ Kamida bitta qiymat (foiz, chegirma yoki bonus kun) kerak.")
+                return
+            code = sb_promo_new(info, parts[0], percent, fixed, days, limit, exp)
+            sb_log(info, "admin", f"promokod yaratildi: {code}")
+            await done("✅ Yaratildi: " + sb_promo_line(code, sb["promos"][code]))
+            return
+        # --- sovg'a kod
+        if act == "gf_days":
+            v = num(text, 0)
+            if v is None:
+                await message.answer("❌ Butun son yuboring.")
+                return
+            pl = sb["plans"].get(d["pid"])
+            if not pl:
+                await done("❌ Tarif topilmadi.")
+                return
+            code = sb_gift_new(info, d["pid"], v or int(pl["days"]), 0)
+            await done(f"🎀 Kod yaratildi:\n\n<code>{code}</code>\n\n📚 {html_escape(pl['name'])} — {v or pl['days']} kun")
+            return
+        # --- sozlama
+        if act == "cf_set":
+            k = d["key"]
+            typ = SB_CFG_META[k][1]
+            if typ == "int":
+                v = num(text, 0)
+                if v is None:
+                    await message.answer("❌ Musbat butun son yuboring.")
+                    return
+            elif typ == "list":
+                v = "" if text == "-" else text.replace(" ", "")
+                if v and not sb_remind_days({"remind": v}):
+                    await message.answer("❌ Masalan: <code>3,1</code>")
+                    return
+            else:
+                v = "" if text == "-" else text[:1000]
+                if k == "trial_plan" and v and v not in sb["plans"]:
+                    await message.answer("❌ Bunday tarif ID yo'q. Tarif ID sini tarif sahifasidan oling.")
+                    return
+            sb["cfg"][k] = v
+            await done("✅ Saqlandi.", _ik([[_b("⚙️ Sozlamalar", "sa|cf|list")]]))
+            return
+        # --- FAQ
+        if act == "faq_add":
+            if "|" not in text:
+                await message.answer("❌ Format: <code>Savol | Javob</code>")
+                return
+            q, a = (x.strip() for x in text.split("|", 1))
+            if not q or not a:
+                await message.answer("❌ Savol ham, javob ham bo'lishi kerak.")
+                return
+            sb["faq"].append({"q": q[:100], "a": a[:1000]})
+            await done("✅ Qo'shildi.")
+            return
+        # --- ommaviy xabar: kontent keldi, tasdiq so'raymiz
+        if act == "bc_msg":
+            await state.update_data(act="bc_wait", from_chat=message.chat.id, mid=message.message_id)
+            n = len(sb_audience(info, d["aud"]))
+            await message.reply(f"📢 Yuqoridagi xabar <b>{SB_AUDIENCES[d['aud']]}</b> ({n} kishi) ga yuboriladi. Tasdiqlaysizmi?",
+                                reply_markup=_ik([[_b("✅ Yuborish", "sa|bc|go"), _b("❌ Bekor", "sa|bc|no")]]))
+            return
+        await state.clear()
+
+
+# ===================== /OBUNA BOT =====================
+
+
 SETUP_FUNCTIONS = {
     "download": setup_download_bot,
+    "subs": setup_subs_bot,
     "nakrutka": setup_nakrutka_bot,
     "openbudget": setup_openbudget_bot,
     "kino_pro": setup_kino_bot,
@@ -17983,6 +20557,11 @@ async def start_child_bot(token: str, bot_type: str):
                     )
                 except Exception as e:
                     logging.info(f"Kino panel menyu tugmasi ({token[-6:]}, admin {_aid}): {e}")
+    if bot_type == "subs":
+        _old_loop = _SB_LOOPS.pop(token, None)
+        if _old_loop:
+            _old_loop.cancel()
+        _SB_LOOPS[token] = asyncio.create_task(sb_loop(token, child_bot))
     if bot_type == "shop":
         # Savdo bot: klaviatura yonidagi Menu tugmasi hamma obunachilar uchun — «Do'kon» mini app
         _sinfo = data["bots"].get(token, {})
@@ -22714,7 +25293,7 @@ class BotMetricsMiddleware(BaseMiddleware):
         return result
 
 
-_BOT_EMOJI = {"download": "📥", "openbudget": "🗳", "kino_pro": "🎬", "shop": "🛍", "ai": "🤖", "taxi": "🚕", "nakrutka": "🚀"}
+_BOT_EMOJI = {"subs": "💳", "download": "📥", "openbudget": "🗳", "kino_pro": "🎬", "shop": "🛍", "ai": "🤖", "taxi": "🚕", "nakrutka": "🚀"}
 _creator_username_cache = {"v": ""}
 
 
