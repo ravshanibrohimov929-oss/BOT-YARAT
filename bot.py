@@ -1999,6 +1999,7 @@ for _perm, _texts in {
                "📋 Filmlar ro'yxati", "🔍 Kod bo'yicha qidirish", "✏️ Tavsifni tahrirlash", "🗑 Film o'chirish",
                "🔒 VIP kino qo'shish", "🔒 VIP qilib belgilash", "💰 Pullik kino qo'shish", "💰 Pullik qilib belgilash",
                "🗓 Chiqish sanasini belgilash", "🖼 Cover", "🏷 Kategoriyalar", "⭐ Tavsiyalar", "📈 TOP reyting", "📤 Eksport",
+               "🌐 Veb panelga film qo'shish",
                "📦 Ko'p kino yuklash", "➕ Kategoriya qo'shish", "➖ Kategoriya o'chirish"],
     "users": ["👥 Foydalanuvchilar", "🚫 Bloklash", "✅ Blokdan chiqarish"],
     "broadcast": ["📩 Xabar yuborish", "📣 Reklama", "📮 Postlar", "📢 Xabar va reklama", "📢 Ommaviy xabar yuborish",
@@ -2015,7 +2016,7 @@ for _perm, _texts in {
 ADMIN_OWNER_ONLY_TEXTS = {"👮 Adminlar", "👤 Adminlar", "👮 Moderatorlar", "➕ Moderator qo'shish",
                           "➖ Moderatorni o'chirish", "📋 Moderatorlar ro'yxati"}
 # Inline tugma prefiksi -> ruxsat
-ADMIN_CB_PERM = {"fb_": "settings", "kmv_": "movies", "editdesc_": "movies", "pst_": "broadcast",
+ADMIN_CB_PERM = {"fb_": "settings", "kmv_": "movies", "kwa_": "movies", "editdesc_": "movies", "pst_": "broadcast",
                  "kpm_": "payments", "pt_pack": "payments", "kino_share_": "settings"}
 
 
@@ -6142,6 +6143,13 @@ AUTO_PROVIDERS = {
             ("octo_secret", "🔑 Octo <b>Secret key</b> ni yuboring:\n(Octo shaxsiy kabinetidagi maxfiy kalit)"),
         ],
     },
+    "checkout": {
+        "title": "Checkout",
+        "live": True,
+        "fields": [
+            ("checkout_key", "🔑 Checkout <b>API kalit</b> ni yuboring:\n(checkout.uz → Kassa → Kassir sozlamalari → API kalit)"),
+        ],
+    },
     "tgpay": {
         "title": "Telegram Pay",
         "live": True,
@@ -6627,6 +6635,123 @@ async def pay_webhook_octo(request):
     return web.json_response({"status": "ok"})
 
 
+# ---------------- Checkout.uz (create_payment + status_payment tekshiruvi) ----------------
+CHECKOUT_HOST = "https://checkout.uz/api/v1"
+CHECKOUT_INFLIGHT = set()
+
+
+async def _checkout_post(cfg: dict, path: str, payload: dict) -> dict:
+    headers = {"Authorization": f"Bearer {cfg.get('checkout_key', '')}", "Accept": "application/json"}
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.post(f"{CHECKOUT_HOST}/{path}", json=payload, headers=headers)
+        try:
+            return r.json()
+        except Exception:
+            logging.warning(f"Checkout {path}: JSON emas (HTTP {r.status_code})")
+            return {}
+
+
+async def checkout_create_payment(info: dict, order_id: str, amount: int, title: str, uid: int) -> str:
+    """Checkout.uz to'lov havolasini yaratadi. Xato bo'lsa bo'sh satr qaytaradi."""
+    cfg = (info.get("auto_payments") or {}).get("checkout") or {}
+    hook = auto_webhook_url(info, "checkout")
+    if not cfg or not hook:
+        return ""
+    if not (1000 <= int(amount) <= 10_000_000):
+        logging.warning(f"Checkout: summa chegaradan tashqarida ({amount}) — 1 000..10 000 000 so'm")
+        return ""
+    uname = info.get("username") or info.get("bot_username")
+    payload = {
+        "amount": int(amount),
+        "description": (title or "To'lov")[:200],
+        "webhook_url": f"{hook}?o={order_id}",
+        "return_url": f"https://t.me/{str(uname).lstrip('@')}" if uname else "https://t.me",
+    }
+    try:
+        res = await _checkout_post(cfg, "create_payment", payload)
+    except Exception as e:
+        logging.warning(f"Checkout to'lov yaratishda xato: {e}")
+        return ""
+    pay = (res or {}).get("payment") or (res or {}).get("data") or {}
+    url = pay.get("_url") or pay.get("url")
+    pid = pay.get("_id") or pay.get("id")
+    if url:
+        order = (info.get("auto_orders") or {}).get(order_id)
+        if order is not None:
+            order["checkout_id"] = pid
+            order["checkout_uuid"] = pay.get("_uuid") or pay.get("uuid")
+            save_data()
+        return url
+    logging.warning(f"Checkout to'lov yaratilmadi: {res}")
+    return ""
+
+
+async def checkout_verify_paid(info: dict, order: dict, order_id: str) -> bool:
+    """Webhookda imzo yo'q, shuning uchun ishonmaymiz: holatni Checkout'dan o'z kalitimiz bilan so'raymiz."""
+    cfg = (info.get("auto_payments") or {}).get("checkout") or {}
+    if not cfg:
+        return False
+    payload = {}
+    if order.get("checkout_id") is not None:
+        payload["id"] = order["checkout_id"]
+    elif order.get("checkout_uuid"):
+        payload["uuid"] = order["checkout_uuid"]
+    else:
+        return False
+    try:
+        res = await _checkout_post(cfg, "status_payment", payload)
+    except Exception as e:
+        logging.warning(f"Checkout holatini tekshirishda xato: {e}")
+        return False
+    d = (res or {}).get("data") or (res or {}).get("payment") or {}
+    status = str(d.get("status") or d.get("_status") or "").lower()
+    if status != "paid":
+        return False
+    amt = d.get("amount", d.get("_amount"))
+    if amt is not None:
+        try:
+            if abs(float(amt) - float(order["amount"])) > 0.01:
+                logging.warning(f"Checkout summa mos emas: {amt} != {order['amount']} ({order_id})")
+                return False
+        except (TypeError, ValueError):
+            return False
+    return True
+
+
+async def pay_webhook_checkout(request):
+    token, info = auto_find_bot(request.match_info.get("bot_id"))
+    if not info:
+        return web.json_response({"error": "bot not found"}, status=404)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    orders = info.get("auto_orders") or {}
+    oid = str(request.query.get("o", ""))
+    order = orders.get(oid)
+    if not order:
+        # zaxira: Checkout invoys ID si bo'yicha qidiramiz
+        cid = str(((body or {}).get("data") or {}).get("order_id", ""))
+        for k, o in orders.items():
+            if o.get("provider") == "checkout" and cid and str(o.get("checkout_id")) == cid:
+                oid, order = k, o
+                break
+    if not order or order.get("provider") != "checkout":
+        return web.json_response({"error": "order not found"}, status=404)
+    if order.get("status") == "paid" or oid in CHECKOUT_INFLIGHT:
+        return web.json_response({"status": "ok"})
+    CHECKOUT_INFLIGHT.add(oid)
+    try:
+        if await checkout_verify_paid(info, order, oid):
+            order["status"] = "paid"
+            order["paid_at"] = datetime.now().isoformat()
+            save_data()
+            asyncio.create_task(auto_fulfill(token, info, oid))
+    finally:
+        CHECKOUT_INFLIGHT.discard(oid)
+    return web.json_response({"status": "ok"})
+
+
 def setup_premium_system(dp: Dispatcher, token: str, admin_id: int):
     """Barcha bot turlari uchun umumiy: to'lov tizimlari + Premium obuna tizimi.
     Yoqilgan bo'lsa, botdan foydalanish uchun Premium sotib olish talab qilinishi mumkin.
@@ -6706,6 +6831,12 @@ def setup_premium_system(dp: Dispatcher, token: str, admin_id: int):
             txt += "\n⚠️ Kalit saqlangan, lekin bu tizim bilan avtomatik ulanish hali ishga tushirilmagan — mijozlarga ko'rinmaydi.\n"
         elif p == "tgpay":
             txt += "\nℹ️ Qo'shimcha sozlash shart emas — to'lov Telegram ichida, tayyor hisob (invoice) orqali bo'ladi.\n"
+        elif p == "checkout":
+            txt += "\n✅ Webhook manzili har bir to'lov bilan avtomatik yuboriladi — Checkout kabinetiga hech narsa kiritish shart emas.\n"
+            txt += "\n⚠️ Checkout kabinetida «IP Whitelist» ni yoqmang (Railway IP manzili o'zgarib turadi).\n"
+            txt += "ℹ️ Summa 1 000 dan 10 000 000 so'mgacha bo'lishi kerak.\n"
+            if not url:
+                txt += "\n⚠️ Server manzili topilmadi (MINIAPP_URL yoki RAILWAY_PUBLIC_DOMAIN) — Checkout to'lovi ishlamaydi.\n"
         elif p == "octo":
             txt += "\n✅ Webhook manzili har bir to'lov bilan avtomatik yuboriladi — Octo kabinetiga hech narsa kiritish shart emas.\n"
             if not url:
@@ -7428,6 +7559,8 @@ def setup_premium_system(dp: Dispatcher, token: str, admin_id: int):
             return
         if prov == "octo":
             link = await octo_create_payment(info, order_id, amount, title, uid)
+        elif prov == "checkout":
+            link = await checkout_create_payment(info, order_id, amount, title, uid)
         else:
             link = auto_pay_link(info, prov, order_id, amount)
         if not link:
@@ -9991,6 +10124,7 @@ def setup_kino_bot(dp: Dispatcher, token: str):
         keyboard.append([KeyboardButton(text="🗓 Chiqish sanasini belgilash"), KeyboardButton(text="🖼 Cover")])
         keyboard.append([KeyboardButton(text="🏷 Kategoriyalar"), KeyboardButton(text="⭐ Tavsiyalar")])
         keyboard.append([KeyboardButton(text="📈 TOP reyting"), KeyboardButton(text="📤 Eksport")])
+        keyboard.append([KeyboardButton(text="🌐 Veb panelga film qo'shish")])
         keyboard.append([KeyboardButton(text="◀️ Orqaga")])
         return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
@@ -12386,6 +12520,73 @@ def setup_kino_bot(dp: Dispatcher, token: str):
                 "🚫 Galereyadan yuborilgan rasm qabul qilinmaydi.\n\n" + COVER_HOWTO + "\n\nChiqish: «⏪ Orqaga»")
             return
         await message.answer("❌ Rasmni «Sevimlilar»dan uzating (forward). Chiqish: «⏪ Orqaga»")
+
+    # ---------- 🌐 Veb panelga film qo'shish (admin veb paneldagi tugma bilan bir xil) ----------
+    KWA_MISS_TXT = {"cover": "Cover yo'q (🖼 Cover orqali qo'ying)",
+                    "desc": f"Tavsif yo'q yoki qisqa (kamida {KINO_WEB_MIN_DESC} belgi, ✏️ Tavsifni tahrirlash)",
+                    "video": "Video yo'q"}
+
+    def kwa_text() -> str:
+        return (
+            "🌐 <b>Veb panelga film qo'shish</b>\n\n"
+            "Film xalqqa veb sahifada ko'rinishi uchun <b>Cover</b>, <b>to'liq tavsif</b> va <b>video</b> bo'lishi shart.\n"
+            "• 🌐 — veb panelda (bossangiz olib tashlanadi)\n"
+            "• ✅ — tayyor (bossangiz qo'shiladi)\n"
+            "• ⚠️ — yetishmayotgan narsa bor (bossangiz nima yetishmasligi ko'rsatiladi)"
+        )
+
+    def kwa_kb() -> InlineKeyboardMarkup:
+        rows = []
+        for code, m in list(info["movies"].items())[-60:][::-1]:
+            if m.get("web"):
+                mark = "🌐"
+            elif kino_web_missing(m):
+                mark = "⚠️"
+            else:
+                mark = "✅"
+            rows.append([InlineKeyboardButton(text=f"{mark} Kod {code} — {movie_title_of(code)}"[:60],
+                                              callback_data=f"kwa_{code}")])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    @dp.message(F.text == "🌐 Veb panelga film qo'shish")
+    async def kwa_start(message: Message, state: FSMContext):
+        if not is_admin(info, message.from_user.id):
+            return
+        await state.clear()
+        if not info["movies"]:
+            await message.answer("Kontent yo'q. Avval kino qo'shing.")
+            return
+        await message.answer(kwa_text(), reply_markup=kwa_kb())
+
+    @dp.callback_query(F.data.startswith("kwa_"))
+    async def kwa_toggle(callback: CallbackQuery):
+        if not is_admin(info, callback.from_user.id):
+            await callback.answer()
+            return
+        code = callback.data.split("_", 1)[1]
+        m = info["movies"].get(code)
+        if not m:
+            await callback.answer("❌ Kino topilmadi.", show_alert=True)
+            return
+        if m.get("web"):
+            m.pop("web", None)
+            note = f"Kod {code}: veb paneldan olib tashlandi"
+        else:
+            miss = kino_web_missing(m)
+            if miss:
+                await callback.answer(
+                    "⚠️ Veb panelga qo'shib bo'lmaydi:\n" + "\n".join("• " + KWA_MISS_TXT.get(x, x) for x in miss),
+                    show_alert=True)
+                return
+            m["web"] = True
+            m["web_at"] = datetime.now().isoformat(timespec="seconds")
+            note = f"Kod {code}: 🌐 veb panelga qo'shildi"
+        save_data()
+        try:
+            await callback.message.edit_reply_markup(reply_markup=kwa_kb())
+        except Exception:
+            pass
+        await callback.answer(note)
 
     # ---------- Rejalashtirilgan chiqarish ----------
     @dp.message(F.text == "🗓 Chiqish sanasini belgilash")
@@ -23574,6 +23775,7 @@ async def start_web_server():
     app.router.add_post("/pay/click/{bot_id}", pay_webhook_click)
     app.router.add_post("/pay/payme/{bot_id}", pay_webhook_payme)
     app.router.add_post("/pay/octo/{bot_id}", pay_webhook_octo)
+    app.router.add_post("/pay/checkout/{bot_id}", pay_webhook_checkout)
     app.router.add_get("/api/admin/stars", api_admin_stars)
     app.router.add_post("/api/admin/stars", api_admin_stars)
     app.router.add_get("/api/admin/partners", api_admin_partners)
