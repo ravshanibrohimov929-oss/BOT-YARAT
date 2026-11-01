@@ -626,6 +626,7 @@ BOT_TYPES = {
     "nakrutka": "🚀 Nakrutka bot",
     "download": "📥 Yuklovchi bot",
     "subs": "💳 Obuna (pullik kanal) boti",
+    "city": "🏙 Shahar qurish o'yini",
 }
 
 # 🎬 MEDIA BOT turlari (ichki bot turi o'zgarmaydi: "kino_pro" — barcha kino funksiyalari saqlanadi).
@@ -693,6 +694,7 @@ DEFAULT_PRICES = {
     "nakrutka": 120_000,
     "download": 120_000,
     "subs": 120_000,
+    "city": 120_000,
 }
 DEFAULT_MONTHLY_RATE = 0.2  # keyingi oylar uchun narxning 20 foizi (standart) — eskirgan, endi ishlatilmaydi
 
@@ -881,6 +883,16 @@ try:
     if "subs" not in data["bot_menu"] and not data.get("_sb_menu_added"):
         data["bot_menu"]["subs"] = {"name": BOT_TYPES["subs"], "enabled": True}
         data["_sb_menu_added"] = True
+        save_data()
+except Exception:
+    pass
+
+
+# Yangi «Shahar qurish o'yini» turi bir marta avtomatik menyuga qo'shiladi
+try:
+    if "city" not in data["bot_menu"] and not data.get("_city_menu_added"):
+        data["bot_menu"]["city"] = {"name": BOT_TYPES["city"], "enabled": True}
+        data["_city_menu_added"] = True
         save_data()
 except Exception:
     pass
@@ -1479,6 +1491,13 @@ def tariff_card_text(tid: str, t: dict) -> str:
 
 # Har bir bot turi uchun tavsif (bot yaratish oynasida ko'rsatiladi)
 BOT_DESCRIPTIONS = {
+    "city": (
+        "<i>Telegram ichida shahar qurish o'yini: o'yinchi o'z shahrini quradi, binolarni yangilaydi, daromad yig'adi va reytingda raqobatlashadi.</i>\n\n"
+        "🏗 15 xil bino (uy, ferma, maktab, bank, zavod, stadion...), 🌆 izometrik 3D ko'rinish, 🚗 harakatlanuvchi mashinalar, "
+        "💰 oflayn daromad, ⬆️ 5 darajali yangilash, 🎁 kunlik bonus, 👥 referal, 🏆 reyting va boshqa shaharlarga mehmon bo'lish.\n\n"
+        "💎 O'yin ichidagi gemlar Telegram Stars orqali sotiladi — daromad sizga tushadi.\n\n"
+        "📊 Admin panelda: statistika, ommaviy xabar, hammaga sovg'a, gem paketlari narxi, majburiy obuna, adminlar."
+    ),
     "subs": (
         "<i>Yopiq kanal yoki guruhingizga pullik obuna soting: to'lov tushsa, bot odamni avtomatik kiritadi, muddat tugasa — chiqaradi.</i>\n\n"
         "💳 Chek, Click/Payme/Octo va Telegram Stars orqali to'lov, 📚 cheksiz tariflar, 🔗 shaxsiy kirish havolasi, ⏰ avtomatik eslatma, "
@@ -1672,6 +1691,10 @@ class DefaultDescFlow(StatesGroup):
 class CoverFlow(StatesGroup):
     code = State()
     photo = State()
+
+
+class CodePick(StatesGroup):
+    code = State()      # kino kodini yozib tanlash (uzun tugmalar ro'yxati o'rniga)
 
 
 class KinoPromoUse(StatesGroup):
@@ -12242,27 +12265,29 @@ def setup_kino_bot(dp: Dispatcher, token: str):
 
     @dp.message(F.text == "✏️ Tavsifni tahrirlash")
     @dp.message(F.text == "📝 Kino tahrirlash")
-    async def edit_desc_start(message: Message):
+    async def edit_desc_start(message: Message, state: FSMContext):
         if not is_admin(info, message.from_user.id):
             return
         if not info["movies"]:
             await message.answer("Kontent yo'q.")
             return
-        await message.answer("Tahrirlamoqchi bo'lgan kino kodini tanlang:", reply_markup=code_pick_kb("editdesc_"))
+        await ask_movie_code(message, state, "editdesc")
+
+    async def edit_desc_do(message: Message, state: FSMContext, code: str):
+        entry = info["movies"].get(code)
+        if entry and entry.get("type") != "series" and entry.get("file_id"):
+            await send_movie_menu(message, code)
+            return
+        await state.update_data(edit_code=code)
+        await message.answer("Yangi tavsifni kiriting:")
+        await state.set_state(StarPackageEdit.waiting_price)
 
     @dp.callback_query(F.data.startswith("editdesc_"))
     async def edit_desc_pick(callback: CallbackQuery, state: FSMContext):
+        # eski xabarlardagi tugmalar ham ishlayveradi
         if not is_admin(info, callback.from_user.id):
             return
-        code = callback.data.split("_", 1)[1]
-        entry = info["movies"].get(code)
-        if entry and entry.get("type") != "series" and entry.get("file_id"):
-            await send_movie_menu(callback.message, code)
-            await callback.answer()
-            return
-        await state.update_data(edit_code=code)
-        await callback.message.answer("Yangi tavsifni kiriting:")
-        await state.set_state(StarPackageEdit.waiting_price)
+        await edit_desc_do(callback.message, state, callback.data.split("_", 1)[1])
         await callback.answer()
 
     @dp.message(StarPackageEdit.waiting_price)
@@ -12283,46 +12308,49 @@ def setup_kino_bot(dp: Dispatcher, token: str):
 
     @dp.message(F.text == "🗑 Film o'chirish")
     @dp.message(F.text == "🗑 Kino o'chirish")
-    async def del_movie_start(message: Message):
+    async def del_movie_start(message: Message, state: FSMContext):
         if not is_admin(info, message.from_user.id):
             return
         if not info["movies"]:
             await message.answer("O'chirish uchun film yo'q.")
             return
-        await message.answer("O'chirmoqchi bo'lgan kino kodini tanlang:", reply_markup=code_pick_kb("delmovie_"))
+        await ask_movie_code(message, state, "delmovie")
 
-    @dp.callback_query(F.data.startswith("delmovie_"))
-    async def del_movie_cb(callback: CallbackQuery):
-        if not is_admin(info, callback.from_user.id):
-            return
-        code = callback.data.split("_", 1)[1]
+    async def del_movie_do(message: Message, state: FSMContext, code: str):
         removed = info["movies"].pop(code, None)
         info["request_counts"].pop(code, None)
         if code in info["featured"]:
             info["featured"].remove(code)
         save_data()
         if removed:
-            await callback.message.answer(f"🗑 Kod {code} o'chirildi.")
+            await message.answer(f"🗑 Kod {code} o'chirildi.", reply_markup=content_menu_kb())
+
+    @dp.callback_query(F.data.startswith("delmovie_"))
+    async def del_movie_cb(callback: CallbackQuery, state: FSMContext):
+        if not is_admin(info, callback.from_user.id):
+            return
+        await del_movie_do(callback.message, state, callback.data.split("_", 1)[1])
         await callback.answer()
 
     # ---------- Seriallarga qism qo'shish ----------
     @dp.message(F.text == "➕ Seriallarga qism qo'shish")
-    async def append_episode_start(message: Message):
+    async def append_episode_start(message: Message, state: FSMContext):
         if not is_moderator(message.from_user.id):
             return
         series_list = {c: m for c, m in info["movies"].items() if m.get("type") == "series"}
         if not series_list:
             await message.answer("Hozircha seriallar yo'q.")
             return
-        buttons = [[InlineKeyboardButton(text=f"{m['title']} (Kod {c})", callback_data=f"appendep_{c}")] for c, m in series_list.items()]
-        await message.answer("Qaysi serialga yangi qism qo'shamiz?", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await ask_movie_code(message, state, "appendep", pool=list(series_list.keys()))
+
+    async def append_episode_do(message: Message, state: FSMContext, code: str):
+        await state.update_data(append_code=code)
+        await message.answer("Yangi qism videosini <b>forward (uzatib)</b> yuboring:")
+        await state.set_state(AppendEpisode.waiting_video)
 
     @dp.callback_query(F.data.startswith("appendep_"))
     async def append_episode_pick(callback: CallbackQuery, state: FSMContext):
-        code = callback.data.split("_", 1)[1]
-        await state.update_data(append_code=code)
-        await callback.message.answer("Yangi qism videosini <b>forward (uzatib)</b> yuboring:")
-        await state.set_state(AppendEpisode.waiting_video)
+        await append_episode_do(callback.message, state, callback.data.split("_", 1)[1])
         await callback.answer()
 
     @dp.message(AppendEpisode.waiting_video, F.video)
@@ -12357,22 +12385,15 @@ def setup_kino_bot(dp: Dispatcher, token: str):
 
     # ---------- VIP kontent ----------
     @dp.message(F.text == "🔒 VIP qilib belgilash")
-    async def vip_mark_start(message: Message):
+    async def vip_mark_start(message: Message, state: FSMContext):
         if not is_admin(info, message.from_user.id) or not is_pro():
             return
         if not info["movies"]:
             await message.answer("Kontent yo'q.")
             return
-        buttons = []
-        for code, m in info["movies"].items():
-            mark = "🔒" if code in info["vip_codes"] else "🔓"
-            name = m.get("title") or m.get("desc", "-")[:25]
-            buttons.append([InlineKeyboardButton(text=f"{mark} Kod {code} — {name}", callback_data=f"vipmark_{code}")])
-        await message.answer("Bosish orqali VIP holatini yoqing/o'chiring:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await ask_movie_code(message, state, "vipmark")
 
-    @dp.callback_query(F.data.startswith("vipmark_"))
-    async def vip_mark_toggle(callback: CallbackQuery):
-        code = callback.data.split("_", 1)[1]
+    def vip_mark_apply(code: str) -> str:
         if code in info["vip_codes"]:
             info["vip_codes"].remove(code)
             status = "🔓 Ochiq (VIP emas)"
@@ -12380,46 +12401,46 @@ def setup_kino_bot(dp: Dispatcher, token: str):
             info["vip_codes"].append(code)
             status = "🔒 VIP-maxsus"
         save_data()
-        await callback.answer(f"Kod {code}: {status}", show_alert=True)
+        return f"Kod {code}: {status}"
+
+    async def vip_mark_do(message: Message, state: FSMContext, code: str):
+        await message.answer(vip_mark_apply(code), reply_markup=content_menu_kb())
+
+    @dp.callback_query(F.data.startswith("vipmark_"))
+    async def vip_mark_toggle(callback: CallbackQuery):
+        await callback.answer(vip_mark_apply(callback.data.split("_", 1)[1]), show_alert=True)
 
     # ---------- Pullik kontent ----------
     @dp.message(F.text == "💰 Pullik qilib belgilash")
-    async def paid_mark_start(message: Message):
+    async def paid_mark_start(message: Message, state: FSMContext):
         if not is_moderator(message.from_user.id):
             return
         items = [(c, m) for c, m in info["movies"].items() if m.get("file_id")]
         if not items:
             await message.answer("Film yo'q.")
             return
-        buttons = []
-        for code, m in items[-60:][::-1]:
-            paid = m.get("access") == "paid" and m.get("price")
-            mark = f"💰 {fmt_som(m['price'])}" if paid else "🆓"
-            name = m.get("title") or m.get("desc", "-")[:25]
-            buttons.append([InlineKeyboardButton(text=f"{mark} | Kod {code} — {name}", callback_data=f"kpmark_{code}")])
-        await message.answer(
-            "💰 Pullik qilish uchun filmni tanlang (narx so'raladi).\n"
-            "Allaqachon pullik filmni bossangiz, u yana bepul bo'ladi:",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons),
-        )
+        await ask_movie_code(message, state, "kpmark", pool=[c for c, _ in items])
+
+    async def paid_mark_do(message: Message, state: FSMContext, code: str, bot=None):
+        """Pullik filmni bepul qiladi, bepulini pullik qiladi (narx so'raladi). Natija matni qaytadi."""
+        e = info["movies"].get(code)
+        if not e or not e.get("file_id"):
+            await message.answer("❌ Kino topilmadi.", reply_markup=content_menu_kb())
+            return
+        if e.get("access") == "paid":
+            await apply_movie_access(bot or message.bot, code, "free")
+            await message.answer(f"Kod {code}: 🔓 endi bepul", reply_markup=content_menu_kb())
+            return
+        await state.update_data(mv_code=code, mv_msg=None)
+        await state.set_state(MovieAccessFlow.waiting_price)
+        await message.answer(f"💰 Kod <b>{code}</b> uchun narxni so'mda yozing (masalan: 10000):")
 
     @dp.callback_query(F.data.startswith("kpmark_"))
     async def paid_mark_toggle(callback: CallbackQuery, state: FSMContext):
         if not is_moderator(callback.from_user.id):
             await callback.answer()
             return
-        code = callback.data.split("_", 1)[1]
-        e = info["movies"].get(code)
-        if not e or not e.get("file_id"):
-            await callback.answer("❌ Kino topilmadi.", show_alert=True)
-            return
-        if e.get("access") == "paid":
-            await apply_movie_access(callback.bot, code, "free")
-            await callback.answer(f"Kod {code}: 🔓 endi bepul", show_alert=True)
-            return
-        await state.update_data(mv_code=code, mv_msg=None)
-        await state.set_state(MovieAccessFlow.waiting_price)
-        await callback.message.answer(f"💰 Kod <b>{code}</b> uchun narxni so'mda yozing (masalan: 10000):")
+        await paid_mark_do(callback.message, state, callback.data.split("_", 1)[1], bot=callback.bot)
         await callback.answer()
 
     # ---------- 🖼 Cover (video ko'rinishidagi qora fon o'rniga rasm) ----------
@@ -12521,72 +12542,108 @@ def setup_kino_bot(dp: Dispatcher, token: str):
             return
         await message.answer("❌ Rasmni «Sevimlilar»dan uzating (forward). Chiqish: «⏪ Orqaga»")
 
+    # ---------- 🔢 Kino kodini yozib tanlash (uzun tugmalar ro'yxati o'rniga) ----------
+    CODE_ASK_TXT = {
+        "editdesc": "✏️ Tahrirlamoqchi bo'lgan kino <b>kodini</b> yozing:",
+        "delmovie": "🗑 O'chirmoqchi bo'lgan kino <b>kodini</b> yozing:",
+        "vipmark": "🔒 VIP holatini o'zgartirmoqchi bo'lgan kino <b>kodini</b> yozing\n(VIP bo'lsa — ochiq, ochiq bo'lsa — VIP bo'ladi):",
+        "kpmark": "💰 Pullik qilmoqchi bo'lgan kino <b>kodini</b> yozing (narx so'raladi).\nPullik kodni yozsangiz — u yana bepul bo'ladi:",
+        "kwa": "🌐 Veb panelga qo'shmoqchi (yoki undan olib tashlamoqchi) bo'lgan kino <b>kodini</b> yozing.\n\n"
+               "Film xalqqa veb sahifada ko'rinishi uchun <b>Cover</b>, <b>to'liq tavsif</b> va <b>video</b> bo'lishi shart.",
+        "catassign": "🏷 Kategoriya biriktirmoqchi bo'lgan kino <b>kodini</b> yozing:",
+        "appendep": "➕ Yangi qism qo'shmoqchi bo'lgan serial <b>kodini</b> yozing:",
+        "featadd": "⭐ Tavsiyaga qo'shmoqchi bo'lgan kino <b>kodini</b> yozing:",
+        "featdel": "➖ Tavsiyadan olib tashlamoqchi bo'lgan kino <b>kodini</b> yozing:",
+    }
+
+    async def ask_movie_code(message: Message, state: FSMContext, action: str, pool=None):
+        """Tugmalar ro'yxati o'rniga kodni yozishni so'raydi. pool — mumkin bo'lgan kodlar (None = barcha kino)."""
+        await state.clear()
+        await state.set_state(CodePick.code)
+        await state.update_data(cp_action=action, cp_pool=list(pool) if pool is not None else None)
+        codes = list(pool) if pool is not None else list(info["movies"].keys())
+        hint = ""
+        if codes:
+            hint = "\n\n🔢 So'nggi kodlar: " + ", ".join(str(c) for c in codes[-10:][::-1])
+        await message.answer(
+            CODE_ASK_TXT.get(action, "Kino kodini yozing:") + hint,
+            reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="◀️ Orqaga")]], resize_keyboard=True))
+
+    async def kwa_do(message: Message, state: FSMContext, code: str):
+        m = info["movies"].get(code)
+        if not m:
+            await message.answer("❌ Kino topilmadi.", reply_markup=content_menu_kb())
+            return
+        if m.get("web"):
+            m.pop("web", None)
+            save_data()
+            await message.answer(f"Kod {code}: veb paneldan olib tashlandi.", reply_markup=content_menu_kb())
+            return
+        miss = kino_web_missing(m)
+        if miss:
+            await message.answer(
+                f"⚠️ Kod {code} ni veb panelga qo'shib bo'lmaydi:\n" + "\n".join("• " + KWA_MISS_TXT.get(x, x) for x in miss),
+                reply_markup=content_menu_kb())
+            return
+        m["web"] = True
+        m["web_at"] = datetime.now().isoformat(timespec="seconds")
+        save_data()
+        await message.answer(f"Kod {code}: 🌐 veb panelga qo'shildi.", reply_markup=content_menu_kb())
+
+    def code_actions() -> dict:
+        # Funksiyalar kodning pastroq qismida e'lon qilinadi, shuning uchun jadval chaqiruv paytida yig'iladi
+        return {
+            "editdesc": edit_desc_do,
+            "delmovie": del_movie_do,
+            "vipmark": vip_mark_do,
+            "kpmark": paid_mark_do,
+            "kwa": kwa_do,
+            "catassign": cat_assign_do,
+            "appendep": append_episode_do,
+            "featadd": featured_add_do,
+            "featdel": featured_del_do,
+        }
+
+    @dp.message(CodePick.code, F.text)
+    async def code_pick_got(message: Message, state: FSMContext):
+        if not is_moderator(message.from_user.id):
+            return
+        sd = await state.get_data()
+        action, pool = sd.get("cp_action"), sd.get("cp_pool")
+        code = (message.text or "").strip().lstrip("#")
+        fn = code_actions().get(action)
+        if not fn:
+            await state.clear()
+            return
+        if code not in info["movies"] or (pool is not None and code not in pool):
+            await message.answer("❌ Bunday kodli kino topilmadi. Kodni qaytadan yozing (chiqish: «◀️ Orqaga»):")
+            return
+        await state.clear()
+        await fn(message, state, code)
+
     # ---------- 🌐 Veb panelga film qo'shish (admin veb paneldagi tugma bilan bir xil) ----------
     KWA_MISS_TXT = {"cover": "Cover yo'q (🖼 Cover orqali qo'ying)",
                     "desc": f"Tavsif yo'q yoki qisqa (kamida {KINO_WEB_MIN_DESC} belgi, ✏️ Tavsifni tahrirlash)",
                     "video": "Video yo'q"}
 
-    def kwa_text() -> str:
-        return (
-            "🌐 <b>Veb panelga film qo'shish</b>\n\n"
-            "Film xalqqa veb sahifada ko'rinishi uchun <b>Cover</b>, <b>to'liq tavsif</b> va <b>video</b> bo'lishi shart.\n"
-            "• 🌐 — veb panelda (bossangiz olib tashlanadi)\n"
-            "• ✅ — tayyor (bossangiz qo'shiladi)\n"
-            "• ⚠️ — yetishmayotgan narsa bor (bossangiz nima yetishmasligi ko'rsatiladi)"
-        )
-
-    def kwa_kb() -> InlineKeyboardMarkup:
-        rows = []
-        for code, m in list(info["movies"].items())[-60:][::-1]:
-            if m.get("web"):
-                mark = "🌐"
-            elif kino_web_missing(m):
-                mark = "⚠️"
-            else:
-                mark = "✅"
-            rows.append([InlineKeyboardButton(text=f"{mark} Kod {code} — {movie_title_of(code)}"[:60],
-                                              callback_data=f"kwa_{code}")])
-        return InlineKeyboardMarkup(inline_keyboard=rows)
-
     @dp.message(F.text == "🌐 Veb panelga film qo'shish")
     async def kwa_start(message: Message, state: FSMContext):
         if not is_admin(info, message.from_user.id):
             return
-        await state.clear()
         if not info["movies"]:
+            await state.clear()
             await message.answer("Kontent yo'q. Avval kino qo'shing.")
             return
-        await message.answer(kwa_text(), reply_markup=kwa_kb())
+        await ask_movie_code(message, state, "kwa")
 
     @dp.callback_query(F.data.startswith("kwa_"))
-    async def kwa_toggle(callback: CallbackQuery):
+    async def kwa_toggle(callback: CallbackQuery, state: FSMContext):
+        # eski xabarlardagi tugmalar ham ishlayveradi
         if not is_admin(info, callback.from_user.id):
             await callback.answer()
             return
-        code = callback.data.split("_", 1)[1]
-        m = info["movies"].get(code)
-        if not m:
-            await callback.answer("❌ Kino topilmadi.", show_alert=True)
-            return
-        if m.get("web"):
-            m.pop("web", None)
-            note = f"Kod {code}: veb paneldan olib tashlandi"
-        else:
-            miss = kino_web_missing(m)
-            if miss:
-                await callback.answer(
-                    "⚠️ Veb panelga qo'shib bo'lmaydi:\n" + "\n".join("• " + KWA_MISS_TXT.get(x, x) for x in miss),
-                    show_alert=True)
-                return
-            m["web"] = True
-            m["web_at"] = datetime.now().isoformat(timespec="seconds")
-            note = f"Kod {code}: 🌐 veb panelga qo'shildi"
-        save_data()
-        try:
-            await callback.message.edit_reply_markup(reply_markup=kwa_kb())
-        except Exception:
-            pass
-        await callback.answer(note)
+        await kwa_do(callback.message, state, callback.data.split("_", 1)[1])
+        await callback.answer()
 
     # ---------- Rejalashtirilgan chiqarish ----------
     @dp.message(F.text == "🗓 Chiqish sanasini belgilash")
@@ -12743,21 +12800,23 @@ def setup_kino_bot(dp: Dispatcher, token: str):
             await message.answer("🏷 Kategoriyalar:\n\n" + "\n".join(lines))
 
     @dp.message(F.text == "🔗 Filmga kategoriya biriktirish")
-    async def cat_assign_start(message: Message):
+    async def cat_assign_start(message: Message, state: FSMContext):
         if not is_admin(info, message.from_user.id):
             return
         if not info["movies"] or not info["categories"]:
             await message.answer("Buning uchun kamida bitta kontent va bitta kategoriya bo'lishi kerak.")
             return
-        buttons = [[InlineKeyboardButton(text=f"Kod {code}", callback_data=f"catassign_{code}")] for code in info["movies"]]
-        await message.answer("Qaysi kontentga kategoriya biriktiramiz?", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await ask_movie_code(message, state, "catassign")
+
+    async def cat_assign_do(message: Message, state: FSMContext, code: str):
+        await state.update_data(assign_code=code)
+        buttons = [[InlineKeyboardButton(text=name, callback_data=f"catset_{cid}")] for cid, name in info["categories"].items()]
+        await message.answer(f"Kod <b>{html_escape(code)}</b> uchun kategoriyani tanlang:",
+                             reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
     @dp.callback_query(F.data.startswith("catassign_"))
     async def cat_assign_pick_movie(callback: CallbackQuery, state: FSMContext):
-        code = callback.data.split("_", 1)[1]
-        await state.update_data(assign_code=code)
-        buttons = [[InlineKeyboardButton(text=name, callback_data=f"catset_{cid}")] for cid, name in info["categories"].items()]
-        await callback.message.answer("Kategoriyani tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await cat_assign_do(callback.message, state, callback.data.split("_", 1)[1])
         await callback.answer()
 
     @dp.callback_query(F.data.startswith("catset_"))
@@ -12799,25 +12858,27 @@ def setup_kino_bot(dp: Dispatcher, token: str):
         await message.answer("⭐ <b>Tavsiyalar boshqaruvi</b>", reply_markup=featured_menu_kb())
 
     @dp.message(F.text == "➕ Tavsiyaga qo'shish")
-    async def featured_add_start(message: Message):
+    async def featured_add_start(message: Message, state: FSMContext):
         if not is_admin(info, message.from_user.id):
             return
         if not info["movies"]:
             await message.answer("Kontent yo'q.")
             return
-        buttons = [[InlineKeyboardButton(text=f"Kod {code}", callback_data=f"featadd_{code}")] for code in info["movies"] if code not in info["featured"]]
-        if not buttons:
+        pool = [code for code in info["movies"] if code not in info["featured"]]
+        if not pool:
             await message.answer("Barcha kontent allaqachon tavsiyada.")
             return
-        await message.answer("Tavsiyaga qo'shmoqchi bo'lgan kontentni tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await ask_movie_code(message, state, "featadd", pool=pool)
 
-    @dp.callback_query(F.data.startswith("featadd_"))
-    async def featured_add_cb(callback: CallbackQuery):
-        code = callback.data.split("_", 1)[1]
+    async def featured_add_do(message: Message, state: FSMContext, code: str):
         if code not in info["featured"]:
             info["featured"].append(code)
             save_data()
-        await callback.message.answer(f"✅ Kod {code} tavsiyalarga qo'shildi.")
+        await message.answer(f"✅ Kod {code} tavsiyalarga qo'shildi.", reply_markup=featured_menu_kb())
+
+    @dp.callback_query(F.data.startswith("featadd_"))
+    async def featured_add_cb(callback: CallbackQuery, state: FSMContext):
+        await featured_add_do(callback.message, state, callback.data.split("_", 1)[1])
         await callback.answer()
 
     @dp.message(F.text == "📋 Tavsiyalar ro'yxati")
@@ -12830,22 +12891,23 @@ def setup_kino_bot(dp: Dispatcher, token: str):
             await message.answer("⭐ Tavsiyalar:\n\n" + "\n".join(f"• Kod {c}" for c in info["featured"]))
 
     @dp.message(F.text == "➖ Tavsiyadan olib tashlash")
-    async def featured_del_start(message: Message):
+    async def featured_del_start(message: Message, state: FSMContext):
         if not is_admin(info, message.from_user.id):
             return
         if not info["featured"]:
             await message.answer("Tavsiyalar mavjud emas.")
             return
-        buttons = [[InlineKeyboardButton(text=f"Kod {c}", callback_data=f"featdel_{c}")] for c in info["featured"]]
-        await message.answer("Olib tashlamoqchi bo'lgan kodni tanlang:", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
+        await ask_movie_code(message, state, "featdel", pool=list(info["featured"]))
 
-    @dp.callback_query(F.data.startswith("featdel_"))
-    async def featured_del_cb(callback: CallbackQuery):
-        code = callback.data.split("_", 1)[1]
+    async def featured_del_do(message: Message, state: FSMContext, code: str):
         if code in info["featured"]:
             info["featured"].remove(code)
             save_data()
-        await callback.message.answer(f"➖ Kod {code} tavsiyalardan olib tashlandi.")
+        await message.answer(f"➖ Kod {code} tavsiyalardan olib tashlandi.", reply_markup=featured_menu_kb())
+
+    @dp.callback_query(F.data.startswith("featdel_"))
+    async def featured_del_cb(callback: CallbackQuery, state: FSMContext):
+        await featured_del_do(callback.message, state, callback.data.split("_", 1)[1])
         await callback.answer()
 
     # ---------- TOP reyting ----------
@@ -20676,7 +20738,1796 @@ def setup_subs_bot(dp: Dispatcher, token: str):
 # ===================== /OBUNA BOT =====================
 
 
+# ===================== 🏙 SHAHAR QURISH O'YINI =====================
+# Telegram Mini App: o'yinchi o'z shahrini quradi, bino yangilaydi, daromad yig'adi, reytingda raqobatlashadi.
+# Barcha hisob-kitob SERVERDA (mijoz faqat ko'rsatadi) — soxtalashtirib bo'lmaydi.
+# O'yinchilar katta asosiy hujjatga emas, alohida MongoDB kolleksiyasiga ("city_players") yoziladi.
+import time as _ct_time
+import copy as _ct_copy
+import random as _ct_random
+
+CITY_GRID = 24                 # xarita 24x24 katak
+CITY_MAX_LV = 30               # shahar darajasi chegarasi
+CITY_UP_MULT = (1.0, 1.5, 2.2, 3.2, 4.6)   # bino darajasi -> daromad ko'paytmasi
+CITY_CAP_H = 12.0              # yig'ilmagan daromad ko'pi bilan shuncha soat to'planadi
+CITY_SELL_BACK = 0.4           # sotilganda qaytariladigan ulush
+CITY_MAX_BUILDINGS = 420
+CITY_BONUS_CAP = 0.40          # park/yodgorliklardan umumiy daromad bonusi chegarasi
+
+# n=nomi, e=emoji, w/h=o'lcham (katak), cost=tanga, gem=gemda narx, inc=soatiga tanga (1-daraja), pop=aholi,
+# secs=qurilish vaqti, lv=ochiladigan shahar darajasi, max=eng yuqori bino darajasi, bonus=daromadga ulush, cap=saqlash soati
+CITY_BUILDINGS = {
+    "road":     {"n": "Yo'l",              "e": "🛣", "w": 1, "h": 1, "cost": 15,      "inc": 0,     "pop": 0,  "secs": 0,    "lv": 1,  "max": 1},
+    "house":    {"n": "Uy",                "e": "🏠", "w": 1, "h": 1, "cost": 120,     "inc": 32,     "pop": 4,  "secs": 8,    "lv": 1,  "max": 5},
+    "farm":     {"n": "Ferma",             "e": "🌾", "w": 2, "h": 2, "cost": 600,     "inc": 180,    "pop": 0,  "secs": 30,   "lv": 1,  "max": 5},
+    "shop":     {"n": "Do'kon",            "e": "🏪", "w": 1, "h": 1, "cost": 450,     "inc": 120,    "pop": 0,  "secs": 20,   "lv": 2,  "max": 5},
+    "park":     {"n": "Park",              "e": "🌳", "w": 1, "h": 1, "cost": 350,     "inc": 0,     "pop": 0,  "secs": 15,   "lv": 2,  "max": 3, "bonus": 0.02},
+    "school":   {"n": "Maktab",            "e": "🏫", "w": 2, "h": 2, "cost": 2500,    "inc": 480,   "pop": 0,  "secs": 120,  "lv": 3,  "max": 5},
+    "apt":      {"n": "Ko'p qavatli uy",   "e": "🏢", "w": 2, "h": 2, "cost": 3500,    "inc": 960,   "pop": 40, "secs": 180,  "lv": 3,  "max": 5},
+    "market":   {"n": "Bozor",             "e": "🛒", "w": 2, "h": 2, "cost": 9000,    "inc": 2400,   "pop": 0,  "secs": 300,  "lv": 4,  "max": 5},
+    "hospital": {"n": "Kasalxona",         "e": "🏥", "w": 2, "h": 2, "cost": 15000,   "inc": 3600,   "pop": 0,  "secs": 600,  "lv": 5,  "max": 5},
+    "factory":  {"n": "Zavod",             "e": "🏭", "w": 2, "h": 2, "cost": 28000,   "inc": 7600,  "pop": 0,  "secs": 900,  "lv": 6,  "max": 5},
+    "bank":     {"n": "Bank",              "e": "🏦", "w": 2, "h": 2, "cost": 60000,   "inc": 15200,  "pop": 0,  "secs": 1800, "lv": 7,  "max": 5, "cap": 3.0},
+    "hotel":    {"n": "Mehmonxona",        "e": "🏨", "w": 2, "h": 2, "cost": 120000,  "inc": 32800,  "pop": 0,  "secs": 3600, "lv": 8,  "max": 5},
+    "stadium":  {"n": "Stadion",           "e": "🏟", "w": 2, "h": 2, "cost": 300000,  "inc": 88000, "pop": 0,  "secs": 7200, "lv": 10, "max": 5},
+    "monument": {"n": "Yodgorlik",         "e": "🗽", "w": 1, "h": 1, "cost": 0, "gem": 40,  "inc": 0, "pop": 0, "secs": 600, "lv": 5,  "max": 1, "bonus": 0.05},
+    "tower":    {"n": "Teleminora",        "e": "🗼", "w": 1, "h": 1, "cost": 0, "gem": 150, "inc": 0, "pop": 0, "secs": 1200, "lv": 8, "max": 1, "bonus": 0.10},
+}
+
+CITY_DEFAULT_PACKS = [
+    {"id": "g1", "gems": 50,   "stars": 25},
+    {"id": "g2", "gems": 150,  "stars": 70},
+    {"id": "g3", "gems": 400,  "stars": 170},
+    {"id": "g4", "gems": 1000, "stars": 400},
+]
+
+_CITY_CACHE = {}       # bot_id -> {uid -> player}
+_CITY_DIRTY = set()    # {(bot_id, uid)}
+_CITY_FLUSH = {"pending": False, "last_main": 0.0}
+
+
+def city_now() -> float:
+    return _ct_time.time()
+
+
+def city_today() -> str:
+    return (datetime.utcnow() + timedelta(hours=5)).strftime("%Y-%m-%d")
+
+
+def city_yesterday() -> str:
+    return (datetime.utcnow() + timedelta(hours=5) - timedelta(days=1)).strftime("%Y-%m-%d")
+
+
+def city_cum_xp(lv: int) -> int:
+    """Shu darajaga yetish uchun kerakli jami XP."""
+    return 50 * lv * (lv - 1)
+
+
+def city_upg_cost(t: str, lv: int) -> int:
+    """lv-darajadan lv+1 ga o'tish narxi (tanga)."""
+    return int(round(CITY_BUILDINGS[t]["cost"] * (1.7 ** lv)))
+
+
+def city_cfg(info: dict) -> dict:
+    c = info.setdefault("city", {})
+    c.setdefault("top", {})        # {str(uid): [ism, qiymat, daraja, aholi, oxirgi_kirish]}
+    c.setdefault("packs", [dict(x) for x in CITY_DEFAULT_PACKS])
+    c.setdefault("gifts", [])      # [{"id", "gems", "coins", "text"}]
+    c.setdefault("ref", {})        # {str(yangi_uid): taklif_qilgan_uid}
+    c.setdefault("stars_total", 0)
+    c.setdefault("sales", 0)
+    c.setdefault("players", 0)
+    return c
+
+
+# ---------------- Saqlash (alohida kolleksiya) ----------------
+def _city_coll():
+    try:
+        if mongo_collection is not None:
+            return mongo_db["city_players"]
+    except Exception:
+        pass
+    return None
+
+
+def _city_key(bid, uid) -> str:
+    return f"{bid}:{uid}"
+
+
+async def city_load(bid, uid):
+    cache = _CITY_CACHE.setdefault(bid, {})
+    p = cache.get(uid)
+    if p is not None:
+        return p
+    doc = None
+    coll = _city_coll()
+    if coll is not None:
+        try:
+            doc = await asyncio.to_thread(coll.find_one, {"_id": _city_key(bid, uid)})
+        except Exception as e:
+            logging.warning(f"Shahar o'yinchisini yuklashda xato: {e}")
+            # bazaga ulana olmasak yangi o'yinchi yaratib, eskisini ustiga yozib yubormaymiz
+            raise
+    else:
+        doc = (data.get("city_players") or {}).get(_city_key(bid, uid))
+    if doc:
+        doc.pop("_id", None)
+        cache[uid] = doc
+        return doc
+    return None
+
+
+def city_mark_dirty(bid, uid):
+    _CITY_DIRTY.add((bid, uid))
+    if _CITY_FLUSH["pending"]:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        city_flush()
+        return
+    _CITY_FLUSH["pending"] = True
+    loop.call_later(1.5, city_flush)
+
+
+def city_flush():
+    _CITY_FLUSH["pending"] = False
+    items = list(_CITY_DIRTY)
+    _CITY_DIRTY.clear()
+    coll = _city_coll()
+    for bid, uid in items:
+        p = (_CITY_CACHE.get(bid) or {}).get(uid)
+        if p is None:
+            continue
+        if coll is not None:
+            doc = _ct_copy.deepcopy(p)
+            doc["_id"] = _city_key(bid, uid)
+
+            def _w(d=doc):
+                try:
+                    coll.replace_one({"_id": d["_id"]}, d, upsert=True)
+                except Exception as e:
+                    logging.error(f"Shahar o'yinchisini saqlashda xato: {e}")
+            _save_executor.submit(_w)
+        else:
+            data.setdefault("city_players", {})[_city_key(bid, uid)] = _ct_copy.deepcopy(p)
+    # reyting indeksi (asosiy hujjatda, kichik) — kamida 30 soniyada bir marta
+    nowt = city_now()
+    if items and (coll is None or nowt - _CITY_FLUSH["last_main"] > 30):
+        _CITY_FLUSH["last_main"] = nowt
+        save_data()
+
+
+# ---------------- O'yin mantig'i ----------------
+def city_level_for_xp(xp: int) -> int:
+    lv = 1
+    while lv < CITY_MAX_LV and xp >= city_cum_xp(lv + 1):
+        lv += 1
+    return lv
+
+
+def city_new_player(uid: int, name: str) -> dict:
+    now = city_now()
+    p = {"uid": uid, "name": (name or "Shahar")[:24], "coins": 600, "gems": 5, "xp": 0, "lv": 1, "nid": 1,
+         "b": [], "created": now, "seen": now, "daily": {"d": "", "s": 0}, "gift": 0, "refs": 0,
+         "earned": 0, "buys": 0}
+    for x in range(8, 16):
+        city_put(p, "road", x, 12, now, secs=0)
+    city_put(p, "house", 10, 10, now, secs=0)
+    city_put(p, "house", 13, 10, now, secs=0)
+    return p
+
+
+def city_put(p: dict, t: str, x: int, y: int, now: float, secs=None) -> dict:
+    d = CITY_BUILDINGS[t]
+    s = d["secs"] if secs is None else secs
+    b = {"i": p["nid"], "t": t, "x": x, "y": y, "l": 1, "r": now + s, "c": now + s}
+    p["nid"] += 1
+    p["b"].append(b)
+    return b
+
+
+def city_occupied(p: dict, ignore=None) -> dict:
+    occ = {}
+    for b in p["b"]:
+        if b["i"] == ignore:
+            continue
+        d = CITY_BUILDINGS[b["t"]]
+        for dx in range(d["w"]):
+            for dy in range(d["h"]):
+                occ[(b["x"] + dx, b["y"] + dy)] = b["i"]
+    return occ
+
+
+def city_fits(p: dict, t: str, x: int, y: int, ignore=None) -> bool:
+    d = CITY_BUILDINGS[t]
+    if x < 0 or y < 0 or x + d["w"] > CITY_GRID or y + d["h"] > CITY_GRID:
+        return False
+    occ = city_occupied(p, ignore)
+    for dx in range(d["w"]):
+        for dy in range(d["h"]):
+            if (x + dx, y + dy) in occ:
+                return False
+    return True
+
+
+def city_bonus(p: dict) -> float:
+    total = 0.0
+    for b in p["b"]:
+        d = CITY_BUILDINGS[b["t"]]
+        if d.get("bonus"):
+            total += d["bonus"] * (b["l"] if b["t"] == "park" else 1)
+    return min(CITY_BONUS_CAP, total)
+
+
+def city_cap_hours(p: dict) -> float:
+    extra = 0.0
+    for b in p["b"]:
+        d = CITY_BUILDINGS[b["t"]]
+        if d.get("cap"):
+            extra += d["cap"] * b["l"] / 2.0
+    return min(CITY_CAP_H + extra, 36.0)
+
+
+def city_b_inc(b: dict, bonus: float) -> float:
+    d = CITY_BUILDINGS[b["t"]]
+    return d["inc"] * CITY_UP_MULT[b["l"] - 1] * (1.0 + bonus)
+
+
+def city_rate(p: dict, now: float) -> float:
+    bonus = city_bonus(p)
+    return sum(city_b_inc(b, bonus) for b in p["b"] if b["r"] <= now)
+
+
+def city_pending(p: dict, now: float) -> float:
+    bonus, cap, tot = city_bonus(p), city_cap_hours(p), 0.0
+    for b in p["b"]:
+        d = CITY_BUILDINGS[b["t"]]
+        if not d["inc"]:
+            continue
+        since = max(b["c"], b["r"])
+        if now > since:
+            tot += city_b_inc(b, bonus) * min(cap, (now - since) / 3600.0)
+    return tot
+
+
+def city_pop(p: dict, now: float) -> int:
+    return sum(CITY_BUILDINGS[b["t"]]["pop"] * b["l"] for b in p["b"] if b["r"] <= now)
+
+
+def city_value(p: dict) -> int:
+    """Shahar qiymati (reyting shu bo'yicha): sarflangan tangalar + gemli binolar."""
+    v = 0
+    for b in p["b"]:
+        d = CITY_BUILDINGS[b["t"]]
+        v += d["cost"] + d.get("gem", 0) * 50
+        for lv in range(1, b["l"]):
+            v += city_upg_cost(b["t"], lv)
+    return int(v)
+
+
+def city_gain_xp(p: dict, n: int) -> list:
+    """XP qo'shadi; erishilgan yangi darajalar ro'yxatini qaytaradi (har biriga sovg'a)."""
+    p["xp"] += max(1, int(n))
+    ups = []
+    while p["lv"] < CITY_MAX_LV and p["xp"] >= city_cum_xp(p["lv"] + 1):
+        p["lv"] += 1
+        p["gems"] += 3
+        p["coins"] += 100 * p["lv"]
+        ups.append(p["lv"])
+    return ups
+
+
+def city_index(info: dict, p: dict):
+    now = city_now()
+    city_cfg(info)["top"][str(p["uid"])] = [p["name"], city_value(p), p["lv"], city_pop(p, now), int(now)]
+
+
+def city_state(p: dict, now: float) -> dict:
+    pend = city_pending(p, now)
+    return {
+        "now": now, "name": p["name"], "uid": p["uid"],
+        "coins": int(p["coins"]), "gems": int(p["gems"]),
+        "xp": p["xp"], "lv": p["lv"], "xp_lo": city_cum_xp(p["lv"]),
+        "xp_hi": city_cum_xp(p["lv"] + 1) if p["lv"] < CITY_MAX_LV else city_cum_xp(p["lv"]),
+        "inc": int(round(city_rate(p, now))), "pend": int(pend),
+        "cap_h": round(city_cap_hours(p), 1), "pop": city_pop(p, now),
+        "bonus": round(city_bonus(p), 3), "val": city_value(p),
+        "daily": p["daily"]["d"] != city_today(), "streak": p["daily"]["s"],
+        "b": [[b["i"], b["t"], b["x"], b["y"], b["l"], max(0, int(round(b["r"] - now)))] for b in p["b"]],
+    }
+
+
+def city_catalog() -> dict:
+    out = {}
+    for k, d in CITY_BUILDINGS.items():
+        out[k] = {"n": d["n"], "e": d["e"], "w": d["w"], "h": d["h"], "cost": d["cost"], "gem": d.get("gem", 0),
+                  "inc": d["inc"], "pop": d["pop"], "secs": d["secs"], "lv": d["lv"], "max": d["max"],
+                  "bonus": d.get("bonus", 0), "cap": d.get("cap", 0)}
+    return out
+
+
+def _cerr(code: str, msg: str) -> dict:
+    return {"error": code, "msg": msg}
+
+
+def city_find(p: dict, bid):
+    try:
+        bid = int(bid)
+    except Exception:
+        return None
+    for b in p["b"]:
+        if b["i"] == bid:
+            return b
+    return None
+
+
+def city_claim_gifts(info: dict, p: dict) -> list:
+    got = []
+    for g in city_cfg(info)["gifts"]:
+        if g["id"] > p["gift"]:
+            p["gift"] = g["id"]
+            p["gems"] += int(g.get("gems", 0))
+            p["coins"] += int(g.get("coins", 0))
+            got.append({"gems": int(g.get("gems", 0)), "coins": int(g.get("coins", 0)), "text": g.get("text", "")})
+    return got
+
+
+def city_act(info: dict, p: dict, act: str, body: dict) -> dict:
+    """Bitta o'yin amali. Sinxron (await yo'q) — shu sababli bir vaqtda ikki so'rov bir-biriga xalaqit bermaydi."""
+    now = city_now()
+    res = {}
+    ups = []
+    if act == "state":
+        pass
+    elif act == "build":
+        t = str(body.get("t", ""))
+        d = CITY_BUILDINGS.get(t)
+        if not d:
+            return _cerr("bad", "Noma'lum bino.")
+        try:
+            x, y = int(body.get("x")), int(body.get("y"))
+        except Exception:
+            return _cerr("bad", "Noto'g'ri joy.")
+        if p["lv"] < d["lv"]:
+            return _cerr("locked", f"Bu bino {d['lv']}-darajada ochiladi.")
+        if len(p["b"]) >= CITY_MAX_BUILDINGS:
+            return _cerr("full", "Shaharda joy qolmadi.")
+        if not city_fits(p, t, x, y):
+            return _cerr("spot", "Bu yerga qurib bo'lmaydi.")
+        if d.get("gem"):
+            if p["gems"] < d["gem"]:
+                return _cerr("gems", "Gem yetarli emas.")
+            p["gems"] -= d["gem"]
+        else:
+            if p["coins"] < d["cost"]:
+                return _cerr("coins", "Tanga yetarli emas.")
+            p["coins"] -= d["cost"]
+        b = city_put(p, t, x, y, now)
+        ups = city_gain_xp(p, (d["cost"] // 8) or (d.get("gem", 0) * 5) or 2)
+        res["new"] = b["i"]
+    elif act == "move":
+        b = city_find(p, body.get("i"))
+        if not b:
+            return _cerr("nf", "Bino topilmadi.")
+        try:
+            x, y = int(body.get("x")), int(body.get("y"))
+        except Exception:
+            return _cerr("bad", "Noto'g'ri joy.")
+        if not city_fits(p, b["t"], x, y, ignore=b["i"]):
+            return _cerr("spot", "Bu yerga ko'chirib bo'lmaydi.")
+        b["x"], b["y"] = x, y
+    elif act == "upgrade":
+        b = city_find(p, body.get("i"))
+        if not b:
+            return _cerr("nf", "Bino topilmadi.")
+        d = CITY_BUILDINGS[b["t"]]
+        if b["l"] >= d["max"]:
+            return _cerr("max", "Eng yuqori darajada.")
+        if b["r"] > now:
+            return _cerr("busy", "Avval qurilish tugashi kerak.")
+        cost = city_upg_cost(b["t"], b["l"])
+        if p["coins"] < cost:
+            return _cerr("coins", "Tanga yetarli emas.")
+        # yangilashdan oldin yig'ilgan daromadni saqlab qolamiz (eski daraja bo'yicha)
+        gain = city_pending(p, now)
+        p["coins"] += int(gain) - cost
+        p["earned"] += int(gain)
+        for x in p["b"]:
+            if x["r"] <= now:
+                x["c"] = now
+        b["l"] += 1
+        ups = city_gain_xp(p, max(5, cost // 8))
+    elif act == "sell":
+        b = city_find(p, body.get("i"))
+        if not b:
+            return _cerr("nf", "Bino topilmadi.")
+        d = CITY_BUILDINGS[b["t"]]
+        if d.get("gem"):
+            return _cerr("nosell", "Gemli binoni sotib bo'lmaydi.")
+        gain = city_pending(p, now)
+        paid = d["cost"] + sum(city_upg_cost(b["t"], lv) for lv in range(1, b["l"]))
+        p["coins"] += int(gain) + int(paid * CITY_SELL_BACK)
+        p["earned"] += int(gain)
+        for x in p["b"]:
+            if x["r"] <= now:
+                x["c"] = now
+        p["b"] = [x for x in p["b"] if x["i"] != b["i"]]
+    elif act == "finish":
+        b = city_find(p, body.get("i"))
+        if not b:
+            return _cerr("nf", "Bino topilmadi.")
+        left = b["r"] - now
+        if left <= 0:
+            return _cerr("done", "Bino allaqachon tayyor.")
+        need = max(1, int(-(-left // 60)))
+        if p["gems"] < need:
+            return _cerr("gems", f"Gem yetarli emas (kerak: {need}).")
+        p["gems"] -= need
+        b["r"] = now
+        b["c"] = now
+    elif act == "collect":
+        gain = int(city_pending(p, now))
+        for x in p["b"]:
+            if x["r"] <= now:
+                x["c"] = now
+        p["coins"] += gain
+        p["earned"] += gain
+        res["gain"] = gain
+    elif act == "daily":
+        today = city_today()
+        if p["daily"]["d"] == today:
+            return _cerr("daily", "Bugungi bonus olingan.")
+        s = p["daily"]["s"] + 1 if p["daily"]["d"] == city_yesterday() else 1
+        coins = (100 + 50 * p["lv"]) * min(s, 7)
+        gems = 5 if s % 7 == 0 else (1 if s % 3 == 0 else 0)
+        p["daily"] = {"d": today, "s": s}
+        p["coins"] += coins
+        p["gems"] += gems
+        res["bonus"] = {"coins": coins, "gems": gems, "streak": s}
+    else:
+        return _cerr("bad", "Noma'lum amal.")
+    if ups:
+        res["levelup"] = ups
+    city_index(info, p)
+    res["state"] = city_state(p, now)
+    return res
+
+
+def city_top(info: dict, uid: int, limit: int = 30) -> dict:
+    top = city_cfg(info)["top"]
+    rows = sorted(top.items(), key=lambda kv: -kv[1][1])
+    out = [{"u": int(k), "n": v[0], "v": v[1], "lv": v[2], "pop": v[3]} for k, v in rows[:limit]]
+    me = top.get(str(uid))
+    rank = (1 + sum(1 for v in top.values() if v[1] > me[1])) if me else None
+    return {"top": out, "rank": rank, "total": len(top)}
+
+
+def city_visit_view(p: dict, now: float) -> dict:
+    return {"name": p["name"], "uid": p["uid"], "lv": p["lv"], "val": city_value(p), "pop": city_pop(p, now),
+            "b": [[b["i"], b["t"], b["x"], b["y"], b["l"], max(0, int(round(b["r"] - now)))] for b in p["b"]]}
+
+
+# ---------------- HTTP (Mini App API) ----------------
+def get_cityapp_url(bot_id) -> str:
+    """Shahar o'yini mini app URL'i: https://<domen>/city?b=<bot_id>"""
+    purl = get_kinopanel_url(bot_id)
+    return purl.replace("/kinopanel?", "/city?") if purl else ""
+
+
+def city_find_bot(bot_id):
+    try:
+        bid = int(bot_id)
+    except Exception:
+        return None, None
+    for token, info in data["bots"].items():
+        if info.get("id") == bid and info.get("type") == "city":
+            return token, info
+    return None, None
+
+
+async def city_page(request):
+    return web.Response(
+        text=CITY_HTML,
+        content_type="text/html",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache"},
+    )
+
+
+def city_auth(token: str, init_data: str):
+    """initData imzosi to'g'ri bo'lsa (uid, ism) qaytaradi."""
+    parsed = validate_webapp_init_data(init_data or "", token)
+    if not parsed:
+        return None, ""
+    try:
+        u = json.loads(parsed.get("user", "{}"))
+        return int(u.get("id")), (u.get("first_name") or u.get("username") or "Shahar")
+    except Exception:
+        return None, ""
+
+
+async def city_get_or_create(info: dict, token: str, uid: int, name: str):
+    bid = info["id"]
+    p = await city_load(bid, uid)
+    created = False
+    if p is None:
+        p = (_CITY_CACHE.get(bid) or {}).get(uid)    # await paytida boshqa so'rov yaratib qo'ygan bo'lishi mumkin
+    if p is None:
+        p = city_new_player(uid, name)
+        _CITY_CACHE.setdefault(bid, {})[uid] = p
+        created = True
+        cfg = city_cfg(info)
+        cfg["players"] = cfg.get("players", 0) + 1
+        if cfg["gifts"]:
+            p["gift"] = cfg["gifts"][-1]["id"]      # yangi o'yinchi eski sovg'alarni olmaydi
+        ref = cfg["ref"].pop(str(uid), None)
+        if ref and int(ref) != uid:
+            p["gems"] += 5
+            rp = await city_load(bid, int(ref))
+            if rp is not None:
+                rp["gems"] += 10
+                rp["refs"] = rp.get("refs", 0) + 1
+                city_mark_dirty(bid, int(ref))
+    if name and p["name"] != name[:24]:
+        p["name"] = name[:24]
+    p["seen"] = city_now()
+    return p, created
+
+
+async def city_api(request):
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "bad"}, status=400, headers=_NO_STORE)
+    token, info = city_find_bot(body.get("b"))
+    if not info:
+        return web.json_response({"error": "bot_not_found"}, status=404, headers=_NO_STORE)
+    uid, name = city_auth(token, str(body.get("init", "")))
+    if not uid:
+        return web.json_response({"error": "auth"}, status=401, headers=_NO_STORE)
+    if uid in info.get("blocked_users", []):
+        return web.json_response({"error": "blocked", "msg": "Siz bloklangansiz."}, status=403, headers=_NO_STORE)
+    if not is_active(info):
+        return web.json_response({"error": "inactive", "msg": "Bot vaqtincha ishlamayapti."}, status=403, headers=_NO_STORE)
+    try:
+        p, created = await city_get_or_create(info, token, uid, name)
+    except Exception:
+        return web.json_response({"error": "db", "msg": "Ma'lumotlar bazasi band. Qayta urinib ko'ring."}, status=503, headers=_NO_STORE)
+    act = str(body.get("act", "state"))
+    now = city_now()
+    if act == "top":
+        city_index(info, p)
+        return web.json_response({"ok": True, **city_top(info, uid)}, headers=_NO_STORE)
+    if act == "visit":
+        try:
+            ouid = int(body.get("u"))
+        except Exception:
+            return web.json_response(_cerr("bad", "Noto'g'ri o'yinchi."), headers=_NO_STORE)
+        op = await city_load(info["id"], ouid)
+        if not op:
+            return web.json_response(_cerr("nf", "Shahar topilmadi."), headers=_NO_STORE)
+        return web.json_response({"ok": True, "visit": city_visit_view(op, now)}, headers=_NO_STORE)
+    if act == "packs":
+        return web.json_response({"ok": True, "packs": city_cfg(info)["packs"]}, headers=_NO_STORE)
+    if act == "buy":
+        return web.json_response(await city_buy(info, token, uid, str(body.get("pack", ""))), headers=_NO_STORE)
+    res = city_act(info, p, act, body)
+    gifts = city_claim_gifts(info, p)
+    if "error" not in res:
+        if gifts:
+            res["gifts"] = gifts
+            res["state"] = city_state(p, now)
+        if created:
+            res["first"] = True
+            res["cat"] = city_catalog()
+        city_mark_dirty(info["id"], uid)
+    res.setdefault("ok", "error" not in res)
+    if body.get("cat") and "cat" not in res and "error" not in res:
+        res["cat"] = city_catalog()
+    return web.json_response(res, headers=_NO_STORE)
+
+
+async def city_buy(info: dict, token: str, uid: int, pack_id: str) -> dict:
+    pack = next((x for x in city_cfg(info)["packs"] if x["id"] == pack_id), None)
+    if not pack:
+        return _cerr("nf", "Paket topilmadi.")
+    bot = _new_bot(token)
+    try:
+        link = await bot.create_invoice_link(
+            title=f"💎 {pack['gems']} gem"[:32],
+            description=f"{pack['gems']} ta gem — shahar o'yini uchun",
+            payload=f"cg|{pack['id']}|{uid}",
+            provider_token="",
+            currency="XTR",
+            prices=[LabeledPrice(label=f"{pack['gems']} gem", amount=int(pack["stars"]))],
+        )
+    except Exception as e:
+        logging.warning(f"Gem hisobi yaratilmadi: {e}")
+        return _cerr("inv", "To'lovni boshlab bo'lmadi. Keyinroq urinib ko'ring.")
+    finally:
+        await _close_bot(bot)
+    return {"ok": True, "link": link}
+
+
+async def city_fulfill_stars(info: dict, token: str, message) -> str:
+    """Telegram Stars to'lovi muvaffaqiyatli bo'lganda gem beradi. Matn qaytaradi."""
+    sp = message.successful_payment
+    parts = (sp.invoice_payload or "").split("|")
+    if len(parts) != 3 or parts[0] != "cg":
+        return ""
+    uid = int(parts[2])
+    if uid != message.from_user.id:
+        return ""
+    cfg = city_cfg(info)
+    # bir xil to'lov ikki marta hisoblanmasin
+    charge = sp.telegram_payment_charge_id
+    seen = cfg.setdefault("charges", [])
+    if charge in seen:
+        return ""
+    pack = next((x for x in cfg["packs"] if x["id"] == parts[1]), None)
+    if not pack:
+        return ""
+    p, _ = await city_get_or_create(info, token, uid, message.from_user.first_name or "")
+    seen.append(charge)
+    del seen[:-200]
+    p["gems"] += int(pack["gems"])
+    p["buys"] = p.get("buys", 0) + 1
+    cfg["stars_total"] = cfg.get("stars_total", 0) + int(sp.total_amount)
+    cfg["sales"] = cfg.get("sales", 0) + 1
+    city_mark_dirty(info["id"], uid)
+    save_data()
+    return f"✅ To'lov qabul qilindi! Hisobingizga 💎 {pack['gems']} gem qo'shildi."
+
+
+# ---------------- Bot (aiogram) qismi ----------------
+class CityFlow(StatesGroup):
+    gift = State()
+    pack = State()
+
+
+def setup_city_bot(dp: Dispatcher, token: str):
+    info = data["bots"][token]
+    admin_id = info["admin_id"]
+    city_cfg(info)
+    setup_subscription_handlers(dp, token, admin_id)
+    setup_admin_management(dp, token)
+    setup_global_buttons_handler(dp, lambda m, s: cstart(m))
+
+    def play_url() -> str:
+        return get_cityapp_url(info.get("id"))
+
+    def user_kb():
+        return ReplyKeyboardMarkup(keyboard=[
+            [KeyboardButton(text="🏙 O'ynash"), KeyboardButton(text="🏆 Reyting")],
+            [KeyboardButton(text="👥 Do'st taklif qilish"), KeyboardButton(text="ℹ️ Yordam")],
+        ] + get_global_button_rows(), resize_keyboard=True)
+
+    def admin_kb():
+        return ReplyKeyboardMarkup(keyboard=[
+            [KeyboardButton(text="🏙 O'ynash"), KeyboardButton(text="🏆 Reyting")],
+            [KeyboardButton(text="📊 Statistika"), KeyboardButton(text="📢 Xabar yuborish")],
+            [KeyboardButton(text="🎁 Sovg'a"), KeyboardButton(text="💎 Gem paketlari")],
+            [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
+        ] + get_global_button_rows(), resize_keyboard=True)
+
+    def play_kb():
+        url = play_url()
+        if not url:
+            return None
+        return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🏙 O'ynash", web_app=WebAppInfo(url=url))]])
+
+    async def send_play(message: Message):
+        kb = play_kb()
+        if not kb:
+            await message.answer("⚠️ O'yin manzili sozlanmagan (Railway'da domen yoki MINIAPP_URL kerak).")
+            return
+        await message.answer(
+            "🏙 <b>Shahar qurish</b>\n\nO'z shahringizni quring: uylar, fermalar, do'konlar, zavodlar va stadion!\n"
+            "💰 Daromadni yig'ing, ⬆️ binolarni yangilang, 🏆 reytingda yetakchi bo'ling.",
+            reply_markup=kb)
+
+    @dp.message(Command("start"))
+    async def cstart(message: Message):
+        uid = message.from_user.id
+        if uid in info.get("blocked_users", []):
+            return
+        new = uid not in info["users"]
+        if new:
+            info["users"].append(uid)
+            parts = (message.text or "").split(maxsplit=1)
+            arg = parts[1].strip() if len(parts) > 1 else ""
+            if arg.startswith("ref_") and arg[4:].isdigit() and int(arg[4:]) != uid:
+                city_cfg(info)["ref"][str(uid)] = int(arg[4:])
+            save_data()
+        if not await check_active(message, info, admin_id):
+            return
+        if is_admin(info, uid):
+            await message.answer("🏙 <b>Shahar qurish boti — boshqaruv</b>", reply_markup=admin_kb())
+            await send_play(message)
+            return
+        if not await require_subscription(message, info, admin_id):
+            return
+        await message.answer("👋 Xush kelibsiz, hokim!", reply_markup=user_kb())
+        await send_play(message)
+
+    @dp.message(F.text == "🏙 O'ynash")
+    async def c_play(message: Message):
+        if message.from_user.id in info.get("blocked_users", []):
+            return
+        if not await check_active(message, info, admin_id):
+            return
+        if not is_admin(info, message.from_user.id) and not await require_subscription(message, info, admin_id):
+            return
+        await send_play(message)
+
+    @dp.message(F.text == "🏆 Reyting")
+    async def c_top(message: Message):
+        t = city_top(info, message.from_user.id, 10)
+        if not t["top"]:
+            await message.answer("🏆 Reyting hali bo'sh. Birinchi bo'ling — «🏙 O'ynash» ni bosing!")
+            return
+        medals = ["🥇", "🥈", "🥉"]
+        lines = [f"{medals[i] if i < 3 else str(i + 1) + '.'} {html_escape(r['n'])} — {r['lv']}-daraja · 🏙 {r['v']:,}" for i, r in enumerate(t["top"])]
+        tail = f"\n\nSizning o'rningiz: <b>#{t['rank']}</b> / {t['total']}" if t["rank"] else ""
+        await message.answer("🏆 <b>Eng yaxshi shaharlar</b>\n\n" + "\n".join(lines) + tail)
+
+    @dp.message(F.text == "👥 Do'st taklif qilish")
+    async def c_ref(message: Message):
+        uname = info.get("username") or info.get("bot_username")
+        if not uname:
+            try:
+                uname = (await message.bot.get_me()).username
+            except Exception:
+                uname = ""
+        if not uname:
+            await message.answer("⚠️ Bot manzilini aniqlab bo'lmadi.")
+            return
+        link = f"https://t.me/{str(uname).lstrip('@')}?start=ref_{message.from_user.id}"
+        await message.answer(
+            "👥 <b>Do'st taklif qiling</b>\n\nHar bir do'stingiz o'yinni boshlasa, sizga <b>💎 10 gem</b>, unga <b>💎 5 gem</b> beriladi.\n\n"
+            f"🔗 Sizning havolangiz:\n<code>{link}</code>")
+
+    @dp.message(F.text == "ℹ️ Yordam")
+    async def c_help(message: Message):
+        await message.answer(
+            "ℹ️ <b>Yordam</b>\n\n"
+            "🏗 <b>Qurish</b> — bino tanlang, xaritada joyni bosing va tasdiqlang.\n"
+            "💰 <b>Yig'ish</b> — binolar daromadi soatma-soat to'planadi (ko'pi bilan ~12 soat), uni yig'ib turing.\n"
+            "⬆️ Binoni bosib <b>yangilang</b> — daromadi oshadi. 🌳 Park va 🗽 Yodgorlik butun shahar daromadini oshiradi.\n"
+            "⭐ Qurib bo'lgach tajriba (XP) olasiz — daraja oshgan sari yangi binolar ochiladi.\n"
+            "💎 Gem bilan qurilishni tezlatish va maxsus binolar sotib olish mumkin.\n"
+            "🎁 Har kuni <b>Bonus</b> oling — ketma-ket kunlar ko'proq beradi!")
+
+    # ---------- Admin ----------
+    @dp.message(F.text == "📊 Statistika")
+    async def c_stats(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        cfg = city_cfg(info)
+        now = city_now()
+        act24 = sum(1 for v in cfg["top"].values() if now - v[4] < 86400)
+        tops = sorted(cfg["top"].values(), key=lambda v: -v[1])[:3]
+        tl = "\n".join(f"  {i + 1}. {html_escape(v[0])} — 🏙 {v[1]:,}" for i, v in enumerate(tops)) or "  —"
+        await message.answer(
+            "📊 <b>Statistika</b>\n\n"
+            f"👥 Botdagilar: {len(info['users'])}\n🏙 O'yinchilar: {len(cfg['top'])}\n🔥 24 soatda faol: {act24}\n\n"
+            f"💎 Gem sotuvi: {cfg.get('sales', 0)} ta · ⭐ {cfg.get('stars_total', 0):,}\n\n🏆 Top 3:\n{tl}")
+
+    @dp.message(F.text == "📢 Xabar yuborish")
+    async def c_newpost(message: Message, state: FSMContext):
+        if not is_admin(info, message.from_user.id):
+            return
+        await message.answer("E'lon matnini yuboring:")
+        await state.set_state(PostFlow.waiting_text)
+
+    @dp.message(PostFlow.waiting_text)
+    async def c_post_text(message: Message, state: FSMContext):
+        if not is_admin(info, message.from_user.id):
+            return
+        await state.update_data(text=message.text or "")
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Yuborish", callback_data="c_post_ok")],
+            [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="c_post_no")]])
+        await message.answer(f"{len(info['users'])} kishiga yuborilsinmi?\n\n{message.text}", reply_markup=kb)
+        await state.set_state(PostFlow.waiting_confirm)
+
+    @dp.callback_query(F.data == "c_post_ok", PostFlow.waiting_confirm)
+    async def c_post_ok(callback: CallbackQuery, state: FSMContext):
+        if not is_admin(info, callback.from_user.id):
+            await callback.answer()
+            return
+        text = (await state.get_data()).get("text", "")
+        await state.clear()
+        await callback.message.edit_text("⏳ Yuborilmoqda...")
+        n = 0
+        for u in list(info["users"]):
+            try:
+                await callback.bot.send_message(u, text)
+                n += 1
+            except Exception:
+                pass
+            await asyncio.sleep(0.04)
+        await callback.message.edit_text(f"✅ {n} kishiga yuborildi.")
+        await callback.answer()
+
+    @dp.callback_query(F.data == "c_post_no", PostFlow.waiting_confirm)
+    async def c_post_no(callback: CallbackQuery, state: FSMContext):
+        await state.clear()
+        await callback.message.edit_text("❌ Bekor qilindi.")
+        await callback.answer()
+
+    @dp.message(F.text == "🎁 Sovg'a")
+    async def c_gift_start(message: Message, state: FSMContext):
+        if not is_admin(info, message.from_user.id):
+            return
+        await state.set_state(CityFlow.gift)
+        await message.answer(
+            "🎁 <b>Hammaga sovg'a</b>\n\nFormat: <code>gem tanga izoh</code>\nMasalan: <code>10 5000 Bayram bilan!</code>\n\n"
+            "Sovg'a barcha o'yinchilarga o'yinga kirganda beriladi. Bekor qilish: /start",
+            reply_markup=ReplyKeyboardRemove())
+
+    @dp.message(CityFlow.gift)
+    async def c_gift_do(message: Message, state: FSMContext):
+        if not is_admin(info, message.from_user.id):
+            return
+        parts = (message.text or "").strip().split(maxsplit=2)
+        if len(parts) < 2 or not parts[0].isdigit() or not parts[1].isdigit():
+            await message.answer("❌ Format: <code>gem tanga izoh</code> — masalan <code>10 5000 Bayram bilan!</code>")
+            return
+        gems, coins = min(int(parts[0]), 10_000), min(int(parts[1]), 10_000_000)
+        text = parts[2][:80] if len(parts) > 2 else ""
+        cfg = city_cfg(info)
+        gid = (cfg["gifts"][-1]["id"] + 1) if cfg["gifts"] else 1
+        cfg["gifts"].append({"id": gid, "gems": gems, "coins": coins, "text": text})
+        del cfg["gifts"][:-50]
+        save_data()
+        await state.clear()
+        await message.answer(f"✅ Sovg'a tayyor: 💎 {gems} + 🪙 {coins:,}. O'yinchilar kirganda oladi.", reply_markup=admin_kb())
+        sent = 0
+        for u in list(info["users"]):
+            try:
+                await message.bot.send_message(u, f"🎁 <b>Sovg'a!</b> 💎 {gems} + 🪙 {coins:,}\n{html_escape(text)}\n\n«🏙 O'ynash» ni bosing — sovg'a hisobingizga tushadi.")
+                sent += 1
+            except Exception:
+                pass
+            await asyncio.sleep(0.04)
+
+    def packs_text() -> str:
+        packs = city_cfg(info)["packs"]
+        lines = [f"💎 {p['gems']} gem — ⭐ {p['stars']}" for p in packs]
+        return "💎 <b>Gem paketlari</b> (Telegram Stars)\n\n" + ("\n".join(lines) if lines else "Paket yo'q.")
+
+    def packs_kb():
+        rows = [[InlineKeyboardButton(text=f"🗑 {p['gems']} gem / ⭐ {p['stars']}", callback_data=f"cpk_del_{p['id']}")] for p in city_cfg(info)["packs"]]
+        rows.append([InlineKeyboardButton(text="➕ Paket qo'shish", callback_data="cpk_add")])
+        return InlineKeyboardMarkup(inline_keyboard=rows)
+
+    @dp.message(F.text == "💎 Gem paketlari")
+    async def c_packs(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        await message.answer(packs_text(), reply_markup=packs_kb())
+
+    @dp.callback_query(F.data.startswith("cpk_del_"))
+    async def c_pack_del(callback: CallbackQuery):
+        if not is_admin(info, callback.from_user.id):
+            await callback.answer()
+            return
+        pid = callback.data[len("cpk_del_"):]
+        cfg = city_cfg(info)
+        cfg["packs"] = [p for p in cfg["packs"] if p["id"] != pid]
+        save_data()
+        await callback.message.edit_text(packs_text(), reply_markup=packs_kb())
+        await callback.answer("O'chirildi")
+
+    @dp.callback_query(F.data == "cpk_add")
+    async def c_pack_add(callback: CallbackQuery, state: FSMContext):
+        if not is_admin(info, callback.from_user.id):
+            await callback.answer()
+            return
+        await state.set_state(CityFlow.pack)
+        await callback.message.answer("Yangi paket: <code>gem stars</code> — masalan <code>300 120</code> (300 gem = 120 ⭐).")
+        await callback.answer()
+
+    @dp.message(CityFlow.pack)
+    async def c_pack_save(message: Message, state: FSMContext):
+        if not is_admin(info, message.from_user.id):
+            return
+        parts = (message.text or "").split()
+        if len(parts) != 2 or not all(x.isdigit() and int(x) > 0 for x in parts):
+            await message.answer("❌ Format: <code>gem stars</code> — masalan <code>300 120</code>")
+            return
+        cfg = city_cfg(info)
+        if len(cfg["packs"]) >= 8:
+            await message.answer("❌ Ko'pi bilan 8 ta paket bo'lishi mumkin.")
+            return
+        cfg["packs"].append({"id": "p" + uuid.uuid4().hex[:5], "gems": min(int(parts[0]), 100_000), "stars": min(int(parts[1]), 100_000)})
+        save_data()
+        await state.clear()
+        await message.answer("✅ Paket qo'shildi.\n\n" + packs_text(), reply_markup=packs_kb())
+
+    # ---------- Telegram Stars to'lovi ----------
+    @dp.pre_checkout_query()
+    async def c_pre_checkout(q: PreCheckoutQuery):
+        pl = q.invoice_payload or ""
+        ok = pl.startswith("cg|") and pl.split("|")[-1] == str(q.from_user.id)
+        await q.answer(ok=ok, error_message=None if ok else "To'lovni tasdiqlab bo'lmadi.")
+
+    @dp.message(F.successful_payment.invoice_payload.startswith("cg|"))
+    async def c_paid(message: Message):
+        try:
+            txt = await city_fulfill_stars(info, token, message)
+        except Exception:
+            logging.exception("Gem berishda xato")
+            txt = "⚠️ To'lov keldi, lekin gem avtomatik berilmadi. Administratorga murojaat qiling."
+        if txt:
+            await message.answer(txt)
+
+
+CITY_HTML = r"""<!DOCTYPE html>
+<html lang="uz">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Shahar qurish</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{--ink:#14223b;--panel:rgba(18,30,52,.92);--line:rgba(255,255,255,.12);--tx:#f4f7ff;--mu:#9fb0cf;--gold:#ffc83d;--gem:#58d6ff;--ok:#43d17c;--bad:#ff5d5d;--ac:#4f8cff}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none}
+html,body{margin:0;height:100%;overflow:hidden;background:#4aa8e8;color:var(--tx);font:15px/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;touch-action:none}
+#cv{position:fixed;inset:0;width:100%;height:100%;display:block;background:linear-gradient(#86d6f7,#3f9fe0)}
+#hud{position:fixed;left:0;right:0;top:0;padding:calc(env(safe-area-inset-top,0px) + 8px) 10px 0;display:flex;gap:6px;align-items:center;pointer-events:none;z-index:5}
+.pill{pointer-events:auto;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:5px 11px;font-weight:700;display:flex;align-items:center;gap:6px;box-shadow:0 3px 10px rgba(0,0,0,.25);white-space:nowrap}
+.pill small{font-weight:600;color:var(--mu);font-size:11px}
+#lvb{position:relative;width:46px;height:46px;border-radius:50%;background:linear-gradient(#ffd75e,#ff9d2e);border:3px solid #fff;display:flex;align-items:center;justify-content:center;font-weight:900;color:#5a2d00;font-size:18px;box-shadow:0 3px 10px rgba(0,0,0,.3);pointer-events:auto;flex:none}
+#lvb i{position:absolute;left:50%;bottom:-9px;transform:translateX(-50%);width:44px;height:7px;border-radius:5px;background:#12203a;border:1px solid #fff;overflow:hidden}
+#lvb i b{display:block;height:100%;width:0;background:var(--ok)}
+#hud .sp{flex:1}
+#bar{position:fixed;left:0;right:0;bottom:0;padding:8px 10px calc(env(safe-area-inset-bottom,0px) + 10px);display:flex;gap:8px;justify-content:center;z-index:5}
+.btn{pointer-events:auto;border:0;color:#fff;font:inherit;font-weight:800;border-radius:16px;padding:10px 6px;min-width:62px;flex:1;max-width:112px;background:linear-gradient(#5b97ff,#3a6fe0);box-shadow:0 4px 0 #244aa6,0 6px 12px rgba(0,0,0,.3);display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px}
+.btn b{font-size:21px;line-height:1}
+.btn:active{transform:translateY(2px);box-shadow:0 2px 0 #244aa6}
+.btn.g{background:linear-gradient(#ffd75e,#ff9d2e);box-shadow:0 4px 0 #b56a12,0 6px 12px rgba(0,0,0,.3);color:#4a2600}
+.btn.g:active{box-shadow:0 2px 0 #b56a12}
+.btn.g.pulse{animation:pl 1.2s infinite}
+@keyframes pl{50%{transform:scale(1.07)}}
+.btn.d{opacity:.55}
+#sheetbg{position:fixed;inset:0;background:rgba(5,10,25,.45);z-index:8;display:none}
+#sheet{position:fixed;left:0;right:0;bottom:0;max-height:78%;overflow:auto;background:var(--panel);border-top-left-radius:22px;border-top-right-radius:22px;border:1px solid var(--line);padding:14px 14px calc(env(safe-area-inset-bottom,0px) + 16px);z-index:9;transform:translateY(105%);transition:transform .22s ease;touch-action:pan-y}
+#sheet.on{transform:none}
+#sheet h2{margin:0 0 4px;font-size:19px}
+#sheet .sub{color:var(--mu);font-size:13px;margin-bottom:10px}
+#sheet .x{position:absolute;right:12px;top:10px;width:32px;height:32px;border-radius:50%;background:rgba(255,255,255,.1);border:0;color:#fff;font-size:16px}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.card{background:rgba(255,255,255,.07);border:1px solid var(--line);border-radius:14px;padding:9px 6px;text-align:center;position:relative;min-height:104px}
+.card .em{font-size:30px;line-height:1.1}
+.card .nm{font-weight:700;font-size:13px;margin-top:2px}
+.card .pr{font-size:12px;color:var(--gold);font-weight:700;margin-top:3px}
+.card .in{font-size:11px;color:var(--mu)}
+.card.lk .em,.card.lk .nm,.card.lk .pr,.card.lk .in{opacity:.45}
+.card .lkb{position:absolute;left:6px;right:6px;top:6px;border-radius:8px;background:rgba(0,0,0,.62);padding:2px 0;font-weight:800;font-size:11px}
+.row{display:flex;align-items:center;gap:10px;background:rgba(255,255,255,.07);border:1px solid var(--line);border-radius:12px;padding:9px 11px;margin-bottom:6px}
+.row .rk{width:26px;text-align:center;font-weight:900;color:var(--gold)}
+.row .nn{flex:1;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row .vv{color:var(--mu);font-size:12px;text-align:right}
+.row.me{border-color:var(--gold)}
+.act{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.act button,.big{flex:1;min-width:46%;border:0;border-radius:13px;padding:12px 8px;font:inherit;font-weight:800;color:#fff;background:linear-gradient(#5b97ff,#3a6fe0)}
+.act button.g,.big.g{background:linear-gradient(#ffd75e,#ff9d2e);color:#4a2600}
+.act button.r{background:linear-gradient(#ff7b7b,#e04545)}
+.act button.k{background:linear-gradient(#52dc8a,#2fae63)}
+.act button:disabled,.big:disabled{opacity:.45}
+.big{display:block;width:100%;margin-top:10px}
+.kv{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line);font-size:14px}
+.kv span:first-child{color:var(--mu)}
+#toast{position:fixed;left:50%;top:calc(env(safe-area-inset-top,0px) + 70px);transform:translateX(-50%);background:rgba(10,18,36,.94);color:#fff;border:1px solid var(--line);border-radius:12px;padding:9px 14px;z-index:20;font-weight:600;max-width:88%;text-align:center;opacity:0;pointer-events:none;transition:opacity .2s}
+#toast.on{opacity:1}
+#ghostbar{position:fixed;left:10px;right:10px;bottom:calc(env(safe-area-inset-bottom,0px) + 10px);z-index:6;display:none;background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:10px;gap:8px;align-items:center}
+#ghostbar .t{flex:1;font-weight:700;font-size:14px}
+#ghostbar .t small{display:block;color:var(--mu);font-weight:600}
+#ghostbar button{border:0;border-radius:12px;padding:11px 14px;font:inherit;font-weight:800;color:#fff}
+#ghostbar .ok{background:#2fae63}#ghostbar .no{background:#e04545}
+#visit{position:fixed;left:10px;right:10px;top:calc(env(safe-area-inset-top,0px) + 66px);z-index:6;display:none;background:var(--panel);border:1px solid var(--gold);border-radius:14px;padding:8px 10px;align-items:center;gap:8px}
+#visit .t{flex:1;font-weight:700}
+#visit button{border:0;border-radius:10px;padding:8px 12px;font:inherit;font-weight:800;color:#4a2600;background:linear-gradient(#ffd75e,#ff9d2e)}
+#load{position:fixed;inset:0;z-index:30;background:linear-gradient(#8fd3ff,#4f8cff);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;font-weight:800;font-size:18px}
+#load .l{font-size:64px;animation:pl 1s infinite}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div id="hud">
+  <div id="lvb">1<i><b></b></i></div>
+  <div class="pill" id="pCoin">🪙 <span id="vCoin">0</span><small id="vInc"></small></div>
+  <div class="pill" id="pGem">💎 <span id="vGem">0</span> <span style="color:var(--ok)">＋</span></div>
+  <div class="sp"></div>
+  <div class="pill" id="pPop">👥 <span id="vPop">0</span></div>
+</div>
+<div id="visit"><div class="t" id="visitT"></div><button id="visitBack">◀️ Mening shahrim</button></div>
+<div id="bar">
+  <button class="btn" id="bBuild"><b>🏗</b>Qurish</button>
+  <button class="btn g" id="bCollect"><b>💰</b><span id="vPend">Yig'ish</span></button>
+  <button class="btn" id="bTop"><b>🏆</b>Reyting</button>
+  <button class="btn" id="bDaily"><b>🎁</b>Bonus</button>
+  <button class="btn" id="bShop"><b>💎</b>Gem</button>
+</div>
+<div id="ghostbar"><div class="t" id="gT"></div><button class="no" id="gNo">✖</button><button class="ok" id="gOk">✔ Qurish</button></div>
+<div id="sheetbg"></div>
+<div id="sheet"></div>
+<div id="toast"></div>
+<div id="load"><div class="l">🏙</div>Shahar yuklanmoqda...</div>
+<script>
+(function () {
+"use strict";
+var TG = window.Telegram && window.Telegram.WebApp;
+if (TG) {
+  try { TG.ready(); TG.expand(); } catch (e) {}
+  try { TG.disableVerticalSwipes(); } catch (e) {}
+  try { TG.setHeaderColor("#1b2a41"); TG.setBackgroundColor("#7ec8f2"); } catch (e) {}
+}
+var BOT = new URLSearchParams(location.search).get("b");
+var INIT = TG ? TG.initData : "";
+var N = 24, TW = 72, TH = 36;
+var $ = function (id) { return document.getElementById(id); };
+var cv = $("cv"), ctx = cv.getContext("2d");
+var W = 0, H = 0, DPR = 1;
+
+var S = {st: null, cat: null, at: 0, mode: null, ghost: null, sel: null, vis: null, busy: false, cars: [], roadKey: "", last: 0};
+var cam = {x: 0, y: (N / 2) * TH, z: 1.15};
+
+function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]; }); }
+function fmt(n) {
+  n = Math.floor(n);
+  if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, "") + "B";
+  if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
+  if (n >= 1e4) return (n / 1e3).toFixed(1).replace(/\.0$/, "") + "K";
+  return String(n);
+}
+function dur(s) {
+  s = Math.max(0, Math.ceil(s));
+  if (s >= 3600) return Math.floor(s / 3600) + " soat " + Math.floor((s % 3600) / 60) + " daq";
+  if (s >= 60) return Math.floor(s / 60) + " daq " + (s % 60) + " son";
+  return s + " son";
+}
+function haptic(k) { try { if (TG && TG.HapticFeedback) { k === "ok" ? TG.HapticFeedback.notificationOccurred("success") : k === "err" ? TG.HapticFeedback.notificationOccurred("error") : TG.HapticFeedback.impactOccurred("light"); } } catch (e) {} }
+var toastT = 0;
+function toast(m) { var t = $("toast"); t.textContent = m; t.classList.add("on"); clearTimeout(toastT); toastT = setTimeout(function () { t.classList.remove("on"); }, 2300); }
+
+// ---------------- API ----------------
+function api(act, extra) {
+  var body = {b: BOT, init: INIT, act: act};
+  if (extra) for (var k in extra) body[k] = extra[k];
+  return fetch("/api/city/act", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)})
+    .then(function (r) { return r.json().then(function (j) { j._status = r.status; return j; }); })
+    .catch(function () { return {error: "net", msg: "Internet bilan aloqa yo'q."}; });
+}
+function applyState(j) {
+  if (j.cat) S.cat = j.cat;
+  if (j.state) { S.st = j.state; S.at = Date.now(); roadsChanged(); updHud(); }
+}
+function srvNow() { return S.st ? S.st.now + (Date.now() - S.at) / 1000 : 0; }
+function bRem(b) { return Math.max(0, b[5] - (Date.now() - S.at) / 1000); }
+function curBuildings() { return S.vis ? S.vis.b : (S.st ? S.st.b : []); }
+
+function act(a, extra, quiet) {
+  if (S.busy) return Promise.resolve(null);
+  S.busy = true;
+  return api(a, extra).then(function (j) {
+    S.busy = false;
+    if (j.error) { if (!quiet) { toast(j.msg || "Xatolik"); haptic("err"); } return j; }
+    applyState(j);
+    if (j.levelup && j.levelup.length) { toast("🎉 Shahar " + j.levelup[j.levelup.length - 1] + "-darajaga ko'tarildi! +💎3"); haptic("ok"); }
+    if (j.gifts && j.gifts.length) { j.gifts.forEach(function (g) { toast("🎁 Sovg'a: " + (g.gems ? "💎" + g.gems + " " : "") + (g.coins ? "🪙" + g.coins : "") + (g.text ? " — " + g.text : "")); }); }
+    return j;
+  });
+}
+
+// ---------------- HUD ----------------
+function updHud() {
+  var s = S.st; if (!s) return;
+  $("vCoin").textContent = fmt(s.coins);
+  $("vGem").textContent = fmt(s.gems);
+  $("vPop").textContent = fmt(s.pop);
+  $("vInc").textContent = s.inc ? "+" + fmt(s.inc) + "/soat" : "";
+  var hi = s.xp_hi - s.xp_lo, f = hi > 0 ? Math.min(1, (s.xp - s.xp_lo) / hi) : 1;
+  $("lvb").firstChild.nodeValue = s.lv;
+  $("lvb").querySelector("b").style.width = (f * 100) + "%";
+  $("bDaily").classList.toggle("d", !s.daily);
+  updPend();
+}
+function updPend() {
+  var s = S.st; if (!s) return;
+  var p = s.pend + s.inc / 3600 * ((Date.now() - S.at) / 1000);
+  var cap = s.inc * s.cap_h;
+  if (cap > 0) p = Math.min(p, cap);
+  var el = $("vPend"); el.textContent = p >= 1 ? fmt(p) : "Yig'ish";
+  $("bCollect").classList.toggle("pulse", p >= 20);
+  S.pendNow = p;
+}
+
+// ---------------- Geometry ----------------
+function P(wx, wy) { return [(wx - wy) * TW / 2, (wx + wy) * TH / 2]; }
+function toWorldScreen(px, py) { return [(px - W / 2) / cam.z + cam.x, (py - H / 2) / cam.z + cam.y]; }
+function toTile(px, py) {
+  var w = toWorldScreen(px, py), u = w[0] / (TW / 2), v = w[1] / (TH / 2);
+  return [(u + v) / 2, (v - u) / 2];
+}
+function clampCam() {
+  var lim = (N * TW / 2) * 1.05;
+  cam.x = Math.max(-lim, Math.min(lim, cam.x));
+  cam.y = Math.max(-TH * 2, Math.min(N * TH + TH * 2, cam.y));
+}
+function resize() {
+  DPR = Math.min(2, window.devicePixelRatio || 1);
+  W = window.innerWidth; H = window.innerHeight;
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+  var minZ = Math.min(W / (N * TW * 1.05), 0.45);
+  if (cam.z < minZ) cam.z = minZ;
+}
+window.addEventListener("resize", resize);
+
+// ---------------- Drawing helpers ----------------
+function shade(hex, f) {
+  var n = parseInt(hex.slice(1), 16), r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  r = Math.max(0, Math.min(255, Math.round(r * f))); g = Math.max(0, Math.min(255, Math.round(g * f))); b = Math.max(0, Math.min(255, Math.round(b * f)));
+  return "rgb(" + r + "," + g + "," + b + ")";
+}
+function poly(pts, fill, stroke) {
+  ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]);
+  for (var i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  ctx.closePath();
+  if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 1; ctx.stroke(); }
+}
+function up(p, h) { return [p[0], p[1] - h]; }
+function lerp(a, b, t) { return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]; }
+// Quti: gx,gy (katak), gw,gh (o'lcham), h (balandlik, px), z0 (poydevor balandligi)
+function box(gx, gy, gw, gh, h, col, z0) {
+  z0 = z0 || 0;
+  var A = P(gx, gy), B = P(gx + gw, gy), C = P(gx + gw, gy + gh), D = P(gx, gy + gh);
+  var A2 = up(A, z0 + h), B2 = up(B, z0 + h), C2 = up(C, z0 + h), D2 = up(D, z0 + h);
+  var Cb = up(C, z0), Db = up(D, z0), Bb = up(B, z0);
+  poly([D2, C2, Cb, Db], shade(col, 0.78));   // chap devor
+  poly([C2, B2, Bb, Cb], shade(col, 0.62));   // o'ng devor
+  poly([A2, B2, C2, D2], shade(col, 1.12));   // tom
+  return {A: A, B: B, C: C, D: D, A2: A2, B2: B2, C2: C2, D2: D2, Cb: Cb, Db: Db, Bb: Bb, z0: z0, h: h};
+}
+// Devor sirtidagi to'rtburchak: e - devor qirrasi (ikki nuqta pastda), u/v - 0..1
+function wallRect(p0, p1, h, u0, u1, v0, v1, col) {
+  var a = lerp(p0, p1, u0), b = lerp(p0, p1, u1);
+  poly([up(a, h * v1), up(b, h * v1), up(b, h * v0), up(a, h * v0)], col);
+}
+function windows(bx, nx, ny, col, lit) {
+  // chap devor (D->C): nx ustun; o'ng devor (C->B): ny ustun
+  var h = bx.h, i, j;
+  for (j = 0; j < ny; j++) for (i = 0; i < nx; i++) {
+    var u0 = (i + 0.22) / nx, u1 = (i + 0.78) / nx, v0 = (j + 0.3) / ny, v1 = (j + 0.74) / ny;
+    wallRect(bx.Db, bx.Cb, h, u0, u1, v0, v1, ((i + j) % 3 === 0 && lit) ? "#ffe9a3" : col);
+  }
+  for (j = 0; j < ny; j++) for (i = 0; i < nx; i++) {
+    var a0 = (i + 0.22) / nx, a1 = (i + 0.78) / nx, w0 = (j + 0.3) / ny, w1 = (j + 0.74) / ny;
+    wallRect(bx.Cb, bx.Bb, h, a0, a1, w0, w1, ((i * 2 + j) % 4 === 0 && lit) ? "#ffd982" : shade(col, 0.8));
+  }
+}
+function roofPyramid(gx, gy, gw, gh, baseZ, rh, col) {
+  var A = up(P(gx, gy), baseZ), B = up(P(gx + gw, gy), baseZ), C = up(P(gx + gw, gy + gh), baseZ), D = up(P(gx, gy + gh), baseZ);
+  var T = up(P(gx + gw / 2, gy + gh / 2), baseZ + rh);
+  poly([D, C, T], shade(col, 0.82));
+  poly([C, B, T], shade(col, 0.64));
+  poly([A, B, T], shade(col, 1.0));
+  poly([A, D, T], shade(col, 0.9));
+}
+function ellipseIso(cx, cy, rx, h, fill, side) {
+  if (side && h > 0) {
+    ctx.fillStyle = side; ctx.beginPath(); ctx.ellipse(cx, cy, rx, rx * 0.5, 0, 0, Math.PI); ctx.lineTo(cx - rx, cy - h); ctx.ellipse(cx, cy - h, rx, rx * 0.5, 0, Math.PI, 0, true); ctx.closePath(); ctx.fill();
+  }
+  ctx.beginPath(); ctx.ellipse(cx, cy - h, rx, rx * 0.5, 0, 0, Math.PI * 2); ctx.fillStyle = fill; ctx.fill();
+}
+function tree(cx, cy, s, col) {
+  ctx.fillStyle = "#6b4a2b"; ctx.fillRect(cx - 1.5 * s, cy - 7 * s, 3 * s, 7 * s);
+  ctx.fillStyle = col || "#2f9e4f";
+  ctx.beginPath(); ctx.arc(cx, cy - 12 * s, 7 * s, 0, 7); ctx.fill();
+  ctx.fillStyle = shade(col || "#2f9e4f", 1.25);
+  ctx.beginPath(); ctx.arc(cx - 2 * s, cy - 14 * s, 4 * s, 0, 7); ctx.fill();
+}
+function stripes(p0, p1, h, v0, v1, c1, c2, n) {
+  for (var i = 0; i < n; i++) wallRect(p0, p1, h, i / n, (i + 1) / n, v0, v1, i % 2 ? c1 : c2);
+}
+
+// ---------------- Binolar ----------------
+var HMAX = {road: 4, house: 52, farm: 58, shop: 46, park: 40, school: 70, apt: 120, market: 56, hospital: 92, factory: 90, bank: 78, hotel: 150, stadium: 70, monument: 76, tower: 130};
+function drawBuilding(b, prog, t) {
+  var k = b[1], gx = b[2], gy = b[3], lv = b[4], d = S.cat[k], w = d.w, h = d.h, bx, i;
+  var f = prog;  // 1 = tayyor
+  var A = P(gx, gy), B = P(gx + w, gy), C = P(gx + w, gy + h), D = P(gx, gy + h);
+  // poydevor
+  poly([A, B, C, D], "rgba(120,100,80,.55)");
+  var ins = 0.1;
+  switch (k) {
+    case "house": {
+      var col = ["#f2d9a6", "#f7c9a0", "#d9e7f5", "#f3e0e8", "#e8f1c7"][(gx * 7 + gy * 3) % 5];
+      var hh = (lv >= 3 ? 40 : 28) * f;
+      bx = box(gx + ins, gy + ins, 1 - 2 * ins, 1 - 2 * ins, hh, col);
+      if (f > 0.9) {
+        roofPyramid(gx + 0.04, gy + 0.04, 0.92, 0.92, hh, 18 + lv * 2, lv >= 4 ? "#3b6fd1" : "#d9534f");
+        wallRect(bx.Db, bx.Cb, hh, 0.2, 0.42, 0.18, 0.62, "#7a4a2a");
+        wallRect(bx.Cb, bx.Bb, hh, 0.45, 0.78, 0.35, 0.68, "#9fd3f2");
+      }
+      break;
+    }
+    case "shop": {
+      bx = box(gx + ins, gy + ins, 1 - 2 * ins, 1 - 2 * ins, 30 * f, "#ffd9a8");
+      if (f > 0.9) {
+        wallRect(bx.Cb, bx.Bb, bx.h, 0.1, 0.9, 0.05, 0.5, "#9fd3f2");
+        stripes(bx.Cb, bx.Bb, bx.h, 0.5, 0.66, "#fff", "#e5484d", 6);
+        wallRect(bx.Db, bx.Cb, bx.h, 0.25, 0.75, 0.15, 0.55, "#9fd3f2");
+      }
+      break;
+    }
+    case "park": {
+      poly([A, B, C, D], "#4cbf63");
+      poly([lerp(A, B, 0.15), lerp(B, C, 0.15), lerp(C, D, 0.15), lerp(D, A, 0.15)], "#5fd279");
+      var tr = [[0.28, 0.3], [0.7, 0.35], [0.5, 0.72]];
+      var cnt = Math.min(3, lv + 1);
+      tr.slice(0, cnt).forEach(function (q) { var pt = P(gx + q[0], gy + q[1]); tree(pt[0], pt[1], 1.15 * f); });
+      if (lv >= 2) { var c0 = P(gx + 0.5, gy + 0.5); ctx.fillStyle = "#6ec6ff"; ctx.beginPath(); ctx.ellipse(c0[0], c0[1], 9, 4.5, 0, 0, 7); ctx.fill(); }
+      break;
+    }
+    case "farm": {
+      poly([A, B, C, D], "#8a5a2b");
+      for (i = 0; i < 6; i++) { var a = lerp(A, B, (i + 0.5) / 6), d2 = lerp(D, C, (i + 0.5) / 6); poly([lerp(a, d2, 0.08), lerp(a, d2, 0.55), lerp(lerp(A, B, (i + 0.9) / 6), lerp(D, C, (i + 0.9) / 6), 0.55), lerp(lerp(A, B, (i + 0.9) / 6), lerp(D, C, (i + 0.9) / 6), 0.08)], i % 2 ? "#5cb85c" : "#7ed36a"); }
+      bx = box(gx + 1.15, gy + 0.9, 0.7, 0.9, 26 * f, "#c0392b");
+      if (f > 0.9) { roofPyramid(gx + 1.1, gy + 0.85, 0.8, 1.0, 26, 14, "#7f2a22"); }
+      break;
+    }
+    case "school": {
+      bx = box(gx + 0.1, gy + 0.2, 1.8, 1.6, 36 * f, "#ffe08a");
+      if (f > 0.9) {
+        windows(bx, 4, 2, "#8ec9ee", true);
+        var tb = box(gx + 0.8, gy + 0.7, 0.5, 0.5, 20, "#ffd24a", 36);
+        roofPyramid(gx + 0.75, gy + 0.65, 0.6, 0.6, 56, 12, "#c0392b");
+      }
+      break;
+    }
+    case "apt": {
+      var ah = (62 + lv * 8) * f;
+      bx = box(gx + 0.15, gy + 0.15, 1.7, 1.7, ah, "#c9d6e8");
+      if (f > 0.9) { windows(bx, 4, Math.max(3, Math.round(ah / 20)), "#6fb4e8", true); box(gx + 0.6, gy + 0.6, 0.6, 0.6, 10, "#8c9db5", ah); }
+      break;
+    }
+    case "market": {
+      bx = box(gx + 0.1, gy + 0.15, 1.8, 1.7, 30 * f, "#ffb170");
+      if (f > 0.9) {
+        stripes(bx.Cb, bx.Bb, bx.h, 0.55, 0.78, "#fff", "#2fae63", 10);
+        stripes(bx.Db, bx.Cb, bx.h, 0.55, 0.78, "#fff", "#2fae63", 10);
+        wallRect(bx.Cb, bx.Bb, bx.h, 0.1, 0.9, 0.08, 0.5, "#9fd3f2");
+        var cr = P(gx + 1.5, gy + 1.95); ctx.fillStyle = "#c98a3d"; ctx.fillRect(cr[0] - 8, cr[1] - 8, 9, 8); ctx.fillStyle = "#e14b4b"; ctx.beginPath(); ctx.arc(cr[0] + 8, cr[1] - 4, 4, 0, 7); ctx.fill();
+      }
+      break;
+    }
+    case "hospital": {
+      bx = box(gx + 0.12, gy + 0.12, 1.76, 1.76, (50 + lv * 4) * f, "#f4f7fb");
+      if (f > 0.9) {
+        windows(bx, 4, 2, "#8ec9ee", false);
+        var cc = lerp(bx.Cb, bx.Bb, 0.5);
+        ctx.fillStyle = "#e5484d"; ctx.fillRect(cc[0] - 3, cc[1] - bx.h + 6, 6, 18); ctx.fillRect(cc[0] - 9, cc[1] - bx.h + 12, 18, 6);
+        box(gx + 0.7, gy + 0.7, 0.6, 0.6, 8, "#d9e2ee", bx.h);
+      }
+      break;
+    }
+    case "factory": {
+      bx = box(gx + 0.1, gy + 0.3, 1.8, 1.5, 34 * f, "#a9b3c4");
+      if (f > 0.9) {
+        wallRect(bx.Db, bx.Cb, bx.h, 0.1, 0.9, 0.55, 0.8, "#6b778c");
+        wallRect(bx.Cb, bx.Bb, bx.h, 0.1, 0.9, 0.55, 0.8, "#566177");
+        var ch = [[0.45, 1.0], [0.8, 0.6]];
+        ch.forEach(function (q, ci) {
+          var pc = P(gx + q[0] + 0.3, gy + q[1]);
+          ctx.fillStyle = "#8a4b3d"; ctx.fillRect(pc[0] - 5, pc[1] - 74, 10, 54);
+          ctx.fillStyle = "#6d3a2f"; ctx.fillRect(pc[0] - 5, pc[1] - 76, 10, 5);
+          for (var s = 0; s < 4; s++) {
+            var ph = ((t / 1400) + s / 4 + ci * 0.37) % 1;
+            ctx.fillStyle = "rgba(235,235,240," + (0.55 * (1 - ph)) + ")";
+            ctx.beginPath(); ctx.arc(pc[0] + ph * 14, pc[1] - 80 - ph * 34, 4 + ph * 7, 0, 7); ctx.fill();
+          }
+        });
+      }
+      break;
+    }
+    case "bank": {
+      bx = box(gx + 0.15, gy + 0.2, 1.7, 1.6, 36 * f, "#f2ecd9");
+      if (f > 0.9) {
+        for (i = 0; i < 5; i++) wallRect(bx.Cb, bx.Bb, bx.h, (i + 0.15) / 5, (i + 0.5) / 5, 0.05, 0.85, "#fffdf4");
+        poly([up(bx.D2, 0), up(bx.C2, 0), up(lerp(bx.D2, bx.C2, 0.5), 14)], "#d9cfa8");
+        poly([up(bx.C2, 0), up(bx.B2, 0), up(lerp(bx.C2, bx.B2, 0.5), 14)], "#bfb48a");
+        var cn = lerp(bx.C2, bx.B2, 0.5); ctx.fillStyle = "#ffc83d"; ctx.beginPath(); ctx.arc(cn[0], cn[1] - 12, 7, 0, 7); ctx.fill();
+        ctx.fillStyle = "#8a6a00"; ctx.font = "bold 9px sans-serif"; ctx.textAlign = "center"; ctx.fillText("$", cn[0], cn[1] - 9);
+      }
+      break;
+    }
+    case "hotel": {
+      var hh2 = (92 + lv * 10) * f;
+      bx = box(gx + 0.2, gy + 0.2, 1.6, 1.6, hh2, "#6aa4e8");
+      if (f > 0.9) {
+        windows(bx, 4, Math.round(hh2 / 18), "#d4ecff", true);
+        box(gx + 0.55, gy + 0.55, 0.9, 0.9, 12, "#2f5f9e", hh2);
+        var sg = lerp(bx.C2, bx.B2, 0.5); ctx.fillStyle = "#ff4d8d"; ctx.font = "bold 11px sans-serif"; ctx.textAlign = "center"; ctx.fillText("HOTEL", sg[0], sg[1] - 18);
+      }
+      break;
+    }
+    case "stadium": {
+      var cx0 = (A[0] + C[0]) / 2, cy0 = (A[1] + C[1]) / 2, rx = TW * 0.95;
+      ellipseIso(cx0, cy0 + 8, rx, 22 * f, "#c7cfdc", "#8d97a8");
+      ellipseIso(cx0, cy0 + 8, rx * 0.86, 22 * f, "#9aa5b8");
+      ellipseIso(cx0, cy0 + 8, rx * 0.8, 18 * f, "#3fae55");
+      ellipseIso(cx0, cy0 + 8, rx * 0.55, 18 * f, "#52c868");
+      if (f > 0.9) { [-1, 1].forEach(function (sg2) { ctx.fillStyle = "#e9eef7"; ctx.fillRect(cx0 + sg2 * rx * 0.92 - 1.5, cy0 - 52, 3, 40); ctx.fillStyle = "#fff6b0"; ctx.fillRect(cx0 + sg2 * rx * 0.92 - 7, cy0 - 58, 14, 7); }); }
+      break;
+    }
+    case "monument": {
+      bx = box(gx + 0.25, gy + 0.25, 0.5, 0.5, 14 * f, "#c9ccd6");
+      if (f > 0.9) { var m0 = P(gx + 0.5, gy + 0.5); ctx.fillStyle = "#ffc83d"; ctx.beginPath(); ctx.moveTo(m0[0] - 6, m0[1] - 14); ctx.lineTo(m0[0] + 6, m0[1] - 14); ctx.lineTo(m0[0] + 3, m0[1] - 50); ctx.lineTo(m0[0] - 3, m0[1] - 50); ctx.fill(); ctx.beginPath(); ctx.arc(m0[0], m0[1] - 56, 6, 0, 7); ctx.fill(); ctx.fillStyle = "#ff8a00"; ctx.beginPath(); ctx.moveTo(m0[0] + 3, m0[1] - 46); ctx.lineTo(m0[0] + 16, m0[1] - 64); ctx.lineTo(m0[0] + 9, m0[1] - 40); ctx.fill(); }
+      break;
+    }
+    case "tower": {
+      var t0 = P(gx + 0.5, gy + 0.5), th = 120 * f;
+      ctx.fillStyle = "#d9dde7"; ctx.beginPath(); ctx.moveTo(t0[0] - 10, t0[1]); ctx.lineTo(t0[0] + 10, t0[1]); ctx.lineTo(t0[0] + 2.5, t0[1] - th); ctx.lineTo(t0[0] - 2.5, t0[1] - th); ctx.fill();
+      for (i = 0; i < 6; i++) { ctx.fillStyle = i % 2 ? "#e5484d" : "#fff"; var y1 = t0[1] - th * i / 6, y2 = t0[1] - th * (i + 1) / 6, w1 = 10 - 7.5 * i / 6, w2 = 10 - 7.5 * (i + 1) / 6; ctx.beginPath(); ctx.moveTo(t0[0] - w1, y1); ctx.lineTo(t0[0] + w1, y1); ctx.lineTo(t0[0] + w2, y2); ctx.lineTo(t0[0] - w2, y2); ctx.fill(); }
+      if (f > 0.9) { ctx.fillStyle = "#4f5d78"; ctx.beginPath(); ctx.ellipse(t0[0], t0[1] - th * 0.62, 13, 6, 0, 0, 7); ctx.fill(); ctx.fillStyle = "#ffc83d"; ctx.beginPath(); ctx.arc(t0[0], t0[1] - th - 3, 3 + 1.5 * Math.sin(t / 300), 0, 7); ctx.fill(); }
+      break;
+    }
+  }
+}
+function scaffold(b, d) {
+  var A = P(b[2], b[3]), B = P(b[2] + d.w, b[3]), C = P(b[2] + d.w, b[3] + d.h), D = P(b[2], b[3] + d.h), h = 22 + 8 * d.w;
+  ctx.strokeStyle = "#ffb300"; ctx.lineWidth = 2;
+  [A, B, C, D].forEach(function (q) { ctx.beginPath(); ctx.moveTo(q[0], q[1]); ctx.lineTo(q[0], q[1] - h); ctx.stroke(); });
+  ctx.beginPath(); ctx.moveTo(D[0], D[1] - h); ctx.lineTo(C[0], C[1] - h); ctx.lineTo(B[0], B[1] - h); ctx.stroke();
+  ctx.setLineDash([5, 4]); ctx.strokeStyle = "#222";
+  ctx.beginPath(); ctx.moveTo(D[0], D[1] - h * 0.55); ctx.lineTo(C[0], C[1] - h * 0.55); ctx.lineTo(B[0], B[1] - h * 0.55); ctx.stroke(); ctx.setLineDash([]);
+}
+function drawRoad(b, roads) {
+  var x = b[2], y = b[3], A = P(x, y), B = P(x + 1, y), C = P(x + 1, y + 1), D = P(x, y + 1);
+  poly([A, B, C, D], "#5d6573");
+  var ctr = P(x + 0.5, y + 0.5), ln = "rgba(255,236,160,.8)", dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]], any = false;
+  ctx.strokeStyle = ln; ctx.lineWidth = 2; ctx.setLineDash([5, 5]);
+  dirs.forEach(function (dv) {
+    if (roads[(x + dv[0]) + "," + (y + dv[1])]) {
+      any = true;
+      var e = P(x + 0.5 + dv[0] * 0.5, y + 0.5 + dv[1] * 0.5);
+      ctx.beginPath(); ctx.moveTo(ctr[0], ctr[1]); ctx.lineTo(e[0], e[1]); ctx.stroke();
+    }
+  });
+  ctx.setLineDash([]);
+  if (!any) { ctx.fillStyle = ln; ctx.beginPath(); ctx.arc(ctr[0], ctr[1], 2.5, 0, 7); ctx.fill(); }
+}
+
+// ---------------- Yo'l tarmog'i va mashinalar ----------------
+var roadSet = {};
+function roadsChanged() {
+  var key = curBuildings().filter(function (b) { return b[1] === "road"; }).map(function (b) { return b[2] + "," + b[3]; }).join("|");
+  if (key === S.roadKey) return;
+  S.roadKey = key; roadSet = {};
+  curBuildings().forEach(function (b) { if (b[1] === "road") roadSet[b[2] + "," + b[3]] = 1; });
+  var tiles = Object.keys(roadSet), want = Math.min(10, Math.floor(tiles.length / 5));
+  S.cars = [];
+  for (var i = 0; i < want; i++) {
+    var tk = tiles[Math.floor(Math.random() * tiles.length)].split(",");
+    S.cars.push({x: +tk[0], y: +tk[1], px: +tk[0], py: +tk[1], tx: +tk[0], ty: +tk[1], t: 1, col: ["#e5484d", "#3b82f6", "#f5b301", "#2fae63", "#9b59b6", "#ffffff"][i % 6]});
+  }
+}
+function stepCars(dt) {
+  S.cars.forEach(function (c) {
+    c.t += dt * 0.9;
+    while (c.t >= 1) {
+      c.t -= 1; c.px = c.tx; c.py = c.ty;
+      var opts = [[1, 0], [-1, 0], [0, 1], [0, -1]].filter(function (dv) { return roadSet[(c.px + dv[0]) + "," + (c.py + dv[1])]; });
+      var fwd = opts.filter(function (dv) { return !(c.px + dv[0] === c.x && c.py + dv[1] === c.y); });
+      var pick = fwd.length ? fwd[Math.floor(Math.random() * fwd.length)] : (opts.length ? opts[0] : null);
+      c.x = c.px; c.y = c.py;
+      if (!pick) { c.tx = c.px; c.ty = c.py; c.t = 0; break; }
+      c.tx = c.px + pick[0]; c.ty = c.py + pick[1];
+    }
+  });
+}
+function drawCar(c) {
+  var wx = c.px + (c.tx - c.px) * c.t + 0.5, wy = c.py + (c.ty - c.py) * c.t + 0.5;
+  var alongX = c.tx !== c.px, lw = alongX ? 0.34 : 0.17, lh = alongX ? 0.17 : 0.34;
+  var off = alongX ? [0, 0.1] : [0.1, 0];
+  box(wx - lw / 2 + off[0] * (c.tx >= c.px ? 1 : -1), wy - lh / 2 + off[1] * (c.ty >= c.py ? 1 : -1), lw, lh, 7, c.col, 1);
+}
+
+// ---------------- Chizish ----------------
+function groundTile(x, y, col) {
+  var A = P(x, y), B = P(x + 1, y), C = P(x + 1, y + 1), D = P(x, y + 1);
+  poly([A, B, C, D], col);
+}
+function hash(x, y) { var h = (x * 374761393 + y * 668265263) ^ 0x5bd1e995; h = (h ^ (h >> 13)) * 1274126177; return ((h ^ (h >> 16)) >>> 0) / 4294967295; }
+var FLOW = ["#ff7eb6", "#ffe14a", "#ffffff", "#b388ff"];
+function drawSea(t) {
+  for (var i = 0; i < 70; i++) {
+    var gx = -8 + hash(i, 3) * (N + 16), gy = -8 + hash(i, 7) * (N + 16);
+    if (gx > -1.5 && gx < N + 1.5 && gy > -1.5 && gy < N + 1.5) continue;
+    var p = P(gx, gy), a = 0.25 + 0.25 * Math.sin(t / 700 + i);
+    ctx.strokeStyle = "rgba(255,255,255," + a + ")"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(p[0], p[1], 9, Math.PI * 1.15, Math.PI * 1.85); ctx.stroke();
+    ctx.beginPath(); ctx.arc(p[0] + 14, p[1] + 4, 6, Math.PI * 1.15, Math.PI * 1.85); ctx.stroke();
+  }
+}
+function drawGround(t) {
+  drawSea(t);
+  var m = 0.8, a0 = P(-m, -m), b0 = P(N + m, -m), c0 = P(N + m, N + m), d0 = P(-m, N + m), dep = 30;
+  // orol "tuprog'i" va plyaj
+  poly([d0, c0, [c0[0], c0[1] + dep], [d0[0], d0[1] + dep]], "#8a6a45");
+  poly([c0, b0, [b0[0], b0[1] + dep], [c0[0], c0[1] + dep]], "#6b4e30");
+  poly([a0, b0, c0, d0], "#f3e2aa");
+  var a = P(0, 0), b = P(N, 0), c = P(N, N), d = P(0, N);
+  poly([a, b, c, d], "#6fcf7b");
+  for (var x = 0; x < N; x++) for (var y = 0; y < N; y++) {
+    if ((x + y) % 2 === 0) groundTile(x, y, "rgba(255,255,255,.08)");
+    var r = hash(x + 50, y + 90);
+    if (r < 0.1) { var q = P(x + 0.3 + r * 3, y + 0.5); ctx.fillStyle = FLOW[(x + y) % 4]; ctx.beginPath(); ctx.arc(q[0], q[1], 2.2, 0, 7); ctx.fill(); }
+  }
+}
+function deco() {
+  var out = [];
+  for (var x = 0; x < N; x++) for (var y = 0; y < N; y++) {
+    if (x > 1 && x < N - 2 && y > 1 && y < N - 2) continue;
+    var r = hash(x, y);
+    if (r < 0.45) out.push({x: x, y: y, r: r});
+  }
+  return out;
+}
+var DECO = deco();
+var occCache = null;
+function occMap() {
+  var o = {};
+  curBuildings().forEach(function (b) { var d = S.cat[b[1]]; for (var i = 0; i < d.w; i++) for (var j = 0; j < d.h; j++) o[(b[2] + i) + "," + (b[3] + j)] = b[0]; });
+  return o;
+}
+function fitsClient(k, x, y, ignore) {
+  var d = S.cat[k];
+  if (x < 0 || y < 0 || x + d.w > N || y + d.h > N) return false;
+  var occ = {};
+  S.st.b.forEach(function (b) { if (b[0] === ignore) return; var dd = S.cat[b[1]]; for (var i = 0; i < dd.w; i++) for (var j = 0; j < dd.h; j++) occ[(b[2] + i) + "," + (b[3] + j)] = 1; });
+  for (var i = 0; i < d.w; i++) for (var j = 0; j < d.h; j++) if (occ[(x + i) + "," + (y + j)]) return false;
+  return true;
+}
+
+function draw(t) {
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  if (!S.st || !S.cat) return;
+  ctx.save();
+  ctx.translate(W / 2, H / 2); ctx.scale(cam.z, cam.z); ctx.translate(-cam.x, -cam.y);
+  drawGround(t);
+  var bl = curBuildings(), items = [], roads = [];
+  bl.forEach(function (b) {
+    if (S.mode === "move" && S.ghost && S.ghost.i === b[0]) return;
+    if (b[1] === "road") roads.push(b); else items.push(b);
+  });
+  roads.forEach(function (b) { drawRoad(b, roadSet); });
+  // yer bezaklari (chekka daraxtlar)
+  var list = [];
+  DECO.forEach(function (q) { list.push({k: (q.x + q.y) + 0.5, f: function () { var p = P(q.x + 0.5, q.y + 0.5); tree(p[0], p[1], 0.9 + q.r, q.r < 0.2 ? "#2f9e4f" : "#3fb85f"); }}); });
+  items.forEach(function (b) {
+    var d = S.cat[b[1]], rem = bRem(b), prog = rem > 0 ? Math.max(0.12, 1 - rem / Math.max(1, d.secs)) : 1;
+    list.push({k: b[2] + b[3] + d.w + d.h - 0.2, f: function () {
+      drawBuilding(b, rem > 0 ? 0.3 + 0.55 * prog : 1, t);
+      if (rem > 0) scaffold(b, d);
+      var cx = P(b[2] + d.w / 2, b[3] + d.h / 2);
+      var top = cx[1] - (HMAX[b[1]] || 40) * (rem > 0 ? 0.6 : 1);
+      if (rem > 0) {
+        ctx.fillStyle = "rgba(10,18,36,.85)"; ctx.fillRect(cx[0] - 24, top - 14, 48, 12);
+        ctx.fillStyle = "#43d17c"; ctx.fillRect(cx[0] - 23, top - 13, 46 * prog, 10);
+        ctx.fillStyle = "#fff"; ctx.font = "bold 9px sans-serif"; ctx.textAlign = "center"; ctx.fillText("🔨 " + dur(rem), cx[0], top - 5);
+      } else if (b[4] > 1) {
+        ctx.fillStyle = "#ffc83d"; ctx.beginPath(); ctx.arc(cx[0] + d.w * 12, top + 4, 8, 0, 7); ctx.fill();
+        ctx.fillStyle = "#4a2600"; ctx.font = "bold 10px sans-serif"; ctx.textAlign = "center"; ctx.fillText(b[4], cx[0] + d.w * 12, top + 7.5);
+      }
+      if (S.sel === b[0] && !S.vis) {
+        var Aa = P(b[2], b[3]), Bb2 = P(b[2] + d.w, b[3]), Cc = P(b[2] + d.w, b[3] + d.h), Dd = P(b[2], b[3] + d.h);
+        ctx.lineWidth = 3; ctx.strokeStyle = "#ffe14a"; ctx.setLineDash([6, 4]); ctx.beginPath(); ctx.moveTo(Aa[0], Aa[1]); ctx.lineTo(Bb2[0], Bb2[1]); ctx.lineTo(Cc[0], Cc[1]); ctx.lineTo(Dd[0], Dd[1]); ctx.closePath(); ctx.stroke(); ctx.setLineDash([]);
+      }
+    }});
+  });
+  S.cars.forEach(function (c) { list.push({k: c.px + c.py + 1.1 + (c.tx + c.ty - c.px - c.py) * c.t * 0.5, f: function () { drawCar(c); }}); });
+  list.sort(function (a, b) { return a.k - b.k; });
+  list.forEach(function (it) { it.f(); });
+  // arvoh (qurish / ko'chirish)
+  if (S.ghost && S.mode) {
+    var g = S.ghost, d2 = S.cat[g.t], okp = fitsClient(g.t, g.x, g.y, S.mode === "move" ? g.i : undefined);
+    for (var i = 0; i < d2.w; i++) for (var j = 0; j < d2.h; j++) groundTile(g.x + i, g.y + j, okp ? "rgba(67,209,124,.65)" : "rgba(255,93,93,.65)");
+    ctx.globalAlpha = 0.85;
+    if (g.t === "road") drawRoad([0, "road", g.x, g.y, 1, 0], roadSet); else drawBuilding([0, g.t, g.x, g.y, 1, 0], 1, t);
+    ctx.globalAlpha = 1;
+    S.ghostOk = okp;
+  }
+  // suzuvchi matnlar
+  var now = performance.now();
+  S.fx = (S.fx || []).filter(function (f) { return now - f.t0 < 1400; });
+  S.fx.forEach(function (f) {
+    var p = (now - f.t0) / 1400, q = P(f.x, f.y);
+    ctx.globalAlpha = 1 - p; ctx.fillStyle = f.c; ctx.font = "bold 16px sans-serif"; ctx.textAlign = "center";
+    ctx.strokeStyle = "rgba(0,0,0,.5)"; ctx.lineWidth = 3; ctx.strokeText(f.s, q[0], q[1] - 30 - p * 50); ctx.fillText(f.s, q[0], q[1] - 30 - p * 50);
+    ctx.globalAlpha = 1;
+  });
+  ctx.restore();
+}
+function fx(x, y, s, c) { (S.fx = S.fx || []).push({x: x, y: y, s: s, c: c || "#ffe14a", t0: performance.now()}); }
+
+function loop(t) {
+  var dt = Math.min(0.1, (t - (S.last || t)) / 1000); S.last = t;
+  stepCars(dt);
+  draw(t);
+  S.frame = (S.frame || 0) + 1;
+  if (S.frame % 15 === 0) updPend();
+  requestAnimationFrame(loop);
+}
+
+// ---------------- Kiritish (surish, kattalashtirish, bosish) ----------------
+var ptrs = {}, drag = null, pinch = null;
+function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
+cv.addEventListener("pointerdown", function (e) {
+  cv.setPointerCapture(e.pointerId);
+  ptrs[e.pointerId] = {x: e.clientX, y: e.clientY};
+  var ks = Object.keys(ptrs);
+  if (ks.length === 1) drag = {sx: e.clientX, sy: e.clientY, cx: cam.x, cy: cam.y, moved: false};
+  else if (ks.length === 2) { drag = null; pinch = {d: dist(ptrs[ks[0]], ptrs[ks[1]]), z: cam.z}; }
+});
+cv.addEventListener("pointermove", function (e) {
+  if (!ptrs[e.pointerId]) return;
+  ptrs[e.pointerId] = {x: e.clientX, y: e.clientY};
+  var ks = Object.keys(ptrs);
+  if (ks.length >= 2 && pinch) {
+    var nd = dist(ptrs[ks[0]], ptrs[ks[1]]);
+    cam.z = Math.max(Math.min(W / (N * TW * 1.05), 0.45), Math.min(2.2, pinch.z * nd / pinch.d));
+  } else if (drag) {
+    var dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
+    if (!drag.moved && Math.hypot(dx, dy) > 8) drag.moved = true;
+    if (drag.moved) { cam.x = drag.cx - dx / cam.z; cam.y = drag.cy - dy / cam.z; clampCam(); }
+  }
+});
+function endPtr(e) {
+  var was = ptrs[e.pointerId]; delete ptrs[e.pointerId];
+  var ks = Object.keys(ptrs);
+  if (ks.length < 2) pinch = null;
+  if (ks.length === 0 && drag) {
+    if (!drag.moved && was && e.type === "pointerup") onTap(e.clientX, e.clientY);
+    drag = null;
+  } else if (ks.length === 1) { var q = ptrs[ks[0]]; drag = {sx: q.x, sy: q.y, cx: cam.x, cy: cam.y, moved: true}; }
+}
+cv.addEventListener("pointerup", endPtr);
+cv.addEventListener("pointercancel", endPtr);
+cv.addEventListener("wheel", function (e) {
+  e.preventDefault();
+  cam.z = Math.max(Math.min(W / (N * TW * 1.05), 0.45), Math.min(2.2, cam.z * (e.deltaY < 0 ? 1.12 : 0.89)));
+}, {passive: false});
+
+function hitBuilding(px, py) {
+  var w = toWorldScreen(px, py), bl = curBuildings().slice().sort(function (a, b) {
+    var da = S.cat[a[1]], db = S.cat[b[1]];
+    return (b[2] + b[3] + db.w + db.h) - (a[2] + a[3] + da.w + da.h);
+  });
+  for (var i = 0; i < bl.length; i++) {
+    var b = bl[i], d = S.cat[b[1]], h = b[1] === "road" ? 0 : (HMAX[b[1]] || 40) * (bRem(b) > 0 ? 0.6 : 1);
+    var A = P(b[2], b[3]), B = P(b[2] + d.w, b[3]), C = P(b[2] + d.w, b[3] + d.h), D = P(b[2], b[3] + d.h);
+    var pts = [up(A, h), up(B, h), B, C, D, up(D, h)];
+    if (pointIn(w[0], w[1], pts)) return b;
+  }
+  return null;
+}
+function pointIn(x, y, pts) {
+  var inside = false;
+  for (var i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    var xi = pts[i][0], yi = pts[i][1], xj = pts[j][0], yj = pts[j][1];
+    if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) inside = !inside;
+  }
+  return inside;
+}
+function onTap(px, py) {
+  if (!S.st || !S.cat) return;
+  if (S.mode) {
+    var tl = toTile(px, py), d = S.cat[S.ghost.t];
+    S.ghost.x = Math.max(0, Math.min(N - d.w, Math.floor(tl[0] - (d.w - 1) / 2 + 0.0)));
+    S.ghost.y = Math.max(0, Math.min(N - d.h, Math.floor(tl[1] - (d.h - 1) / 2 + 0.0)));
+    haptic(); ghostInfo(); return;
+  }
+  var b = hitBuilding(px, py);
+  if (b) { S.sel = b[0]; haptic(); S.vis ? visitInfo(b) : buildingSheet(b); }
+  else { S.sel = null; closeSheet(); }
+}
+
+// ---------------- Panellar ----------------
+function openSheet(html) {
+  $("sheet").innerHTML = '<button class="x" id="shX">✕</button>' + html;
+  $("sheet").classList.add("on"); $("sheetbg").style.display = "block";
+  $("shX").onclick = closeSheet;
+}
+function closeSheet() { $("sheet").classList.remove("on"); $("sheetbg").style.display = "none"; S.sel = S.mode ? S.sel : null; }
+$("sheetbg").addEventListener("click", closeSheet);
+
+function costTxt(d) { return d.gem ? "💎 " + d.gem : "🪙 " + fmt(d.cost); }
+function buildMenu() {
+  if (S.vis) return;
+  var s = S.st, h = '<h2>🏗 Qurish</h2><div class="sub">' + s.lv + '-daraja · 🪙 ' + fmt(s.coins) + ' · 💎 ' + s.gems + '</div><div class="grid">';
+  Object.keys(S.cat).forEach(function (k) {
+    var d = S.cat[k], lock = s.lv < d.lv;
+    h += '<div class="card' + (lock ? " lk" : "") + '" data-k="' + k + '"><div class="em">' + d.e + '</div><div class="nm">' + esc(d.n) + '</div><div class="pr">' + costTxt(d) + '</div><div class="in">' +
+      (d.inc ? "+" + fmt(d.inc) + "/soat" : (d.bonus ? "+" + Math.round(d.bonus * 100) + "% daromad" : (d.cap ? "+ombor" : "bezak"))) + (d.pop ? " · 👥" + d.pop : "") + '</div>' +
+      (lock ? '<div class="lkb">🔒 ' + d.lv + '-daraja</div>' : "") + '</div>';
+  });
+  openSheet(h + "</div>");
+  document.querySelectorAll("#sheet .card").forEach(function (el) {
+    el.onclick = function () {
+      var k = el.getAttribute("data-k"), d = S.cat[k];
+      if (s.lv < d.lv) { toast("Bu bino " + d.lv + "-darajada ochiladi."); return; }
+      startPlace(k);
+    };
+  });
+}
+function startPlace(k) {
+  var d = S.cat[k], w = toTile(W / 2, H / 2);
+  S.mode = "place"; S.ghost = {t: k, x: Math.max(0, Math.min(N - d.w, Math.floor(w[0]))), y: Math.max(0, Math.min(N - d.h, Math.floor(w[1])))};
+  closeSheet(); $("bar").style.display = "none"; $("ghostbar").style.display = "flex"; ghostInfo();
+}
+function startMove(b) {
+  S.mode = "move"; S.ghost = {t: b[1], x: b[2], y: b[3], i: b[0]};
+  closeSheet(); $("bar").style.display = "none"; $("ghostbar").style.display = "flex"; ghostInfo();
+}
+function ghostInfo() {
+  var d = S.cat[S.ghost.t];
+  $("gT").innerHTML = d.e + " " + esc(d.n) + "<small>" + (S.mode === "move" ? "Yangi joyni tanlang" : costTxt(d) + " · joyni bosib tanlang") + "</small>";
+}
+function endMode() { S.mode = null; S.ghost = null; $("ghostbar").style.display = "none"; $("bar").style.display = "flex"; }
+$("gNo").onclick = function () { endMode(); };
+$("gOk").onclick = function () {
+  if (!S.ghost) return;
+  if (!S.ghostOk) { toast("Bu yerga bo'lmaydi (band yoki chegaradan tashqari)."); haptic("err"); return; }
+  var g = S.ghost, m = S.mode;
+  if (m === "place") {
+    act("build", {t: g.t, x: g.x, y: g.y}).then(function (j) {
+      if (j && j.ok) { fx(g.x + 0.5, g.y + 0.5, "🔨", "#fff"); haptic("ok"); var d = S.cat[g.t]; if (g.t === "road") { return; } endMode(); }
+      else if (j && j.error === "coins") { endMode(); toast("Tanga yetarli emas — daromad yig'ing 💰"); }
+      else if (j && j.error && j.error !== "spot") endMode();
+    });
+  } else {
+    act("move", {i: g.i, x: g.x, y: g.y}).then(function (j) { if (j && j.ok) { endMode(); haptic("ok"); } });
+  }
+};
+function incOf(k, lv) { var d = S.cat[k]; return d.inc * [1, 1.5, 2.2, 3.2, 4.6][lv - 1] * (1 + (S.st ? S.st.bonus : 0)); }
+function upCost(k, lv) { return Math.round(S.cat[k].cost * Math.pow(1.7, lv)); }
+function buildingSheet(b) {
+  var k = b[1], d = S.cat[k], lv = b[4], rem = bRem(b), s = S.st;
+  var h = '<h2>' + d.e + " " + esc(d.n) + ' <span style="color:var(--gold)">· ' + lv + "-daraja</span></h2>";
+  if (rem > 0) {
+    var need = Math.max(1, Math.ceil(rem / 60));
+    h += '<div class="sub">🔨 Qurilmoqda — qoldi: ' + dur(rem) + '</div><div class="act"><button class="g" id="aFin">⚡ Tezlatish (💎 ' + need + ')</button></div>';
+  } else {
+    if (d.inc) h += '<div class="kv"><span>Daromad</span><span>🪙 ' + fmt(incOf(k, lv)) + "/soat</span></div>";
+    if (d.pop) h += '<div class="kv"><span>Aholi</span><span>👥 ' + (d.pop * lv) + "</span></div>";
+    if (d.bonus) h += '<div class="kv"><span>Bonus</span><span>+' + Math.round(d.bonus * (k === "park" ? lv : 1) * 100) + "% daromad</span></div>";
+    if (d.cap) h += '<div class="kv"><span>Ombor</span><span>+' + (d.cap * lv / 2) + " soat</span></div>";
+    if (!d.inc && !d.bonus && !d.cap && !d.pop) h += '<div class="sub">Shahar bezagi.</div>';
+    h += '<div class="act">';
+    if (lv < d.max) {
+      var uc = upCost(k, lv);
+      h += '<button class="k" id="aUp"' + (s.coins < uc ? " disabled" : "") + '>⬆️ Yangilash<br>🪙 ' + fmt(uc) + '</button>';
+    }
+    h += '<button id="aMv">📦 Ko\'chirish</button>';
+    if (!d.gem) { var back = Math.floor((d.cost + (function () { var t = 0; for (var q = 1; q < lv; q++) t += upCost(k, q); return t; })()) * 0.4); h += '<button class="r" id="aSell">🗑 Sotish<br>+🪙 ' + fmt(back) + '</button>'; }
+    h += "</div>";
+  }
+  openSheet(h);
+  var el;
+  if ((el = $("aFin"))) el.onclick = function () { act("finish", {i: b[0]}).then(function (j) { if (j && j.ok) { closeSheet(); haptic("ok"); } }); };
+  if ((el = $("aUp"))) el.onclick = function () { act("upgrade", {i: b[0]}).then(function (j) { if (j && j.ok) { fx(b[2] + d.w / 2, b[3] + d.h / 2, "⬆️ " + (lv + 1) + "-daraja", "#43d17c"); haptic("ok"); var nb = S.st.b.filter(function (x) { return x[0] === b[0]; })[0]; if (nb) buildingSheet(nb); } }); };
+  if ((el = $("aMv"))) el.onclick = function () { startMove(b); };
+  if ((el = $("aSell"))) el.onclick = function () { if (!el.dataset.c) { el.dataset.c = 1; el.innerHTML = "Aniq sotilsinmi?<br>Ha, sotish"; return; } act("sell", {i: b[0]}).then(function (j) { if (j && j.ok) { closeSheet(); S.sel = null; haptic("ok"); } }); };
+}
+function visitInfo(b) {
+  var d = S.cat[b[1]];
+  openSheet('<h2>' + d.e + " " + esc(d.n) + ' <span style="color:var(--gold)">· ' + b[4] + "-daraja</span></h2>" + (d.pop ? '<div class="kv"><span>Aholi</span><span>👥 ' + (d.pop * b[4]) + "</span></div>" : '<div class="sub">' + esc(S.vis.name) + " shahri</div>"));
+}
+$("bBuild").onclick = function () { if (S.vis) return; buildMenu(); };
+$("bCollect").onclick = function () {
+  if (S.vis) return;
+  var before = S.st.coins;
+  act("collect").then(function (j) {
+    if (j && j.ok) { if (j.gain > 0) { var c = toTile(W / 2, H / 2); fx(Math.max(2, Math.min(N - 2, c[0])), Math.max(2, Math.min(N - 2, c[1])), "+" + fmt(j.gain) + " 🪙", "#ffe14a"); haptic("ok"); } else toast("Hozircha yig'ish uchun daromad yo'q."); }
+  });
+};
+$("bDaily").onclick = function () {
+  if (S.vis) return;
+  if (!S.st.daily) { toast("Bugungi bonus olingan. Ertaga qaytib keling! 🎁 (ketma-ket: " + S.st.streak + " kun)"); return; }
+  act("daily").then(function (j) {
+    if (j && j.ok && j.bonus) {
+      openSheet('<h2>🎁 Kunlik bonus</h2><div class="sub">Ketma-ket kun: ' + j.bonus.streak + ' · 7-kuni 💎5 sovg\'a!</div><div style="text-align:center;font-size:34px;margin:14px 0">🪙 ' + fmt(j.bonus.coins) + (j.bonus.gems ? " &nbsp; 💎 " + j.bonus.gems : "") + '</div><button class="big g" id="okb">Zo\'r!</button>');
+      $("okb").onclick = closeSheet; haptic("ok");
+    }
+  });
+};
+function topSheet() {
+  api("top").then(function (j) {
+    if (!j.ok) { toast(j.msg || "Xatolik"); return; }
+    var h = '<h2>🏆 Eng yaxshi shaharlar</h2><div class="sub">' + (j.rank ? "Sizning o'rningiz: #" + j.rank + " / " + j.total : "") + '</div>';
+    j.top.forEach(function (r, i) {
+      h += '<div class="row' + (S.st && r.u === S.st.uid ? " me" : "") + '" data-u="' + r.u + '"><div class="rk">' + (i < 3 ? ["🥇", "🥈", "🥉"][i] : i + 1) + '</div><div class="nn">' + esc(r.n) + '</div><div class="vv">' + r.lv + "-daraja<br>🏙 " + fmt(r.v) + "</div></div>";
+    });
+    openSheet(h || "<h2>Hali hech kim yo'q</h2>");
+    document.querySelectorAll("#sheet .row").forEach(function (el) { el.onclick = function () { visit(+el.getAttribute("data-u")); }; });
+  });
+}
+$("bTop").onclick = topSheet;
+function visit(u) {
+  if (S.st && u === S.st.uid) { closeSheet(); return; }
+  api("visit", {u: u}).then(function (j) {
+    if (!j.ok) { toast(j.msg || "Xatolik"); return; }
+    S.vis = j.visit; roadsChanged(); closeSheet();
+    $("visit").style.display = "flex"; $("visitT").textContent = "🏙 " + j.visit.name + " · " + j.visit.lv + "-daraja";
+    $("bar").style.display = "none"; cam.x = 0; cam.y = (N / 2) * TH;
+  });
+}
+$("visitBack").onclick = function () { S.vis = null; S.sel = null; roadsChanged(); $("visit").style.display = "none"; $("bar").style.display = "flex"; };
+function shopSheet() {
+  api("packs").then(function (j) {
+    if (!j.ok) return;
+    var h = '<h2>💎 Gem do\'koni</h2><div class="sub">Gem bilan qurilishni tezlatish va maxsus binolar (Yodgorlik, Teleminora) sotib olish mumkin.</div>';
+    j.packs.forEach(function (p) { h += '<button class="big g" data-p="' + esc(p.id) + '">💎 ' + p.gems + ' gem &nbsp;—&nbsp; ' + p.stars + ' ⭐</button>'; });
+    h += '<div class="sub" style="margin-top:12px">To\'lov Telegram Stars orqali amalga oshiriladi.</div>';
+    openSheet(h);
+    document.querySelectorAll("#sheet [data-p]").forEach(function (el) {
+      el.onclick = function () {
+        api("buy", {pack: el.getAttribute("data-p")}).then(function (r) {
+          if (!r.ok) { toast(r.msg || "Xatolik"); return; }
+          if (TG && TG.openInvoice) TG.openInvoice(r.link, function (st) { if (st === "paid") { toast("✅ To'lov qabul qilindi!"); setTimeout(function () { act("state"); }, 1500); closeSheet(); } });
+          else window.open(r.link, "_blank");
+        });
+      };
+    });
+  });
+}
+$("bShop").onclick = shopSheet;
+$("pGem").onclick = shopSheet;
+
+// ---------------- Boshlash ----------------
+function introSheet() {
+  openSheet('<h2>🏙 Shaharga xush kelibsiz!</h2><div class="sub">Siz hokimsiz. Maqsad — eng boy va eng katta shaharni qurish.</div>' +
+    '<div class="kv"><span>1.</span><span>🏗 Qurish — uy, ferma, do\'kon quring</span></div>' +
+    '<div class="kv"><span>2.</span><span>💰 Daromadni muntazam yig\'ing</span></div>' +
+    '<div class="kv"><span>3.</span><span>⬆️ Binoni bosib yangilang</span></div>' +
+    '<div class="kv"><span>4.</span><span>🏆 Reytingda boshqa shaharlarni ko\'ring</span></div>' +
+    '<div class="kv"><span>5.</span><span>🎁 Har kuni bonus oling</span></div><button class="big g" id="okb">Boshladik!</button>');
+  $("okb").onclick = closeSheet;
+}
+function boot() {
+  resize();
+  clampCam();
+  api("state", {cat: 1}).then(function (j) {
+    $("load").style.display = "none";
+    if (j.error) { $("load").style.display = "flex"; $("load").innerHTML = '<div class="l">⚠️</div>' + esc(j.error === "auth" ? "Sahifani Telegram ichidan oching." : (j.msg || "Xatolik yuz berdi.")); return; }
+    applyState(j);
+    if (j.gifts && j.gifts.length) j.gifts.forEach(function (g) { toast("🎁 Sovg'a: " + (g.gems ? "💎" + g.gems + " " : "") + (g.coins ? "🪙" + g.coins : "") + (g.text ? " — " + g.text : "")); });
+    if (j.first) setTimeout(introSheet, 400);
+    else if (S.st.daily) setTimeout(function () { $("bDaily").onclick(); }, 600);
+    requestAnimationFrame(loop);
+  });
+  setInterval(function () { if (!document.hidden && !S.vis && !S.mode && !S.busy) act("state", null, true); }, 30000);
+}
+window.__city = {S: S, cam: cam, act: act, draw: draw};
+boot();
+})();
+</script>
+</body>
+</html>
+"""
+
+
+# ===================== /SHAHAR QURISH O'YINI =====================
+
+
 SETUP_FUNCTIONS = {
+    "city": setup_city_bot,
     "download": setup_download_bot,
     "subs": setup_subs_bot,
     "nakrutka": setup_nakrutka_bot,
@@ -20758,6 +22609,17 @@ async def start_child_bot(token: str, bot_type: str):
                     )
                 except Exception as e:
                     logging.info(f"Kino panel menyu tugmasi ({token[-6:]}, admin {_aid}): {e}")
+    if bot_type == "city":
+        # Shahar o'yini: klaviatura yonidagi Menu tugmasi hamma uchun — «O'ynash» mini app
+        _cinfo = data["bots"].get(token, {})
+        _curl = get_cityapp_url(_cinfo.get("id"))
+        if _curl:
+            try:
+                await child_bot.set_chat_menu_button(
+                    menu_button=MenuButtonWebApp(text="🏙 O'ynash", web_app=WebAppInfo(url=_curl)),
+                )
+            except Exception as e:
+                logging.info(f"Shahar o'yini menyu tugmasi ({token[-6:]}): {e}")
     if bot_type == "subs":
         _old_loop = _SB_LOOPS.pop(token, None)
         if _old_loop:
@@ -23691,6 +25553,8 @@ async def start_web_server():
     app.router.add_get("/api/pub/ob/project", pub_ob_project)
     app.router.add_post("/api/pub/ob/toggle", pub_ob_toggle)
     app.router.add_get("/api/pub/ob/photo", pub_ob_photo)
+    app.router.add_get("/city", city_page)
+    app.router.add_post("/api/city/act", city_api)
     app.router.add_get("/shop", shop_page)
     app.router.add_get("/api/shop/list", shop_api_list)
     app.router.add_get("/api/shop/photo", shop_api_photo)
@@ -25495,7 +27359,7 @@ class BotMetricsMiddleware(BaseMiddleware):
         return result
 
 
-_BOT_EMOJI = {"subs": "💳", "download": "📥", "openbudget": "🗳", "kino_pro": "🎬", "shop": "🛍", "ai": "🤖", "taxi": "🚕", "nakrutka": "🚀"}
+_BOT_EMOJI = {"city": "🏙", "subs": "💳", "download": "📥", "openbudget": "🗳", "kino_pro": "🎬", "shop": "🛍", "ai": "🤖", "taxi": "🚕", "nakrutka": "🚀"}
 _creator_username_cache = {"v": ""}
 
 
