@@ -29320,9 +29320,9 @@ svg.i.f{fill:currentColor}
 .emp{text-align:center;color:var(--mu);padding:70px 24px}
 .emp b{display:block;font-size:44px;margin-bottom:10px}
 /* nav */
-.nv{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(14px + env(safe-area-inset-bottom,0px));z-index:8;display:flex;gap:2px;padding:6px;border-radius:28px;background:rgba(21,25,39,.84);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid var(--bd);box-shadow:0 14px 40px rgba(0,0,0,.55)}
+.nv{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(14px + env(safe-area-inset-bottom,0px));z-index:8;display:flex;gap:2px;padding:6px;border-radius:28px;background:linear-gradient(180deg,rgba(255,255,255,.16),rgba(255,255,255,.06));backdrop-filter:blur(26px) saturate(190%);-webkit-backdrop-filter:blur(26px) saturate(190%);border:1px solid rgba(255,255,255,.22);box-shadow:0 14px 40px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.28)}
 .nv button{display:flex;align-items:center;gap:7px;padding:12px 17px;border:0;border-radius:22px;background:none;color:var(--mu);font-weight:700;font-size:14px;cursor:pointer}
-.nv button.on{background:rgba(255,255,255,.11);color:var(--tx)}
+.nv button.on{background:rgba(255,255,255,.2);color:#fff;box-shadow:inset 0 1px 0 rgba(255,255,255,.25)}
 .nv button.on svg{color:var(--ac)}
 /* detail */
 #det{position:fixed;inset:0;background:var(--bg);overflow-y:auto;display:none;z-index:20;-webkit-overflow-scrolling:touch}
