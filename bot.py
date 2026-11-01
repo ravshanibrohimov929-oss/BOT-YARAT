@@ -1716,6 +1716,15 @@ class AddMovie(StatesGroup):
     waiting_video = State()
 
 
+class AddKino(StatesGroup):
+    code = State()
+    title = State()
+    genre = State()
+    year = State()
+    cover = State()
+    desc = State()
+
+
 class AddMoviesBulk(StatesGroup):
     waiting_start = State()
     waiting_video = State()
@@ -2022,7 +2031,7 @@ for _perm, _texts in {
                "📋 Filmlar ro'yxati", "🔍 Kod bo'yicha qidirish", "✏️ Tavsifni tahrirlash", "🗑 Film o'chirish",
                "🔒 VIP kino qo'shish", "🔒 VIP qilib belgilash", "💰 Pullik kino qo'shish", "💰 Pullik qilib belgilash",
                "🗓 Chiqish sanasini belgilash", "🖼 Cover", "🏷 Kategoriyalar", "⭐ Tavsiyalar", "📈 TOP reyting", "📤 Eksport",
-               "🌐 Veb panelga film qo'shish",
+               "🌐 Veb panelga film qo'shish", "🎞 Kino qo'shish", "🏷 Janr belgilash",
                "📦 Ko'p kino yuklash", "➕ Kategoriya qo'shish", "➖ Kategoriya o'chirish"],
     "users": ["👥 Foydalanuvchilar", "🚫 Bloklash", "✅ Blokdan chiqarish"],
     "broadcast": ["📩 Xabar yuborish", "📣 Reklama", "📮 Postlar", "📢 Xabar va reklama", "📢 Ommaviy xabar yuborish",
@@ -10136,8 +10145,9 @@ def setup_kino_bot(dp: Dispatcher, token: str):
     def content_menu_kb():
         # "🎬 Kinolar" bo'limining asosiy menyusi
         keyboard = [
-            [KeyboardButton(text="🎬 Film qo'shish"), KeyboardButton(text="📺 Serial qo'shish")],
-            [KeyboardButton(text="➕ Seriallarga qism qo'shish"), KeyboardButton(text="📋 Filmlar ro'yxati")],
+            [KeyboardButton(text="🎬 Film qo'shish"), KeyboardButton(text="🎞 Kino qo'shish")],
+            [KeyboardButton(text="📺 Serial qo'shish"), KeyboardButton(text="➕ Seriallarga qism qo'shish")],
+            [KeyboardButton(text="📋 Filmlar ro'yxati"), KeyboardButton(text="🏷 Janr belgilash")],
             [KeyboardButton(text="🔍 Kod bo'yicha qidirish"), KeyboardButton(text="✏️ Tavsifni tahrirlash")],
             [KeyboardButton(text="🗑 Film o'chirish")],
         ]
@@ -11391,6 +11401,231 @@ def setup_kino_bot(dp: Dispatcher, token: str):
         )
         await state.set_state(AddMovie.waiting_code)
 
+    # ---------- 🎞 Kino qo'shish (nom, janr, yil so'raydi) ----------
+    KINO_SKIP_BTN = "⏭ O'tkazib yuborish"
+    KINO_GDONE_BTN = "✅ Janrlar tayyor"
+    KINO_CANCEL_BTN = "❌ Bekor qilish"
+
+    def kino_cancel_kb(extra=None):
+        rows = [[KeyboardButton(text=x)] for x in (extra or [])]
+        rows.append([KeyboardButton(text=KINO_CANCEL_BTN)])
+        return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+    def kino_genre_kb(chosen):
+        rows, row = [], []
+        for g in KINO_GENRES:
+            row.append(KeyboardButton(text=("✅ " if g in chosen else "") + g))
+            if len(row) == 3:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+        rows.append([KeyboardButton(text=KINO_GDONE_BTN), KeyboardButton(text=KINO_SKIP_BTN)])
+        rows.append([KeyboardButton(text=KINO_CANCEL_BTN)])
+        return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+    async def kino_cancel(message: Message, state: FSMContext):
+        await state.clear()
+        await message.answer("Bekor qilindi.", reply_markup=content_menu_kb())
+
+    for _kst in (AddKino.code, AddKino.title, AddKino.genre, AddKino.year, AddKino.cover, AddKino.desc):
+        dp.message.register(kino_cancel, _kst, F.text == KINO_CANCEL_BTN)
+
+    @dp.message(F.text == "🎞 Kino qo'shish")
+    async def addkino_cmd(message: Message, state: FSMContext):
+        if not is_moderator(message.from_user.id):
+            return
+        await state.clear()
+        await state.update_data(is_vip=False, is_paid=False, auto_web=True)
+        await message.answer(
+            "🎞 <b>Kino qo'shish</b>\n\nBu yerda nom, janr va yil ham so'raladi — veb sahifada chiroyli ko'rinadi.\n\n"
+            "Kino kodini yuboring (faqat raqam, masalan: 40):",
+            reply_markup=kino_cancel_kb())
+        await state.set_state(AddKino.code)
+
+    @dp.message(AddKino.code, F.text)
+    async def addkino_code(message: Message, state: FSMContext):
+        code = (message.text or "").strip()
+        if not code.isdigit():
+            await message.answer("❌ Kod faqat raqamlardan iborat bo'lishi kerak. Qaytadan yuboring:")
+            return
+        existing = info["movies"].get(code)
+        if existing:
+            await message.answer(f"⚠️ Kod {code} allaqachon band: <b>{html_escape(kino_title(code, existing))}</b>. Davom etsangiz, u almashtiriladi.")
+        await state.update_data(code=code)
+        await message.answer(
+            "🎞 Kino <b>nomini</b> yozing.\n\nYoki hammasini bir yo'la yuboring:\n"
+            "<code>Nom - Janr, Janr - Yil</code>\n"
+            "masalan: <code>Dune: Ikkinchi qism - Fantastika, Sarguzasht - 2024</code>",
+            reply_markup=kino_cancel_kb())
+        await state.set_state(AddKino.title)
+
+    async def kino_ask_genre(message: Message, state: FSMContext):
+        ch = (await state.get_data()).get("genres") or []
+        await message.answer(
+            "🏷 <b>Janrni</b> tanlang (bir nechtasini bosish mumkin)." + (f"\n\nTanlandi: <b>{html_escape(', '.join(ch))}</b>" if ch else "")
+            + "\nYoki o'zingiz yozing: <code>Fantastika, Triller</code>\n\nTugagach «✅ Janrlar tayyor» ni bosing.",
+            reply_markup=kino_genre_kb(ch))
+        await state.set_state(AddKino.genre)
+
+    async def kino_ask_year(message: Message, state: FSMContext):
+        await message.answer("📅 Chiqqan <b>yilini</b> yozing (masalan: 2024).", reply_markup=kino_cancel_kb([KINO_SKIP_BTN]))
+        await state.set_state(AddKino.year)
+
+    async def kino_ask_cover(message: Message, state: FSMContext):
+        await message.answer(
+            "🖼 <b>Poster (cover)</b> rasmini yuboring — veb sahifada filmning rasmi shu bo'ladi.\n\n" + COVER_HOWTO,
+            reply_markup=kino_cancel_kb([KINO_SKIP_BTN]))
+        await state.set_state(AddKino.cover)
+
+    async def kino_ask_desc(message: Message, state: FSMContext):
+        await message.answer(
+            "📝 Kino <b>tavsifini</b> yozing (kamida " + str(KINO_WEB_MIN_DESC) + " belgi — veb sahifada ko'rinishi uchun).\n\n"
+            "Tavsif kerak bo'lmasa «🚫 Tavsif yo'q» ni bosing.",
+            reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=NO_DESC_BTN)], [KeyboardButton(text=KINO_CANCEL_BTN)]], resize_keyboard=True))
+        await state.set_state(AddKino.desc)
+
+    async def kino_after_title(message: Message, state: FSMContext):
+        sd = await state.get_data()
+        if not sd.get("genres"):
+            await kino_ask_genre(message, state)
+        elif not sd.get("year"):
+            await kino_ask_year(message, state)
+        else:
+            await kino_ask_cover(message, state)
+
+    @dp.message(AddKino.title, F.text)
+    async def addkino_title(message: Message, state: FSMContext):
+        raw = (message.text or "").strip()
+        if not raw:
+            await message.answer("❌ Nomni matn ko'rinishida yozing:")
+            return
+        meta = kino_parse_meta(raw)
+        if meta:
+            title, genres, year = meta["title"], meta["genres"], meta["year"]
+        else:
+            title, genres, year = (raw.splitlines()[0])[:80], [], None
+        await state.update_data(title=title, genres=genres, year=year)
+        if meta:
+            await message.answer(
+                "🤖 Avtomatik aniqlandi:\n🎞 Nom: <b>" + html_escape(title) + "</b>\n"
+                "🏷 Janr: " + (html_escape(", ".join(genres)) or "—") + "\n📅 Yil: " + (str(year) if year else "—"))
+        await kino_after_title(message, state)
+
+    async def kino_edit_finish(message: Message, state: FSMContext):
+        sd = await state.get_data()
+        code = sd.get("code")
+        m = info["movies"].get(code)
+        await state.clear()
+        if not m:
+            await message.answer("❌ Kino topilmadi.", reply_markup=content_menu_kb())
+            return
+        if sd.get("genres"):
+            m["genres"] = sd["genres"]
+        else:
+            m.pop("genres", None)
+        if sd.get("year"):
+            m["year"] = sd["year"]
+        save_data()
+        await message.answer(
+            f"✅ Kod {code}: janr — <b>{html_escape(', '.join(sd.get('genres') or []) or '—')}</b>, yil — <b>{sd.get('year') or '—'}</b>.",
+            reply_markup=content_menu_kb())
+
+    @dp.message(AddKino.genre, F.text)
+    async def addkino_genre(message: Message, state: FSMContext):
+        t = (message.text or "").strip()
+        sd = await state.get_data()
+        ch = list(sd.get("genres") or [])
+        if t in (KINO_GDONE_BTN, KINO_SKIP_BTN):
+            await state.update_data(genres=ch if t == KINO_GDONE_BTN else ch)
+            if sd.get("gk_edit"):
+                await kino_ask_year(message, state)
+            elif not sd.get("year"):
+                await kino_ask_year(message, state)
+            else:
+                await kino_ask_cover(message, state)
+            return
+        names = [x.strip() for x in re.split(r"[,;/]+", t.replace("✅ ", "")) if x.strip()]
+        found = [kino_genre_of(x) for x in names]
+        if not names or not all(found):
+            await message.answer("❌ Janr tanilmadi. Tugmalardan tanlang yoki to'g'ri yozing (masalan: Fantastika, Triller).")
+            return
+        for g in found:
+            if g in ch:
+                ch.remove(g)
+            else:
+                ch.append(g)
+        await state.update_data(genres=ch[:5])
+        await kino_ask_genre(message, state)
+
+    @dp.message(AddKino.year, F.text)
+    async def addkino_year(message: Message, state: FSMContext):
+        t = (message.text or "").strip()
+        sd = await state.get_data()
+        year = sd.get("year")
+        if t != KINO_SKIP_BTN:
+            if not re.fullmatch(r"(19|20)\d{2}", t):
+                await message.answer("❌ Yilni 4 xonali raqamda yozing (masalan: 2024) yoki o'tkazib yuboring.")
+                return
+            year = int(t)
+            await state.update_data(year=year)
+        if sd.get("gk_edit"):
+            await kino_edit_finish(message, state)
+            return
+        await kino_ask_cover(message, state)
+
+    @dp.message(AddKino.cover, F.photo, F.forward_origin)
+    async def addkino_cover(message: Message, state: FSMContext):
+        await state.update_data(cover_id=message.photo[-1].file_id)
+        await message.answer("✅ Poster qabul qilindi.")
+        await kino_ask_desc(message, state)
+
+    @dp.message(AddKino.cover, F.text == KINO_SKIP_BTN)
+    async def addkino_cover_skip(message: Message, state: FSMContext):
+        await message.answer("ℹ️ Postersiz film veb sahifada ko'rinmaydi. Keyin «🖼 Cover» orqali qo'ysangiz bo'ladi.")
+        await kino_ask_desc(message, state)
+
+    @dp.message(AddKino.cover)
+    async def addkino_cover_wrong(message: Message):
+        if message.photo and not message.forward_origin:
+            await message.answer("🚫 Galereyadan yuborilgan rasm qabul qilinmaydi.\n\n" + COVER_HOWTO)
+            return
+        await message.answer("❌ Rasmni «Sevimlilar»dan uzating (forward) yoki «" + KINO_SKIP_BTN + "» ni bosing.")
+
+    @dp.message(AddKino.desc, F.text)
+    async def addkino_desc(message: Message, state: FSMContext):
+        raw = (message.text or "").strip()
+        if raw == NO_DESC_BTN:
+            raw = (info.get("default_desc") or "").strip()
+            if not raw:
+                await message.answer(
+                    "ℹ️ «Tavsif yo'q» matni hali kiritilmagan (📝 Matnlar bo'limida). Hozir tavsifni o'zingiz yozing:")
+                return
+        if not raw:
+            await message.answer("❌ Tavsifni matn ko'rinishida yozing:")
+            return
+        await state.update_data(desc=raw)
+        await message.answer("Endi filmni (videoni) <b>forward (uzatib)</b> yuboring:", reply_markup=kino_cancel_kb())
+        await state.set_state(AddMovie.waiting_video)
+
+    async def kgenre_do(message: Message, state: FSMContext, code: str):
+        m = info["movies"].get(code)
+        if not m:
+            await message.answer("❌ Kino topilmadi.", reply_markup=content_menu_kb())
+            return
+        await state.clear()
+        await state.update_data(code=code, genres=list(m.get("genres") or []), year=m.get("year"), gk_edit=True)
+        await kino_ask_genre(message, state)
+
+    @dp.message(F.text == "🏷 Janr belgilash")
+    async def kgenre_start(message: Message, state: FSMContext):
+        if not is_moderator(message.from_user.id):
+            return
+        if not info["movies"]:
+            await message.answer("Kontent yo'q. Avval kino qo'shing.")
+            return
+        await ask_movie_code(message, state, "kgenre")
+
     @dp.message(F.text == "💰 Pullik kino qo'shish")
     async def addpaidmovie_cmd(message: Message, state: FSMContext):
         if not is_moderator(message.from_user.id):
@@ -11445,6 +11680,9 @@ def setup_kino_bot(dp: Dispatcher, token: str):
     @dp.message(AddSeries.waiting_desc)
     async def addseries_desc(message: Message, state: FSMContext):
         await state.update_data(desc=message.text.strip(), episodes={})
+        _smeta = kino_parse_meta(message.text or "")
+        if _smeta:
+            await state.update_data(genres=_smeta["genres"], year=_smeta["year"])
         await message.answer("Jami nechta qism/serial bor? (faqat raqam, masalan: 10):")
         await state.set_state(AddSeries.waiting_count)
 
@@ -11477,6 +11715,9 @@ def setup_kino_bot(dp: Dispatcher, token: str):
             "episodes": episodes,
             "added_at": datetime.now().isoformat(timespec="seconds"),
         }
+        for _k in ("genres", "year"):
+            if state_data.get(_k):
+                info["movies"][code][_k] = state_data[_k]
         save_data()
         if info.get("new_content_notify"):
             await notify_new_content(message.bot, f"📺 Yangi serial qo'shildi: {state_data['title']} (Kod: {code})")
@@ -11654,7 +11895,14 @@ def setup_kino_bot(dp: Dispatcher, token: str):
             await message.answer("❌ Tavsifni matn ko'rinishida yozing yoki «🚫 Tavsif yo'q» ni bosing:", reply_markup=desc_prompt_kb())
             return
         await state.update_data(desc=raw)
-        if (await state.get_data()).get("is_paid"):
+        _sd0 = await state.get_data()
+        _meta = None if _sd0.get("title") else kino_parse_meta(raw)
+        if _meta:
+            await state.update_data(title=_meta["title"], genres=_meta["genres"], year=_meta["year"])
+            await message.answer(
+                "🤖 Avtomatik aniqlandi:\n🎞 Nom: <b>" + html_escape(_meta["title"]) + "</b>\n"
+                "🏷 Janr: " + (html_escape(", ".join(_meta["genres"])) or "—") + "\n📅 Yil: " + (str(_meta["year"]) if _meta["year"] else "—"))
+        if _sd0.get("is_paid"):
             await message.answer("💰 Kino narxini so'mda yozing (masalan: 10000):")
             await state.set_state(AddMovie.waiting_price)
             return
@@ -11701,6 +11949,11 @@ def setup_kino_bot(dp: Dispatcher, token: str):
         }
         if title:
             info["movies"][code]["title"] = title
+        for _k in ("genres", "year"):
+            if state_data.get(_k):
+                info["movies"][code][_k] = state_data[_k]
+        if state_data.get("cover_id"):
+            cover_apply(code, state_data["cover_id"])
         if is_vip and code not in info["vip_codes"]:
             info["vip_codes"].append(code)
         is_paid = bool(state_data.get("is_paid")) and int(state_data.get("price") or 0) > 0
@@ -11750,6 +12003,17 @@ def setup_kino_bot(dp: Dispatcher, token: str):
                 "tugmalaridan foydalaning.</i>",
                 reply_markup=content_menu_kb(),
             )
+
+        if state_data.get("auto_web"):
+            _mm = info["movies"].get(code) or {}
+            _miss = kino_web_missing(_mm)
+            if _miss:
+                await message.answer("ℹ️ Veb sahifaga qo'shilmadi:\n" + "\n".join("• " + KWA_MISS_TXT.get(x, x) for x in _miss))
+            else:
+                _mm["web"] = True
+                _mm["web_at"] = datetime.now().isoformat(timespec="seconds")
+                save_data()
+                await message.answer("🌐 Kino veb sahifaga ham qo'shildi!")
 
     # ---------- Ko'p kino yuklash ----------
     bulk_lock = asyncio.Lock()
@@ -12554,6 +12818,7 @@ def setup_kino_bot(dp: Dispatcher, token: str):
         "appendep": "➕ Yangi qism qo'shmoqchi bo'lgan serial <b>kodini</b> yozing:",
         "featadd": "⭐ Tavsiyaga qo'shmoqchi bo'lgan kino <b>kodini</b> yozing:",
         "featdel": "➖ Tavsiyadan olib tashlamoqchi bo'lgan kino <b>kodini</b> yozing:",
+        "kgenre": "🏷 Janr va yilini belgilamoqchi bo'lgan kino <b>kodini</b> yozing:",
     }
 
     async def ask_movie_code(message: Message, state: FSMContext, action: str, pool=None):
@@ -12602,6 +12867,7 @@ def setup_kino_bot(dp: Dispatcher, token: str):
             "appendep": append_episode_do,
             "featadd": featured_add_do,
             "featdel": featured_del_do,
+            "kgenre": kgenre_do,
         }
 
     @dp.message(CodePick.code, F.text)
@@ -20777,6 +21043,7 @@ CITY_BUILDINGS = {
     "bank":     {"n": "Bank",              "e": "🏦", "w": 2, "h": 2, "cost": 60000,   "inc": 15200,  "pop": 0,  "secs": 1800, "lv": 7,  "max": 5, "cap": 3.0},
     "hotel":    {"n": "Mehmonxona",        "e": "🏨", "w": 2, "h": 2, "cost": 120000,  "inc": 32800,  "pop": 0,  "secs": 3600, "lv": 8,  "max": 5},
     "stadium":  {"n": "Stadion",           "e": "🏟", "w": 2, "h": 2, "cost": 300000,  "inc": 88000, "pop": 0,  "secs": 7200, "lv": 10, "max": 5},
+    "depot":    {"n": "Avtobaza",          "e": "🚚", "w": 2, "h": 2, "cost": 5000,    "inc": 0,     "pop": 0,  "secs": 90,   "lv": 3,  "max": 5, "dep": 1},
     "monument": {"n": "Yodgorlik",         "e": "🗽", "w": 1, "h": 1, "cost": 0, "gem": 40,  "inc": 0, "pop": 0, "secs": 600, "lv": 5,  "max": 1, "bonus": 0.05},
     "tower":    {"n": "Teleminora",        "e": "🗼", "w": 1, "h": 1, "cost": 0, "gem": 150, "inc": 0, "pop": 0, "secs": 1200, "lv": 8, "max": 1, "bonus": 0.10},
 }
@@ -20921,8 +21188,8 @@ def city_new_player(uid: int, name: str) -> dict:
     p["own"] = [list(CITY_START_OWN)]
     for x in range(8, 16):
         city_put(p, "road", x, 12, now, secs=0)
-    city_put(p, "house", 10, 10, now, secs=0)
-    city_put(p, "house", 13, 10, now, secs=0)
+    city_put(p, "house", 10, 11, now, secs=0)
+    city_put(p, "house", 13, 11, now, secs=0)
     return p
 
 
@@ -21009,25 +21276,100 @@ def city_cap_hours(p: dict) -> float:
     return min(CITY_CAP_H + extra, 36.0)
 
 
-def city_b_inc(b: dict, bonus: float) -> float:
+CITY_LOGI_BASE = 0.25          # avtobazaga yo'l bilan ulangan bino daromadiga qo'shimcha
+CITY_TRUCK_BONUS = 0.06        # har bir yuk mashinasi qo'shadigan ulush
+CITY_TRUCK_PER_LV = 4          # avtobaza darajasiga ko'ra mashina sig'imi
+
+
+def city_trucks_cap(p: dict, now: float) -> int:
+    return sum(CITY_TRUCK_PER_LV * b["l"] for b in p["b"] if b["t"] == "depot" and b["r"] <= now)
+
+
+def city_truck_cost(n: int) -> int:
+    return int(1500 * (1.28 ** n))
+
+
+def city_conn(p: dict, now: float) -> set:
+    """Avtobazaga yo'l orqali ulangan (tayyor) binolar id'lari."""
+    depots = [b for b in p["b"] if b["t"] == "depot" and b["r"] <= now]
+    if not depots:
+        return set()
+    roads = {(b["x"], b["y"]) for b in p["b"] if b["t"] == "road" and b["r"] <= now}
+    if not roads:
+        return set()
+
+    def edge_nb(b):
+        d = CITY_BUILDINGS[b["t"]]
+        x0, y0, w, h = b["x"], b["y"], d["w"], d["h"]
+        for i in range(w):
+            yield (x0 + i, y0 - 1)
+            yield (x0 + i, y0 + h)
+        for j in range(h):
+            yield (x0 - 1, y0 + j)
+            yield (x0 + w, y0 + j)
+
+    seen, stack = set(), []
+    for b in depots:
+        for t in edge_nb(b):
+            if t in roads and t not in seen:
+                seen.add(t)
+                stack.append(t)
+    while stack:
+        x, y = stack.pop()
+        for t in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+            if t in roads and t not in seen:
+                seen.add(t)
+                stack.append(t)
+    out = set()
+    for b in p["b"]:
+        if b["t"] in ("road", "depot") or b["r"] > now:
+            continue
+        for t in edge_nb(b):
+            if t in seen:
+                out.add(b["i"])
+                break
+    return out
+
+
+def city_logi_mult(p: dict, now: float) -> float:
+    trk = min(int(p.get("trk", 0)), city_trucks_cap(p, now))
+    return 1.0 + CITY_LOGI_BASE + CITY_TRUCK_BONUS * trk
+
+
+def city_b_inc(b: dict, bonus: float, mult: float = 1.0) -> float:
     d = CITY_BUILDINGS[b["t"]]
-    return d["inc"] * CITY_UP_MULT[b["l"] - 1] * (1.0 + bonus)
+    return d["inc"] * CITY_UP_MULT[b["l"] - 1] * (1.0 + bonus) * mult
 
 
 def city_rate(p: dict, now: float) -> float:
     bonus = city_bonus(p)
-    return sum(city_b_inc(b, bonus) for b in p["b"] if b["r"] <= now)
+    conn = city_conn(p, now)
+    lm = city_logi_mult(p, now) if conn else 1.0
+    return sum(city_b_inc(b, bonus, lm if b["i"] in conn else 1.0) for b in p["b"] if b["r"] <= now)
+
+
+def city_settle(p: dict, now: float) -> int:
+    """Yig'ilgan daromadni hisobga qo'shadi (tartib o'zgarishidan oldin, eski qoidalar bo'yicha)."""
+    gain = int(city_pending(p, now))
+    p["coins"] += gain
+    p["earned"] += gain
+    for x in p["b"]:
+        if x["r"] <= now:
+            x["c"] = now
+    return gain
 
 
 def city_pending(p: dict, now: float) -> float:
     bonus, cap, tot = city_bonus(p), city_cap_hours(p), 0.0
+    conn = city_conn(p, now)
+    lm = city_logi_mult(p, now) if conn else 1.0
     for b in p["b"]:
         d = CITY_BUILDINGS[b["t"]]
         if not d["inc"]:
             continue
         since = max(b["c"], b["r"])
         if now > since:
-            tot += city_b_inc(b, bonus) * min(cap, (now - since) / 3600.0)
+            tot += city_b_inc(b, bonus, lm if b["i"] in conn else 1.0) * min(cap, (now - since) / 3600.0)
     return tot
 
 
@@ -21076,6 +21418,8 @@ def city_state(p: dict, now: float) -> dict:
         "daily": p["daily"]["d"] != city_today(), "streak": p["daily"]["s"],
         "b": [[b["i"], b["t"], b["x"], b["y"], b["l"], max(0, int(round(b["r"] - now)))] for b in p["b"]],
         "own": city_own(p), "ownn": city_owned_count(p),
+        "trk": int(p.get("trk", 0)), "trkcap": city_trucks_cap(p, now), "trkc": city_truck_cost(int(p.get("trk", 0))),
+        "conn": sorted(city_conn(p, now)), "lgm": round(city_logi_mult(p, now), 3),
         "tp": [CITY_TILE_BASE, CITY_TILE_GROW, CITY_TILE_GEM_DIV, CITY_MAX_BLOCK, CITY_MAX_COORD],
     }
 
@@ -21085,7 +21429,7 @@ def city_catalog() -> dict:
     for k, d in CITY_BUILDINGS.items():
         out[k] = {"n": d["n"], "e": d["e"], "w": d["w"], "h": d["h"], "cost": d["cost"], "gem": d.get("gem", 0),
                   "inc": d["inc"], "pop": d["pop"], "secs": d["secs"], "lv": d["lv"], "max": d["max"],
-                  "bonus": d.get("bonus", 0), "cap": d.get("cap", 0)}
+                  "bonus": d.get("bonus", 0), "cap": d.get("cap", 0), "dep": d.get("dep", 0)}
     return out
 
 
@@ -21145,6 +21489,7 @@ def city_act(info: dict, p: dict, act: str, body: dict) -> dict:
             if p["coins"] < d["cost"]:
                 return _cerr("coins", "Tanga yetarli emas.")
             p["coins"] -= d["cost"]
+        city_settle(p, now)
         b = city_put(p, t, x, y, now)
         ups = city_gain_xp(p, (d["cost"] // 8) or (d.get("gem", 0) * 5) or 2)
         res["new"] = b["i"]
@@ -21222,7 +21567,22 @@ def city_act(info: dict, p: dict, act: str, body: dict) -> dict:
             return _cerr("bad", "Noto'g'ri joy.")
         if not city_fits(p, b["t"], x, y, ignore=b["i"]):
             return _cerr("spot", "Bu yerga ko'chirib bo'lmaydi.")
+        city_settle(p, now)
         b["x"], b["y"] = x, y
+    elif act == "buytruck":
+        cap = city_trucks_cap(p, now)
+        if cap <= 0:
+            return _cerr("nodepot", "Avval Avtobaza quring.")
+        n = int(p.get("trk", 0))
+        if n >= cap:
+            return _cerr("trkfull", "Mashina o'rni qolmadi — Avtobazani yangilang.")
+        cost = city_truck_cost(n)
+        if p["coins"] < cost:
+            return _cerr("coins", "Tanga yetarli emas.")
+        city_settle(p, now)
+        p["coins"] -= cost
+        p["trk"] = n + 1
+        ups = city_gain_xp(p, max(5, cost // 8))
     elif act == "upgrade":
         b = city_find(p, body.get("i"))
         if not b:
@@ -21918,13 +22278,14 @@ var IC = {
   build: '<path d="M5 21V8l7-5 7 5v13z" fill="#f2d9a6" stroke="#7a5230" stroke-width="1.4" stroke-linejoin="round"/><path d="M3.5 9L12 2.5 20.5 9" fill="none" stroke="#d9534f" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/><rect x="9.8" y="13" width="4.4" height="8" fill="#7a4a2a"/><rect x="7" y="10" width="3" height="3" fill="#9fd3f2"/><rect x="14" y="10" width="3" height="3" fill="#9fd3f2"/>',
   ok: '<circle cx="12" cy="12" r="10" fill="#43d17c" stroke="#16743c" stroke-width="1.5"/><path d="M6.8 12.4l3.5 3.6 6.9-7.6" fill="none" stroke="#fff" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>',
   warn: '<path d="M12 3L22 20.5H2z" fill="#ffd23f" stroke="#a8620c" stroke-width="1.5" stroke-linejoin="round"/><path d="M12 9.5v5" stroke="#5a3a00" stroke-width="2.2" stroke-linecap="round"/><circle cx="12" cy="17.4" r="1.2" fill="#5a3a00"/>',
+  truck: '<rect x="1.5" y="7" width="12" height="9" rx="1.2" fill="#4f8cff" stroke="#1d3f94" stroke-width="1.3"/><path d="M13.5 10h4l3.5 3.5V16h-7.5z" fill="#ffd23f" stroke="#a8620c" stroke-width="1.3" stroke-linejoin="round"/><circle cx="6" cy="17.5" r="2.3" fill="#2b3a67" stroke="#12203a" stroke-width="1"/><circle cx="17" cy="17.5" r="2.3" fill="#2b3a67" stroke="#12203a" stroke-width="1"/>',
   m1: '<circle cx="12" cy="13" r="8.5" fill="#ffc83d" stroke="#a8620c" stroke-width="1.6"/><path d="M8 2.5l4 6 4-6" fill="#e04545" stroke="#8f1d1d" stroke-width="1.2"/><text x="12" y="17.3" text-anchor="middle" font-size="12" font-weight="800" fill="#7a4a0a" font-family="sans-serif">1</text>',
   m2: '<circle cx="12" cy="13" r="8.5" fill="#d7dde8" stroke="#6b7689" stroke-width="1.6"/><path d="M8 2.5l4 6 4-6" fill="#4f8cff" stroke="#1d3f94" stroke-width="1.2"/><text x="12" y="17.3" text-anchor="middle" font-size="12" font-weight="800" fill="#4a5568" font-family="sans-serif">2</text>',
   m3: '<circle cx="12" cy="13" r="8.5" fill="#e0a070" stroke="#8a5a30" stroke-width="1.6"/><path d="M8 2.5l4 6 4-6" fill="#43d17c" stroke="#16743c" stroke-width="1.2"/><text x="12" y="17.3" text-anchor="middle" font-size="12" font-weight="800" fill="#5a3418" font-family="sans-serif">3</text>'
 };
-var EMO = {"🪙": "coin", "💎": "gem", "👥": "people", "🔨": "hammer", "🗺": "map", "🏆": "trophy", "🎁": "gift", "💰": "bag", "⬆": "up", "⚡": "bolt", "📦": "box", "🗑": "trash", "🔒": "lock", "⭐": "star", "🎉": "star", "🏙": "city", "🏗": "build", "✅": "ok", "⚠": "warn", "🥇": "m1", "🥈": "m2", "🥉": "m3"};
+var EMO = {"🪙": "coin", "💎": "gem", "👥": "people", "🔨": "hammer", "🗺": "map", "🏆": "trophy", "🎁": "gift", "💰": "bag", "⬆": "up", "⚡": "bolt", "📦": "box", "🗑": "trash", "🔒": "lock", "⭐": "star", "🎉": "star", "🏙": "city", "🏗": "build", "🚚": "truck", "✅": "ok", "⚠": "warn", "🥇": "m1", "🥈": "m2", "🥉": "m3"};
 function ico(n) { return '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">' + IC[n] + '</svg>'; }
-var EMO_RE = /(🪙|💎|👥|🔨|🗺|🏆|🎁|💰|⬆|⚡|📦|🗑|🔒|⭐|🎉|🏙|🏗|✅|⚠|🥇|🥈|🥉)\uFE0F?/g;
+var EMO_RE = /(🪙|💎|👥|🔨|🗺|🏆|🎁|💰|⬆|⚡|📦|🗑|🔒|⭐|🎉|🏙|🏗|🚚|✅|⚠|🥇|🥈|🥉)\uFE0F?/g;
 function E(str) { return String(str).replace(EMO_RE, function (m, g) { return ico(EMO[g]); }).replace(/\uFE0F/g, ""); }
 ["hud", "bar", "ghostbar", "landbar", "visit", "load"].forEach(function (id) { var el = document.getElementById(id); if (el) el.innerHTML = E(el.innerHTML); });
 function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]; }); }
@@ -21955,7 +22316,7 @@ function api(act, extra) {
 }
 function applyState(j) {
   if (j.cat) S.cat = j.cat;
-  if (j.state) { S.st = j.state; S.at = Date.now(); roadsChanged(); updHud(); }
+  if (j.state) { S.st = j.state; S.at = Date.now(); roadsChanged(); fleetSync(); updHud(); }
 }
 function srvNow() { return S.st ? S.st.now + (Date.now() - S.at) / 1000 : 0; }
 function bRem(b) { return Math.max(0, b[5] - (Date.now() - S.at) / 1000); }
@@ -22029,6 +22390,12 @@ function poly(pts, fill, stroke) {
   if (fill) { ctx.fillStyle = fill; ctx.fill(); }
   if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 1; ctx.stroke(); }
 }
+function gpoly(pts, c1, c2, stroke) {
+  var y0 = 1e9, y1 = -1e9;
+  pts.forEach(function (q) { if (q[1] < y0) y0 = q[1]; if (q[1] > y1) y1 = q[1]; });
+  var g = ctx.createLinearGradient(0, y0, 0, y1 + 0.01); g.addColorStop(0, c1); g.addColorStop(1, c2);
+  poly(pts, g, stroke);
+}
 function up(p, h) { return [p[0], p[1] - h]; }
 function lerp(a, b, t) { return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]; }
 // Quti: gx,gy (katak), gw,gh (o'lcham), h (balandlik, px), z0 (poydevor balandligi)
@@ -22038,9 +22405,10 @@ function box(gx, gy, gw, gh, h, col, z0) {
   var A2 = up(A, z0 + h), B2 = up(B, z0 + h), C2 = up(C, z0 + h), D2 = up(D, z0 + h);
   var Cb = up(C, z0), Db = up(D, z0), Bb = up(B, z0);
   var ol = "rgba(18,28,50,.3)";
-  poly([D2, C2, Cb, Db], shade(col, 0.78), ol);   // chap devor
-  poly([C2, B2, Bb, Cb], shade(col, 0.62), ol);   // o'ng devor
-  poly([A2, B2, C2, D2], shade(col, 1.12), ol);   // tom
+  gpoly([D2, C2, Cb, Db], shade(col, 0.9), shade(col, 0.66), ol);   // chap devor
+  gpoly([C2, B2, Bb, Cb], shade(col, 0.74), shade(col, 0.5), ol);   // o'ng devor
+  gpoly([A2, B2, C2, D2], shade(col, 1.22), shade(col, 1.04), ol);   // tom
+  ctx.strokeStyle = "rgba(255,255,255,.42)"; ctx.lineWidth = 1.3; ctx.beginPath(); ctx.moveTo(D2[0], D2[1]); ctx.lineTo(C2[0], C2[1]); ctx.lineTo(B2[0], B2[1]); ctx.stroke();
   return {A: A, B: B, C: C, D: D, A2: A2, B2: B2, C2: C2, D2: D2, Cb: Cb, Db: Db, Bb: Bb, z0: z0, h: h};
 }
 // Devor sirtidagi to'rtburchak: e - devor qirrasi (ikki nuqta pastda), u/v - 0..1
@@ -22124,8 +22492,101 @@ function cico(n, x, y, s) {
   ctx.restore();
 }
 
+// ---------------- Logistika: yuk mashinalari ----------------
+function nbTiles(b) {
+  var d = S.cat[b[1]], out = [], i, j;
+  for (i = 0; i < d.w; i++) { out.push([b[2] + i, b[3] - 1]); out.push([b[2] + i, b[3] + d.h]); }
+  for (j = 0; j < d.h; j++) { out.push([b[2] - 1, b[3] + j]); out.push([b[2] + d.w, b[3] + j]); }
+  return out;
+}
+function bfsPath(a, z) {
+  var key = function (t) { return t[0] + "," + t[1]; }, q = [a], prev = {}, i = 0;
+  prev[key(a)] = null;
+  while (i < q.length && q.length < 4000) {
+    var c = q[i++];
+    if (c[0] === z[0] && c[1] === z[1]) break;
+    [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(function (dv) { var n = [c[0] + dv[0], c[1] + dv[1]], k = key(n); if (roadSet[k] && !(k in prev)) { prev[k] = c; q.push(n); } });
+  }
+  if (!(key(z) in prev)) return null;
+  var path = [], c2 = z;
+  while (c2) { path.unshift(c2); c2 = prev[key(c2)]; }
+  return path;
+}
+var TRK_COL = ["#e5484d", "#3b82f6", "#2fae63", "#9b59b6", "#ff8a3d", "#14b8c4", "#f5b301", "#ffffff"];
+function fleetSync() {
+  var st = S.st;
+  if (!st || S.vis) { S.fleet = []; S.fleetKey = ""; return; }
+  var key = st.trk + "|" + (st.conn || []).join(",") + "|" + S.roadKey;
+  if (key === S.fleetKey) return;
+  S.fleetKey = key; S.fleet = [];
+  var deps = st.b.filter(function (b) { return b[1] === "depot" && b[5] <= 0; });
+  if (!deps.length || !st.trk || !st.conn.length) return;
+  var seeds = [];
+  deps.forEach(function (b) { nbTiles(b).forEach(function (t) { if (roadSet[t[0] + "," + t[1]]) seeds.push(t); }); });
+  var targets = st.b.filter(function (b) { return st.conn.indexOf(b[0]) >= 0 && S.cat[b[1]].inc > 0; });
+  if (!seeds.length || !targets.length) return;
+  S.fleetInfo = {seeds: seeds, targets: targets};
+  var n = Math.min(st.trk, 8);
+  for (var i = 0; i < n; i++) S.fleet.push({col: TRK_COL[i % TRK_COL.length], path: [seeds[i % seeds.length]], i: 0, t: 0, st: "wait", wait: i * 0.9, ph: 0, loaded: false, tgt: null});
+}
+function assignTrip(tr) {
+  var fi = S.fleetInfo; if (!fi) return;
+  if (tr.ph === 0) {
+    var seed = fi.seeds[Math.floor(Math.random() * fi.seeds.length)], tg = fi.targets[Math.floor(Math.random() * fi.targets.length)];
+    var tt = nbTiles(tg).filter(function (t) { return roadSet[t[0] + "," + t[1]]; });
+    if (!tt.length) { tr.wait = 1; return; }
+    var path = bfsPath(seed, tt[Math.floor(Math.random() * tt.length)]);
+    if (!path) { tr.wait = 1; return; }
+    tr.path = path; tr.tgt = tg; tr.loaded = true;
+  } else { tr.path = tr.path.slice().reverse(); tr.loaded = false; }
+  tr.i = 0; tr.t = 0; tr.st = "go";
+}
+function stepFleet(dt) {
+  (S.fleet || []).forEach(function (tr) {
+    if (tr.st === "wait") { tr.wait -= dt; if (tr.wait <= 0) assignTrip(tr); return; }
+    tr.t += dt * 1.25;
+    while (tr.t >= 1 && tr.i < tr.path.length - 1) { tr.t -= 1; tr.i++; }
+    if (tr.i >= tr.path.length - 1) {
+      if (tr.ph === 0 && tr.tgt) { var d = S.cat[tr.tgt[1]]; fx(tr.tgt[2] + d.w / 2, tr.tgt[3] + d.h / 2, "+", "#ffe14a", "coin"); }
+      tr.ph = 1 - tr.ph; tr.st = "wait"; tr.wait = tr.ph === 1 ? 1.1 : 0.7; tr.t = 0;
+      tr.i = Math.max(0, tr.path.length - 1);
+    }
+  });
+}
+function bbox(ax, s, c0, c1, wx, wy, wd, h, col, z0) {
+  var a = wx + s * c0, b = wx + s * c1;
+  if (ax) box(Math.min(a, b), wy - wd / 2, Math.abs(c1 - c0), wd, h, col, z0);
+  else { var a2 = wy + s * c0, b2 = wy + s * c1; box(wx - wd / 2, Math.min(a2, b2), wd, Math.abs(c1 - c0), h, col, z0); }
+}
+function drawTruck(tr) {
+  var p = tr.path, n = p.length, i = Math.min(tr.i, Math.max(0, n - 2)), a = p[i], b = p[i + 1] || p[i];
+  var dx = Math.sign(b[0] - a[0]), dy = Math.sign(b[1] - a[1]);
+  if (!dx && !dy) dx = 1;
+  var tt = (tr.i >= n - 1 && n > 1) ? 1 : tr.t;
+  var wx = a[0] + (b[0] - a[0]) * tt + 0.5 - dy * 0.14, wy = a[1] + (b[1] - a[1]) * tt + 0.5 + dx * 0.14;
+  var ax = dx !== 0, s = ax ? dx : dy, W2 = 0.27;
+  bbox(ax, s, -0.31, 0.31, wx, wy, W2, 3, "#2a2f3a", 0.5);
+  if (s > 0) {
+    bbox(ax, s, -0.31, 0.06, wx, wy, W2, 7, "#f5a623", 3.5);
+    if (tr.loaded) bbox(ax, s, -0.27, 0.02, wx, wy, W2 - 0.05, 4, "#8d6a3a", 10.5);
+    bbox(ax, s, 0.1, 0.31, wx, wy, W2, 10, tr.col, 3.5);
+  } else {
+    bbox(ax, s, 0.1, 0.31, wx, wy, W2, 10, tr.col, 3.5);
+    if (tr.loaded) bbox(ax, s, -0.27, 0.02, wx, wy, W2 - 0.05, 4, "#8d6a3a", 10.5);
+    bbox(ax, s, -0.31, 0.06, wx, wy, W2, 7, "#f5a623", 3.5);
+  }
+}
+function excavator(wx, wy, t) {
+  box(wx - 0.3, wy - 0.2, 0.6, 0.4, 4, "#2a2f3a", 0);
+  box(wx - 0.12, wy - 0.13, 0.26, 0.26, 10, "#ffb300", 4);
+  var pc = P(wx, wy), cx = pc[0], cy = pc[1] - 16, an = Math.sin(t / 420), e1 = [cx + 20, cy - 10 + an * 4], e2 = [e1[0] + 11, e1[1] + 14 - an * 7];
+  ctx.lineCap = "round"; ctx.strokeStyle = "#7a5200"; ctx.lineWidth = 5; ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(e1[0], e1[1]); ctx.lineTo(e2[0], e2[1]); ctx.stroke();
+  ctx.strokeStyle = "#ffc21a"; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(e1[0], e1[1]); ctx.lineTo(e2[0], e2[1]); ctx.stroke(); ctx.lineCap = "butt";
+  ctx.fillStyle = "#4a4f5c"; ctx.beginPath(); ctx.moveTo(e2[0] - 3, e2[1] - 2); ctx.lineTo(e2[0] + 6, e2[1]); ctx.lineTo(e2[0] + 3, e2[1] + 6); ctx.lineTo(e2[0] - 4, e2[1] + 4); ctx.closePath(); ctx.fill();
+}
+
 // ---------------- Binolar ----------------
-var HMAX = {road: 4, house: 52, farm: 58, shop: 46, park: 40, school: 70, apt: 120, market: 56, hospital: 92, factory: 90, bank: 78, hotel: 150, stadium: 70, monument: 76, tower: 130};
+var HMAX = {road: 4, house: 52, farm: 58, shop: 46, park: 40, school: 70, apt: 120, market: 56, hospital: 92, factory: 90, bank: 78, hotel: 150, stadium: 70, monument: 76, tower: 130, depot: 44};
 function drawBuilding(b, prog, t) {
   var k = b[1], gx = b[2], gy = b[3], lv = b[4], d = S.cat[k], w = d.w, h = d.h, bx, i;
   var f = prog;  // 1 = tayyor
@@ -22252,6 +22713,21 @@ function drawBuilding(b, prog, t) {
       ellipseIso(cx0, cy0 + 8, rx * 0.8, 18 * f, "#3fae55");
       ellipseIso(cx0, cy0 + 8, rx * 0.55, 18 * f, "#52c868");
       if (f > 0.9) { [-1, 1].forEach(function (sg2) { ctx.fillStyle = "#e9eef7"; ctx.fillRect(cx0 + sg2 * rx * 0.92 - 1.5, cy0 - 52, 3, 40); ctx.fillStyle = "#fff6b0"; ctx.fillRect(cx0 + sg2 * rx * 0.92 - 7, cy0 - 58, 14, 7); }); }
+      break;
+    }
+    case "depot": {
+      bx = box(gx + 0.08, gy + 0.12, 1.84, 1.76, 30 * f, "#7c8ea8");
+      if (f > 0.9) {
+        var tp0 = lerp(bx.A2, bx.D2, 0.38), tp1 = lerp(bx.B2, bx.C2, 0.38), tp2 = lerp(bx.B2, bx.C2, 0.62), tp3 = lerp(bx.A2, bx.D2, 0.62);
+        poly([tp0, tp1, tp2, tp3], "#ffd23f");
+        [[0.1, 0.46], [0.54, 0.9]].forEach(function (dr) {
+          wallRect(bx.Db, bx.Cb, bx.h, dr[0], dr[1], 0.04, 0.66, "#eef2f8");
+          for (var j = 0; j < 5; j++) wallRect(bx.Db, bx.Cb, bx.h, dr[0], dr[1], 0.06 + j * 0.12, 0.06 + j * 0.12 + 0.045, "#b9c3d3");
+        });
+        wallRect(bx.Cb, bx.Bb, bx.h, 0.15, 0.85, 0.72, 0.92, "#ffd23f");
+        wallRect(bx.Cb, bx.Bb, bx.h, 0.2, 0.8, 0.1, 0.5, "#eef2f8");
+        for (var j2 = 0; j2 < 4; j2++) wallRect(bx.Cb, bx.Bb, bx.h, 0.2, 0.8, 0.12 + j2 * 0.1, 0.12 + j2 * 0.1 + 0.04, "#b9c3d3");
+      }
       break;
     }
     case "monument": {
@@ -22448,7 +22924,7 @@ function draw(t) {
     var d = S.cat[b[1]], rem = bRem(b), prog = rem > 0 ? Math.max(0.12, 1 - rem / Math.max(1, d.secs)) : 1;
     list.push({k: b[2] + b[3] + d.w + d.h - 0.2, f: function () {
       drawBuilding(b, rem > 0 ? 0.3 + 0.55 * prog : 1, t);
-      if (rem > 0) { scaffold(b, d); person(b[2] + d.w * 0.55 + Math.sin(t / 500) * 0.12, b[3] + d.h + 0.2, "#ff8a3d", t / 140, "#f2c9a0", "#3a2a1a", "#ffd23f"); }
+      if (rem > 0) { scaffold(b, d); person(b[2] + d.w * 0.55 + Math.sin(t / 500) * 0.12, b[3] + d.h + 0.2, "#ff8a3d", t / 140, "#f2c9a0", "#3a2a1a", "#ffd23f"); if (d.w >= 2) excavator(b[2] + d.w + 0.55, b[3] + d.h * 0.5, t); }
       var cx = P(b[2] + d.w / 2, b[3] + d.h / 2);
       var top = cx[1] - (HMAX[b[1]] || 40) * (rem > 0 ? 0.6 : 1);
       if (rem > 0) {
@@ -22459,6 +22935,10 @@ function draw(t) {
         ctx.fillStyle = "#ffc83d"; ctx.beginPath(); ctx.arc(cx[0] + d.w * 12, top + 4, 8, 0, 7); ctx.fill();
         ctx.fillStyle = "#4a2600"; ctx.font = "bold 10px sans-serif"; ctx.textAlign = "center"; ctx.fillText(b[4], cx[0] + d.w * 12, top + 7.5);
       }
+      if (rem <= 0 && !S.vis && S.st.trkcap > 0 && d.inc > 0 && S.st.conn.indexOf(b[0]) < 0) {
+        ctx.fillStyle = "#ffd23f"; ctx.strokeStyle = "#a8620c"; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(cx[0] - d.w * 12, top + 4, 8, 0, 7); ctx.fill(); ctx.stroke();
+        ctx.fillStyle = "#5a3a00"; ctx.font = "bold 11px sans-serif"; ctx.textAlign = "center"; ctx.fillText("!", cx[0] - d.w * 12, top + 8);
+      }
       if (S.sel === b[0] && !S.vis) {
         var Aa = P(b[2], b[3]), Bb2 = P(b[2] + d.w, b[3]), Cc = P(b[2] + d.w, b[3] + d.h), Dd = P(b[2], b[3] + d.h);
         ctx.lineWidth = 3; ctx.strokeStyle = "#ffe14a"; ctx.setLineDash([6, 4]); ctx.beginPath(); ctx.moveTo(Aa[0], Aa[1]); ctx.lineTo(Bb2[0], Bb2[1]); ctx.lineTo(Cc[0], Cc[1]); ctx.lineTo(Dd[0], Dd[1]); ctx.closePath(); ctx.stroke(); ctx.setLineDash([]);
@@ -22466,6 +22946,10 @@ function draw(t) {
     }});
   });
   S.cars.forEach(function (c) { list.push({k: c.px + c.py + 1.1 + (c.tx + c.ty - c.px - c.py) * c.t * 0.5, f: function () { drawCar(c); }}); });
+  (S.fleet || []).forEach(function (tr) {
+    var p = tr.path, i = Math.min(tr.i, p.length - 1);
+    list.push({k: p[i][0] + p[i][1] + 1.3 + tr.t * 0.6, f: function () { drawTruck(tr); }});
+  });
   (S.peds || []).forEach(function (c) {
     var alongX = c.tx !== c.px, wx = c.px + (c.tx - c.px) * c.t + 0.5 + (alongX ? 0 : c.side), wy = c.py + (c.ty - c.py) * c.t + 0.5 + (alongX ? c.side : 0);
     list.push({k: wx + wy + 0.9, f: function () { person(wx, wy, c.sh, c.ph, c.sk, c.hr); }});
@@ -22498,7 +22982,7 @@ function fx(x, y, s, c, i) { (S.fx = S.fx || []).push({x: x, y: y, s: s, c: c ||
 
 function loop(t) {
   var dt = Math.min(0.1, (t - (S.last || t)) / 1000); S.last = t;
-  stepCars(dt);
+  stepCars(dt); stepFleet(dt);
   draw(t);
   S.frame = (S.frame || 0) + 1;
   if (S.frame % 15 === 0) updPend();
@@ -22604,7 +23088,7 @@ function buildMenu() {
   Object.keys(S.cat).forEach(function (k) {
     var d = S.cat[k], lock = s.lv < d.lv;
     h += '<div class="card' + (lock ? " lk" : "") + '" data-k="' + k + '"><div class="em">' + bimg(k) + '</div><div class="nm">' + esc(d.n) + '</div><div class="pr">' + costTxt(d) + '</div><div class="in">' +
-      (d.inc ? "+" + fmt(d.inc) + "/soat" : (d.bonus ? "+" + Math.round(d.bonus * 100) + "% daromad" : (d.cap ? "+ombor" : "bezak"))) + (d.pop ? " · 👥" + d.pop : "") + '</div>' +
+      (d.inc ? "+" + fmt(d.inc) + "/soat" : (d.bonus ? "+" + Math.round(d.bonus * 100) + "% daromad" : (d.cap ? "+ombor" : (d.dep ? "logistika" : "bezak")))) + (d.pop ? " · 👥" + d.pop : "") + '</div>' +
       (lock ? '<div class="lkb">🔒 ' + d.lv + '-daraja</div>' : "") + '</div>';
   });
   openSheet(h + "</div>");
@@ -22656,11 +23140,17 @@ function buildingSheet(b) {
     var need = Math.max(1, Math.ceil(rem / 60));
     h += '<div class="sub">🔨 Qurilmoqda — qoldi: ' + dur(rem) + '</div><div class="act"><button class="g" id="aFin">⚡ Tezlatish (💎 ' + need + ')</button></div>';
   } else {
-    if (d.inc) h += '<div class="kv"><span>Daromad</span><span>🪙 ' + fmt(incOf(k, lv)) + "/soat</span></div>";
+    var cn = s.conn.indexOf(b[0]) >= 0;
+    if (d.inc) h += '<div class="kv"><span>Daromad</span><span>🪙 ' + fmt(incOf(k, lv) * (cn ? s.lgm : 1)) + "/soat</span></div>";
+    if (d.inc) h += '<div class="kv"><span>Logistika</span><span>' + (cn ? "✅ Ulangan ×" + s.lgm : (s.trkcap > 0 ? "⚠ Yo'l orqali Avtobazaga ulang" : "Avtobaza qursangiz +25%")) + "</span></div>";
+    if (d.dep) {
+      h += '<div class="kv"><span>Yuk mashinalari</span><span>🚚 ' + s.trk + " / " + s.trkcap + '</span></div><div class="kv"><span>Ulangan binolar</span><span>' + s.conn.length + ' ta (×' + s.lgm + ' daromad)</span></div>';
+      h += '<div class="act"><button class="g" id="aTrk"' + (s.trk >= s.trkcap || s.coins < s.trkc ? " disabled" : "") + '>🚚 Mashina sotib olish<br>' + (s.trk >= s.trkcap ? "Joy qolmadi — yangilang" : "🪙 " + fmt(s.trkc)) + '</button></div>';
+    }
     if (d.pop) h += '<div class="kv"><span>Aholi</span><span>👥 ' + (d.pop * lv) + "</span></div>";
     if (d.bonus) h += '<div class="kv"><span>Bonus</span><span>+' + Math.round(d.bonus * (k === "park" ? lv : 1) * 100) + "% daromad</span></div>";
     if (d.cap) h += '<div class="kv"><span>Ombor</span><span>+' + (d.cap * lv / 2) + " soat</span></div>";
-    if (!d.inc && !d.bonus && !d.cap && !d.pop) h += '<div class="sub">Shahar bezagi.</div>';
+    if (!d.inc && !d.bonus && !d.cap && !d.pop && !d.dep) h += '<div class="sub">Shahar bezagi.</div>';
     h += '<div class="act">';
     if (lv < d.max) {
       var uc = upCost(k, lv);
@@ -22672,6 +23162,7 @@ function buildingSheet(b) {
   }
   openSheet(h);
   var el;
+  if ((el = $("aTrk"))) el.onclick = function () { act("buytruck").then(function (j) { if (j && j.ok) { toast("🚚 Yangi yuk mashinasi! Daromad oshdi."); haptic("ok"); var nb = S.st.b.filter(function (x) { return x[0] === b[0]; })[0]; if (nb) buildingSheet(nb); } }); };
   if ((el = $("aFin"))) el.onclick = function () { act("finish", {i: b[0]}).then(function (j) { if (j && j.ok) { closeSheet(); haptic("ok"); } }); };
   if ((el = $("aUp"))) el.onclick = function () { act("upgrade", {i: b[0]}).then(function (j) { if (j && j.ok) { fx(b[2] + d.w / 2, b[3] + d.h / 2, (lv + 1) + "-daraja", "#43d17c", "up"); haptic("ok"); var nb = S.st.b.filter(function (x) { return x[0] === b[0]; })[0]; if (nb) buildingSheet(nb); } }); };
   if ((el = $("aMv"))) el.onclick = function () { startMove(b); };
@@ -22715,7 +23206,7 @@ function visit(u) {
   if (S.st && u === S.st.uid) { closeSheet(); return; }
   api("visit", {u: u}).then(function (j) {
     if (!j.ok) { toast(j.msg || "Xatolik"); return; }
-    S.camSave = {x: cam.x, y: cam.y, z: cam.z}; S.vis = j.visit; roadsChanged(); closeSheet();
+    S.camSave = {x: cam.x, y: cam.y, z: cam.z}; S.vis = j.visit; roadsChanged(); fleetSync(); closeSheet();
     $("visit").style.display = "flex"; $("visitT").innerHTML = ico("city") + " " + esc(j.visit.name) + " · " + j.visit.lv + "-daraja";
     $("bar").style.display = "none";
     var ox0 = 1e9, ox1 = -1e9, oy0 = 1e9, oy1 = -1e9;
@@ -22726,7 +23217,7 @@ function visit(u) {
     var span = Math.max(ox1 - ox0, oy1 - oy0); cam.z = Math.max(MINZ, Math.min(1.0, (Math.min(W, H) * 1.1) / (span * TW * 0.75)));
   });
 }
-$("visitBack").onclick = function () { if (S.camSave) { cam.x = S.camSave.x; cam.y = S.camSave.y; cam.z = S.camSave.z; } S.vis = null; S.sel = null; roadsChanged(); $("visit").style.display = "none"; $("bar").style.display = "flex"; };
+$("visitBack").onclick = function () { if (S.camSave) { cam.x = S.camSave.x; cam.y = S.camSave.y; cam.z = S.camSave.z; } S.vis = null; S.sel = null; roadsChanged(); S.fleetKey = ""; fleetSync(); $("visit").style.display = "none"; $("bar").style.display = "flex"; };
 // ---------------- Yer sotib olish ----------------
 function blockInfo() {
   var b = S.buyBlock, s = b.s, ox = b.x - Math.floor(s / 2), oy = b.y - Math.floor(s / 2), cnt = 0, touch = false, tp = S.st.tp, i, j;
@@ -22808,7 +23299,7 @@ function introSheet() {
     '<div class="kv"><span>2.</span><span>💰 Daromadni muntazam yig\'ing</span></div>' +
     '<div class="kv"><span>3.</span><span>⬆️ Binoni bosib yangilang</span></div>' +
     '<div class="kv"><span>4.</span><span>🏆 Reytingda boshqa shaharlarni ko\'ring</span></div>' +
-    '<div class="kv"><span>5.</span><span>🗺 Yer — xarita cheksiz, yerni sotib olib shaharni kengaytiring</span></div><div class="kv"><span>6.</span><span>🎁 Har kuni bonus oling</span></div><button class="big g" id="okb">Boshladik!</button>');
+    '<div class="kv"><span>5.</span><span>🗺 Yer — xarita cheksiz, yerni sotib olib shaharni kengaytiring</span></div><div class="kv"><span>6.</span><span>🚚 Avtobaza quring, binolarni yo\'l bilan ulang — daromad oshadi</span></div><div class="kv"><span>7.</span><span>🎁 Har kuni bonus oling</span></div><button class="big g" id="okb">Boshladik!</button>');
   $("okb").onclick = closeSheet;
 }
 function boot() {
@@ -26688,6 +27179,88 @@ def kino_auth(request, perm=None, perm_post=None):
     return token, info, uid, None
 
 
+# ---------- Janr / yil (nom - janr - yil) ----------
+KINO_GENRES = ["Fantastika", "Triller", "Drama", "Komediya", "Jangari", "Sarguzasht", "Qo'rqinchli", "Detektiv",
+               "Melodrama", "Tarixiy", "Animatsiya", "Oilaviy", "Urush", "Fentezi", "Kriminal", "Mistika",
+               "Hujjatli", "Biografik", "Musiqiy", "Sport"]
+KINO_GENRE_ALIASES = {
+    "fantastik": "Fantastika", "sci-fi": "Fantastika", "scifi": "Fantastika", "фантастика": "Fantastika",
+    "thriller": "Triller", "трилер": "Triller", "триллер": "Triller", "драма": "Drama",
+    "komedi": "Komediya", "comedy": "Komediya", "комедия": "Komediya",
+    "boevik": "Jangari", "action": "Jangari", "боевик": "Jangari",
+    "adventure": "Sarguzasht", "приключения": "Sarguzasht",
+    "qorqinchli": "Qo'rqinchli", "horror": "Qo'rqinchli", "uzhas": "Qo'rqinchli", "ужасы": "Qo'rqinchli",
+    "детектив": "Detektiv", "romantik": "Melodrama", "romantika": "Melodrama", "мелодрама": "Melodrama",
+    "tarix": "Tarixiy", "historical": "Tarixiy", "история": "Tarixiy",
+    "multfilm": "Animatsiya", "multik": "Animatsiya", "anime": "Animatsiya", "animation": "Animatsiya", "мультфильм": "Animatsiya",
+    "family": "Oilaviy", "семейный": "Oilaviy", "harbiy": "Urush", "war": "Urush", "военный": "Urush",
+    "fantasy": "Fentezi", "фэнтези": "Fentezi", "jinoyat": "Kriminal", "crime": "Kriminal", "криминал": "Kriminal",
+    "mistik": "Mistika", "мистика": "Mistika", "documentary": "Hujjatli", "документальный": "Hujjatli",
+    "biografiya": "Biografik", "biography": "Biografik", "musical": "Musiqiy",
+}
+
+
+def kino_norm_word(s: str) -> str:
+    return re.sub(r"[ʻʼ’`‘´]", "'", (s or "").strip().lower()).strip(" .!?:;()[]\"")
+
+
+for _g in KINO_GENRES:
+    KINO_GENRE_ALIASES[kino_norm_word(_g)] = _g
+
+
+def kino_genre_of(word: str):
+    return KINO_GENRE_ALIASES.get(kino_norm_word(word))
+
+
+def kino_parse_meta(text: str):
+    """'Nom - Janr, Janr - 2024' ko'rinishidagi birinchi qatordan nom, janr va yilni ajratadi. Topilmasa None."""
+    first = ((text or "").strip().splitlines() or [""])[0]
+    parts = [p.strip() for p in re.split(r"\s+[-–—]\s+|\s*\|\s*|\s*•\s*", first) if p.strip()]
+    if len(parts) < 2:
+        return None
+    genres, year, first_meta = [], None, None
+    for i, p in enumerate(parts[1:], start=1):
+        ym = re.fullmatch(r"((?:19|20)\d{2})(?:\s*-?\s*yil(?:i)?)?", p, re.I)
+        if ym:
+            year = year or int(ym.group(1))
+            first_meta = i if first_meta is None else first_meta
+            continue
+        toks = [t for t in re.split(r"[,/&;]+|\s+va\s+", p) if t.strip()]
+        found = [kino_genre_of(t) for t in toks]
+        if toks and all(found):
+            for g in found:
+                if g not in genres:
+                    genres.append(g)
+            first_meta = i if first_meta is None else first_meta
+    if not genres and not year:
+        return None
+    title = " - ".join(parts[:first_meta]).strip()[:80]
+    return {"title": title or parts[0][:80], "genres": genres[:5], "year": year}
+
+
+def kino_scan_meta(text: str):
+    """Tavsif matnidan janr va yilni qidiradi (eski filmlar uchun). -> (janrlar, yil)"""
+    text = text or ""
+    genres = []
+    for w in re.findall(r"[\w'ʻʼ’`‘´-]+", text):
+        g = kino_genre_of(w)
+        if g and g not in genres:
+            genres.append(g)
+    ym = re.search(r"(?<!\d)((?:19|20)\d{2})(?!\d)", text)
+    year = int(ym.group(1)) if ym and int(ym.group(1)) <= datetime.now().year + 1 else None
+    return genres[:3], year
+
+
+def kino_meta_of(m: dict):
+    """Filmning janrlari va yili: saqlangan bo'lsa shu, bo'lmasa tavsifdan aniqlanadi."""
+    genres, year = list(m.get("genres") or []), m.get("year")
+    if not genres or not year:
+        sg, sy = kino_scan_meta(m.get("desc") or "")
+        genres = genres or sg
+        year = year or sy
+    return genres, year
+
+
 def kino_title(code: str, m: dict) -> str:
     if m.get("title"):
         return m["title"]
@@ -26866,9 +27439,11 @@ async def kw_api_list(request):
     for code, m in reversed(list(info.get("movies", {}).items())):
         if not kw_visible(m):
             continue
+        _gn, _yr = kino_meta_of(m)
         films.append({
             "code": code,
             "title": kino_title(code, m),
+            "genres": _gn, "year": _yr,
             "short": (m.get("desc") or "").strip()[:160],
             "series": m.get("type") == "series",
             "episodes": kino_episodes(m),
@@ -26894,9 +27469,11 @@ async def kw_api_film(request):
     if m.get("type") == "series":
         eps = sorted((k for k, v in (m.get("episodes") or {}).items() if isinstance(v, str)),
                      key=lambda k: (0, int(k)) if str(k).isdigit() else (1, 0))
+    _gn, _yr = kino_meta_of(m)
     return web.json_response({
         "code": code,
         "title": kino_title(code, m),
+        "genres": _gn, "year": _yr,
         "desc": (m.get("desc") or "").strip(),
         "series": m.get("type") == "series",
         "episodes": eps,
@@ -28656,97 +29233,317 @@ KINOWEB_HTML = r"""<!DOCTYPE html>
 <title>Veb kino</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
-:root{--bg:#0f1115;--cd:#181b22;--tx:#f2f4f8;--mu:#8b93a4;--ac:#4f8cff;--acs:rgba(79,140,255,.16);--bd:#262a33}
-@media (prefers-color-scheme:light){:root{--bg:#f3f5f9;--cd:#fff;--tx:#12151c;--mu:#6b7385;--bd:#e3e7ee}}
+:root{--bg:#0a0c13;--bg2:#10131d;--cd:#151927;--cd2:#1d2233;--tx:#f5f7fb;--mu:#8d96ab;--bd:rgba(255,255,255,.09);--ac:#ff4d8d;--acs:rgba(255,77,141,.16);--gold:#ffc93c}
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-html,body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
-.top{position:sticky;top:0;z-index:5;background:var(--bg);padding:14px 16px 10px;border-bottom:1px solid var(--bd)}
-.top h1{margin:0 0 10px;font-size:20px}
-.top input{width:100%;padding:12px 14px;border-radius:12px;border:1px solid var(--bd);background:var(--cd);color:var(--tx);font-size:16px;outline:none}
-.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:12px;padding:14px 16px 28px}
-@media (min-width:640px){.grid{grid-template-columns:repeat(4,1fr)}}
-.card{background:var(--cd);border:1px solid var(--bd);border-radius:14px;overflow:hidden;cursor:pointer}
-.ph{position:relative;aspect-ratio:2/3;background:var(--acs)}
-.ph img{width:100%;height:100%;object-fit:cover;display:block}
-.bdg{position:absolute;top:8px;left:8px;padding:3px 8px;border-radius:8px;font-size:12px;font-weight:600;background:rgba(0,0,0,.65);color:#fff}
-.ct{padding:10px 11px 12px}
-.ct b{display:block;font-size:15px;line-height:1.3;max-height:2.6em;overflow:hidden}
-.ct span{color:var(--mu);font-size:13px}
-.emp{text-align:center;color:var(--mu);padding:60px 20px}
-#det{position:fixed;inset:0;background:var(--bg);overflow-y:auto;display:none;z-index:10}
-#det .in{max-width:720px;margin:0 auto;padding:0 0 40px}
-#det .cv{width:100%;height:auto;max-height:72vh;object-fit:contain;display:block;background:var(--acs)}
-#det .bd{padding:16px}
-#det h2{margin:0 0 6px;font-size:22px}
-#det .ds{white-space:pre-wrap;color:var(--tx);opacity:.9;margin:12px 0 18px}
-.back{position:fixed;top:12px;left:12px;z-index:11;width:38px;height:38px;border-radius:50%;border:0;background:rgba(0,0,0,.6);color:#fff;font-size:20px}
-.btn{display:block;width:100%;padding:14px;border:0;border-radius:12px;background:var(--ac);color:#fff;font-size:16px;font-weight:600;margin:8px 0;text-align:center;text-decoration:none}
-.btn.g{background:var(--acs);color:var(--ac)}
-video{width:100%;border-radius:12px;background:#000;margin:6px 0;max-height:70vh}
-.eps{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}
-.eps i{font-style:normal;min-width:44px;text-align:center;padding:9px 12px;border-radius:10px;border:1px solid var(--bd);background:var(--cd);cursor:pointer}
-.eps i.on{background:var(--ac);border-color:var(--ac);color:#fff}
+html,body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+body{min-height:100vh;padding-bottom:calc(104px + env(safe-area-inset-bottom,0px));position:relative}
+body:before{content:"";position:fixed;left:0;right:0;top:0;height:380px;background:radial-gradient(70% 100% at 50% 0%,var(--acs),transparent 70%);pointer-events:none;z-index:0}
+button{font:inherit;color:inherit}
+.wrap{position:relative;z-index:1;max-width:980px;margin:0 auto}
+svg.i{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round;flex:none}
+svg.i.f{fill:currentColor}
+/* app bar */
+.bar{position:sticky;top:0;z-index:6;display:flex;align-items:center;gap:10px;padding:calc(env(safe-area-inset-top,0px) + 12px) 16px 10px;background:linear-gradient(rgba(10,12,19,.92),rgba(10,12,19,.7));backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
+.lg{width:40px;height:40px;border-radius:13px;background:linear-gradient(135deg,var(--ac),#7b5cff);display:flex;align-items:center;justify-content:center;font-size:21px;box-shadow:0 6px 18px var(--acs);flex:none}
+.bar h1{margin:0;font-size:21px;font-weight:800;letter-spacing:-.3px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bar h1 b{color:var(--ac)}
+.ib{width:42px;height:42px;border-radius:14px;border:1px solid var(--bd);background:rgba(255,255,255,.05);display:flex;align-items:center;justify-content:center;cursor:pointer;flex:none}
+/* hero */
+.hero{margin:8px 0 0;position:relative}
+.hs{display:flex;gap:12px;overflow-x:auto;scroll-snap-type:x mandatory;padding:0 16px;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+.hs::-webkit-scrollbar{display:none}
+.hc{flex:0 0 100%;scroll-snap-align:center;position:relative;border-radius:26px;overflow:hidden;aspect-ratio:4/4.3;max-height:60vh;background:var(--cd);cursor:pointer;border:1px solid var(--bd)}
+@media(min-width:700px){.hc{aspect-ratio:16/8}}
+.hc .bg{position:absolute;inset:0;background:linear-gradient(135deg,var(--h1),var(--h2))}
+.hc img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center 18%;opacity:0;transition:opacity .4s}
+.hc img.ok{opacity:1}
+.hc:after{content:"";position:absolute;inset:0;background:linear-gradient(to top,rgba(10,12,19,.97) 4%,rgba(10,12,19,.55) 42%,transparent 72%)}
+.hi{position:absolute;left:0;right:0;bottom:0;padding:18px 18px 20px;z-index:2}
+.tag{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:#fff;background:rgba(255,255,255,.14);backdrop-filter:blur(8px);padding:5px 10px;border-radius:999px;margin:0 6px 8px 0}
+.tag.g{background:linear-gradient(135deg,var(--ac),#ff7a45)}
+.hi h2{margin:2px 0 6px;font-size:27px;line-height:1.12;font-weight:800;letter-spacing:-.4px;text-shadow:0 2px 14px rgba(0,0,0,.5)}
+.hi p{margin:0 0 14px;color:rgba(255,255,255,.78);font-size:14px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.hb{display:flex;gap:10px}
+.pb{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:13px 22px;border:0;border-radius:16px;font-weight:800;font-size:15px;color:#fff;background:linear-gradient(135deg,var(--ac),#ff7a45);box-shadow:0 10px 24px var(--acs);cursor:pointer;text-decoration:none}
+.sb{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:13px 18px;border:1px solid var(--bd);border-radius:16px;font-weight:700;font-size:15px;background:rgba(255,255,255,.08);color:var(--tx);cursor:pointer}
+.sb.on svg{fill:var(--ac);stroke:var(--ac)}
+.dots{display:flex;justify-content:center;gap:6px;margin:12px 0 2px}
+.dots i{width:7px;height:7px;border-radius:5px;background:rgba(255,255,255,.22);transition:all .3s}
+.dots i.on{width:26px;background:var(--ac)}
+/* rows */
+.sec{margin-top:26px}
+.rh{display:flex;align-items:baseline;justify-content:space-between;padding:0 16px;margin-bottom:12px}
+.rh h2{margin:0;font-size:20px;font-weight:800;letter-spacing:-.3px}
+.rh a{color:var(--ac);font-weight:700;font-size:14px;cursor:pointer}
+.hl{display:flex;gap:12px;overflow-x:auto;padding:2px 16px 6px;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+.hl::-webkit-scrollbar{display:none}
+.pc{flex:0 0 132px;cursor:pointer;min-width:0}
+.pc .im{position:relative;aspect-ratio:2/3;border-radius:18px;overflow:hidden;background:linear-gradient(160deg,var(--h1),var(--h2));border:1px solid var(--bd);box-shadow:0 8px 20px rgba(0,0,0,.35)}
+.pc .im .lt{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:44px;font-weight:900;color:rgba(255,255,255,.35)}
+.pc .im img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .35s}
+.pc .im img.ok{opacity:1}
+.pc .im:after{content:"";position:absolute;left:0;right:0;bottom:0;height:42%;background:linear-gradient(transparent,rgba(0,0,0,.45))}
+.bdg{position:absolute;top:8px;left:8px;z-index:2;font-size:11px;font-weight:800;padding:4px 8px;border-radius:9px;background:rgba(10,12,19,.72);backdrop-filter:blur(6px);color:#fff}
+.bdg.v{background:linear-gradient(135deg,#ffb020,#ff6a3d)}
+.bdg.p{background:linear-gradient(135deg,#31d17c,#14a05a)}
+.yr{position:absolute;right:8px;bottom:8px;z-index:2;font-size:11px;font-weight:800;color:#fff;background:rgba(10,12,19,.6);padding:3px 7px;border-radius:8px}
+.pc .t{margin-top:9px;font-weight:700;font-size:14px;line-height:1.25;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.pc .m{margin-top:3px;color:var(--mu);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* top 10 */
+.top .pc{flex:0 0 170px;padding-left:44px;position:relative}
+.top .n{position:absolute;left:-2px;bottom:34px;font-size:112px;line-height:.8;font-weight:900;letter-spacing:-8px;color:transparent;-webkit-text-stroke:2.5px var(--ac);text-shadow:0 0 28px var(--acs);pointer-events:none}
+.top .pc .im{border-radius:16px}
+/* genres */
+.gt{flex:0 0 150px;height:92px;border-radius:20px;padding:14px;position:relative;overflow:hidden;cursor:pointer;background:linear-gradient(135deg,var(--h1),var(--h2));border:1px solid var(--bd)}
+.gt b{display:block;font-size:17px;font-weight:800;position:relative;z-index:1}
+.gt span{font-size:12.5px;color:rgba(255,255,255,.75);position:relative;z-index:1}
+.gt em{position:absolute;right:-6px;bottom:-10px;font-style:normal;font-size:58px;opacity:.28;transform:rotate(-12deg)}
+/* catalog */
+.cat{padding:6px 16px 0}
+.sr{display:flex;align-items:center;gap:10px;background:var(--cd);border:1px solid var(--bd);border-radius:18px;padding:0 14px;height:50px}
+.sr input{flex:1;min-width:0;border:0;outline:0;background:none;color:var(--tx);font:inherit;font-size:16px}
+.sr input::placeholder{color:var(--mu)}
+.sg{display:flex;gap:6px;margin:14px 0 4px;background:var(--cd);border:1px solid var(--bd);border-radius:16px;padding:5px}
+.sg button{flex:1;border:0;border-radius:12px;padding:10px 6px;font-weight:700;background:none;color:var(--mu);cursor:pointer}
+.sg button.on{background:linear-gradient(135deg,var(--ac),#ff7a45);color:#fff;box-shadow:0 6px 16px var(--acs)}
+.ch{display:flex;gap:8px;overflow-x:auto;padding:10px 0 4px;scrollbar-width:none}
+.ch::-webkit-scrollbar{display:none}
+.ch button{flex:none;border:1px solid var(--bd);background:rgba(255,255,255,.04);border-radius:999px;padding:8px 15px;font-weight:700;font-size:13.5px;color:var(--mu);cursor:pointer;white-space:nowrap}
+.ch button.on{background:var(--acs);border-color:var(--ac);color:var(--tx)}
+.cm{display:flex;align-items:center;justify-content:space-between;margin:14px 0 12px;color:var(--mu);font-size:14px}
+.cm b{color:var(--ac)}
+.cm select{background:var(--cd);color:var(--tx);border:1px solid var(--bd);border-radius:12px;padding:8px 10px;font:inherit;font-size:13.5px}
+.gd{display:grid;grid-template-columns:repeat(2,1fr);gap:16px 12px}
+@media(min-width:560px){.gd{grid-template-columns:repeat(3,1fr)}}
+@media(min-width:860px){.gd{grid-template-columns:repeat(5,1fr)}}
+.gd .pc{flex:none}
+.emp{text-align:center;color:var(--mu);padding:70px 24px}
+.emp b{display:block;font-size:44px;margin-bottom:10px}
+/* nav */
+.nv{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(14px + env(safe-area-inset-bottom,0px));z-index:8;display:flex;gap:2px;padding:6px;border-radius:28px;background:rgba(21,25,39,.84);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border:1px solid var(--bd);box-shadow:0 14px 40px rgba(0,0,0,.55)}
+.nv button{display:flex;align-items:center;gap:7px;padding:12px 17px;border:0;border-radius:22px;background:none;color:var(--mu);font-weight:700;font-size:14px;cursor:pointer}
+.nv button.on{background:rgba(255,255,255,.11);color:var(--tx)}
+.nv button.on svg{color:var(--ac)}
+/* detail */
+#det{position:fixed;inset:0;background:var(--bg);overflow-y:auto;display:none;z-index:20;-webkit-overflow-scrolling:touch}
+#det.on{display:block;animation:up .28s ease}
+@keyframes up{from{transform:translateY(28px);opacity:0}to{transform:none;opacity:1}}
+.dh{position:relative;height:min(66vh,560px);background:linear-gradient(160deg,var(--h1),var(--h2));overflow:hidden}
+.dh img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;object-position:center 15%;opacity:0;transition:opacity .4s}
+.dh img.ok{opacity:1}
+.dh:after{content:"";position:absolute;inset:0;background:linear-gradient(to top,var(--bg) 2%,rgba(10,12,19,.35) 45%,rgba(10,12,19,.45) 100%)}
+.dtop{position:absolute;left:0;right:0;top:0;z-index:3;display:flex;justify-content:space-between;padding:calc(env(safe-area-inset-top,0px) + 14px) 16px 0}
+.dtop .ib{background:rgba(10,12,19,.55);backdrop-filter:blur(10px)}
+.dc{position:relative;z-index:2;max-width:760px;margin:-96px auto 0;padding:0 18px 56px}
+.dc h1{margin:0 0 10px;font-size:30px;line-height:1.1;font-weight:800;letter-spacing:-.5px}
+.mt{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}
+.mt span{font-size:13px;font-weight:700;padding:6px 12px;border-radius:999px;background:rgba(255,255,255,.08);border:1px solid var(--bd)}
+.mt span.a{background:var(--acs);border-color:var(--ac)}
+.ds{white-space:pre-wrap;color:rgba(245,247,251,.84);line-height:1.55;margin:4px 0 20px}
+.dc .pb,.dc .sb{width:100%;margin:0 0 10px;padding:16px;border-radius:18px;font-size:16px}
 .nt{color:var(--mu);font-size:14px;margin:8px 0}
+.eps{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0}
+.eps i{font-style:normal;min-width:64px;text-align:center;padding:10px 14px;border-radius:13px;border:1px solid var(--bd);background:var(--cd);cursor:pointer;font-weight:700;font-size:14px}
+.eps i.on{background:linear-gradient(135deg,var(--ac),#ff7a45);border-color:transparent;color:#fff}
+video{width:100%;border-radius:18px;background:#000;margin:8px 0;max-height:70vh}
+.rel{margin:30px -18px 0}
+.btn.g{background:var(--acs);color:var(--ac)}
+.btn{display:block;width:100%;padding:14px;border:0;border-radius:14px;background:var(--ac);color:#fff;font-weight:700;margin:8px 0;text-align:center}
 </style>
 </head>
 <body>
-<div class="top"><h1 id="ttl">🎬 Veb kino</h1><input id="q" placeholder="Film nomi bo'yicha qidirish..."></div>
-<div id="app" class="grid"></div>
-<div id="det"><button class="back" id="bk">&lsaquo;</button><div class="in" id="din"></div></div>
+<div class="wrap">
+  <div class="bar"><div class="lg" id="lgo">🎬</div><h1 id="ttl">Veb kino</h1>
+    <button class="ib" id="bSearch" aria-label="Qidirish"><svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg></button>
+    <button class="ib" id="bFav" aria-label="Sevimlilar"><svg class="i" viewBox="0 0 24 24"><path d="M12 20.5s-7.5-4.6-9.2-9.4C1.7 7.700 4 4.500 7.300 4.500c2 0 3.700 1.100 4.700 2.800 1-1.700 2.700-2.800 4.700-2.800 3.300 0 5.600 3.200 4.500 6.600-1.700 4.800-9.200 9.400-9.200 9.400z"/></svg></button>
+  </div>
+  <div id="app"></div>
+</div>
+<div id="det"></div>
+<nav class="nv" id="nv">
+  <button data-tab="home" class="on"><svg class="i" viewBox="0 0 24 24"><path d="M3 10.500L12 3l9 7.500V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg><span>Asosiy</span></button>
+  <button data-tab="cat"><svg class="i" viewBox="0 0 24 24"><rect x="3" y="3" width="7.500" height="7.500" rx="2"/><rect x="13.500" y="3" width="7.500" height="7.500" rx="2"/><rect x="3" y="13.500" width="7.500" height="7.500" rx="2"/><rect x="13.500" y="13.500" width="7.500" height="7.500" rx="2"/></svg><span>Katalog</span></button>
+  <button data-tab="fav"><svg class="i" viewBox="0 0 24 24"><path d="M12 20.500s-7.500-4.600-9.200-9.400C1.700 7.700 4 4.500 7.300 4.500c2 0 3.700 1.100 4.700 2.800 1-1.700 2.700-2.800 4.700-2.800 3.300 0 5.600 3.200 4.500 6.600-1.700 4.800-9.200 9.400-9.200 9.400z"/></svg><span>Sevimli</span></button>
+</nav>
 <script>
-var tg = window.Telegram && Telegram.WebApp; if (tg) { try { tg.ready(); tg.expand(); } catch (e) {} }
+var tg = window.Telegram && Telegram.WebApp; if (tg) { try { tg.ready(); tg.expand(); tg.setHeaderColor && tg.setHeaderColor("#0a0c13"); tg.setBackgroundColor && tg.setBackgroundColor("#0a0c13"); } catch (e) {} }
 var B = new URLSearchParams(location.search).get("b") || "";
-var PAL = __PALETTES__, FILMS = [], BOT = {}, CUR = null;
+var PAL = __PALETTES__, FILMS = [], BOT = {}, CUR = null, TAB = "home";
+var C = {q: "", type: "all", genre: "", sort: "new"};
+var GEMO = {"Fantastika": "🚀", "Triller": "🔪", "Drama": "🎭", "Komediya": "😂", "Jangari": "💥", "Sarguzasht": "🧭", "Qo'rqinchli": "👻", "Detektiv": "🕵️", "Melodrama": "💞", "Tarixiy": "🏛", "Animatsiya": "🎨", "Oilaviy": "🏡", "Urush": "🪖", "Fentezi": "🐉", "Kriminal": "🚔", "Mistika": "🔮", "Hujjatli": "🎥", "Biografik": "📖", "Musiqiy": "🎵", "Sport": "⚽"};
 function esc(s) { return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
 function q2(p, extra) { return p + "?b=" + encodeURIComponent(B) + (extra || ""); }
 function themeHex(k) { try { var p = String(k).split("-"); return PAL[p[0]].shades[Number(p[1]) - 1] || ""; } catch (e) { return ""; } }
 function applyTheme(k) {
   var c = themeHex(k); if (!c) return; var st = document.documentElement.style;
-  st.setProperty("--ac", c); st.setProperty("--acs", "color-mix(in srgb," + c + " 16%,transparent)");
+  st.setProperty("--ac", c); st.setProperty("--acs", "color-mix(in srgb," + c + " 20%,transparent)");
 }
 function botLink(code) {
   if (!BOT.username) return "";
   return "https://t.me/" + BOT.username.replace(/^@/, "") + (/^\d+$/.test(code || "") ? "?start=" + code : "");
 }
 function openBot(code) { var l = botLink(code); if (!l) return; if (tg && tg.openTelegramLink) tg.openTelegramLink(l); else location.href = l; }
-function badge(a, s) { return a === "vip" ? "💎 VIP" : a === "paid" ? "💰 Pullik" : s ? "📺 Serial" : ""; }
-function render() {
-  var t = document.getElementById("q").value.trim().toLowerCase();
-  var rows = FILMS.filter(function (f) { return !t || f.title.toLowerCase().indexOf(t) >= 0 || f.code.toLowerCase() === t; });
-  var app = document.getElementById("app");
-  if (!rows.length) { app.style.display = "block"; app.innerHTML = '<div class="emp">' + (FILMS.length ? "Hech narsa topilmadi" : "Hozircha filmlar yo'q") + "</div>"; return; }
-  app.style.display = "";
-  app.innerHTML = rows.map(function (f) {
-    var b = badge(f.access, f.series);
-    return '<div class="card" data-c="' + esc(f.code) + '"><div class="ph"><img loading="lazy" src="' + q2("/api/kw/cover", "&code=" + encodeURIComponent(f.code)) + '" alt="">' +
-      (b ? '<div class="bdg">' + b + "</div>" : "") + '</div><div class="ct"><b>' + esc(f.title) + "</b><span>&#128065; " + f.views + "</span></div></div>";
-  }).join("");
-  app.querySelectorAll(".card").forEach(function (el) { el.onclick = function () { openFilm(el.getAttribute("data-c")); }; });
+function hue(s) { var h = 0; s = String(s); for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360; return h; }
+function hv(s) { var h = hue(s); return "--h1:hsl(" + h + ",55%,32%);--h2:hsl(" + ((h + 50) % 360) + ",60%,16%)"; }
+function cover(code) { return q2("/api/kw/cover", "&code=" + encodeURIComponent(code)); }
+function badgeHtml(f) { return f.access === "vip" ? '<div class="bdg v">💎 VIP</div>' : f.access === "paid" ? '<div class="bdg p">💰 Pullik</div>' : f.series ? '<div class="bdg">Serial</div>' : ""; }
+function ico(n) {
+  var P = {play: '<path d="M7 4.500v15l13-7.500z"/>', back: '<path d="M15 5l-7 7 7 7"/>', heart: '<path d="M12 20.500s-7.500-4.600-9.200-9.400C1.700 7.700 4 4.500 7.300 4.500c2 0 3.700 1.100 4.700 2.800 1-1.700 2.700-2.800 4.700-2.800 3.300 0 5.600 3.200 4.500 6.600-1.700 4.800-9.200 9.400-9.200 9.400z"/>', bot: '<rect x="4" y="8" width="16" height="12" rx="3"/><path d="M12 4v4M9 13h.01M15 13h.01"/>'};
+  return '<svg class="i' + (n === "play" ? " f" : "") + '" viewBox="0 0 24 24">' + P[n] + "</svg>";
 }
+/* sevimlilar (faqat shu qurilmada) */
+function favs() { try { return JSON.parse(localStorage.getItem("kwfav_" + B) || "[]"); } catch (e) { return []; } }
+function isFav(c) { return favs().indexOf(c) >= 0; }
+function toggleFav(c) {
+  var a = favs(), i = a.indexOf(c); if (i >= 0) a.splice(i, 1); else a.unshift(c);
+  try { localStorage.setItem("kwfav_" + B, JSON.stringify(a)); } catch (e) {}
+  return i < 0;
+}
+function imgTag(code, cls) { return '<img loading="lazy" ' + (cls ? 'class="' + cls + '" ' : "") + 'src="' + cover(code) + '" alt="" onload="this.classList.add(\'ok\')" onerror="this.remove()">'; }
+function sub(f) { var a = []; if (f.year) a.push(f.year); if (f.genres && f.genres.length) a.push(f.genres.slice(0, 2).join(", ")); return a.join(" · "); }
+function posterInner(f) {
+  return '<div class="im" style="' + hv(f.code) + '"><div class="lt">' + esc((f.title || "?").charAt(0).toUpperCase()) + "</div>" + imgTag(f.code) + badgeHtml(f) +
+    (f.year ? '<div class="yr">' + f.year + "</div>" : "") + '</div><div class="t">' + esc(f.title) + '</div><div class="m">' + esc(sub(f) || (f.series ? "Serial" : "Film")) + "</div>";
+}
+function poster(f) { return '<div class="pc" data-c="' + esc(f.code) + '">' + posterInner(f) + "</div>"; }
+function rowHtml(title, items, more, cls) {
+  if (!items.length) return "";
+  return '<div class="sec ' + (cls || "") + '"><div class="rh"><h2>' + esc(title) + "</h2>" + (more ? '<a data-more="' + esc(more) + '">Hammasi ›</a>' : "") + '</div><div class="hl">' + items.map(function (f, i) {
+    return cls === "top" ? '<div class="pc" data-c="' + esc(f.code) + '"><span class="n">' + (i + 1) + "</span>" + posterInner(f) + "</div>" : poster(f);
+  }).join("") + "</div></div>";
+}
+function allGenres() {
+  var m = {}; FILMS.forEach(function (f) { (f.genres || []).forEach(function (g) { m[g] = (m[g] || 0) + 1; }); });
+  return Object.keys(m).map(function (g) { return {g: g, n: m[g]}; }).sort(function (a, b) { return b.n - a.n; });
+}
+/* ASOSIY */
+function heroHtml() {
+  var hs = FILMS.filter(function (f) { return true; }).slice(0, 5);
+  if (!hs.length) return "";
+  return '<div class="hero"><div class="hs" id="hs">' + hs.map(function (f) {
+    var tags = (f.genres || []).slice(0, 2).map(function (g) { return '<span class="tag">' + esc(g) + "</span>"; }).join("") + (f.year ? '<span class="tag">' + f.year + "</span>" : "") + (f.series ? '<span class="tag g">Serial</span>' : f.access === "vip" ? '<span class="tag g">💎 VIP</span>' : '<span class="tag g">Yangi</span>');
+    return '<div class="hc" data-c="' + esc(f.code) + '" style="' + hv(f.code) + '"><div class="bg"></div>' + imgTag(f.code) + '<div class="hi">' + tags + "<h2>" + esc(f.title) + "</h2><p>" + esc(f.short) + '</p><div class="hb"><span class="pb">' + ico("play") + " Ko'rish</span></div></div></div>";
+  }).join("") + '</div><div class="dots" id="dots">' + hs.map(function (f, i) { return "<i" + (i ? "" : ' class="on"') + "></i>"; }).join("") + "</div></div>";
+}
+function homeHtml() {
+  if (!FILMS.length) return '<div class="emp"><b>🎬</b>Hozircha filmlar yo\'q</div>';
+  var h = heroHtml();
+  h += rowHtml("Yangi qo'shilganlar", FILMS.slice(0, 14), "new");
+  var byViews = FILMS.slice().sort(function (a, b) { return b.views - a.views; });
+  if (byViews.length >= 3) h += rowHtml("TOP-10", byViews.slice(0, 10), "pop", "top");
+  var gs = allGenres();
+  if (gs.length) h += '<div class="sec"><div class="rh"><h2>Janrlar</h2><a data-more="genres">Hammasi ›</a></div><div class="hl">' + gs.slice(0, 12).map(function (x) {
+    return '<div class="gt" data-genre="' + esc(x.g) + '" style="' + hv(x.g) + '"><b>' + esc(x.g) + "</b><span>" + x.n + " ta</span><em>" + (GEMO[x.g] || "🎞") + "</em></div>";
+  }).join("") + "</div></div>";
+  var ser = FILMS.filter(function (f) { return f.series; });
+  if (ser.length) h += rowHtml("Seriallar", ser.slice(0, 14), "series");
+  gs.filter(function (x) { return x.n >= 3; }).slice(0, 3).forEach(function (x) {
+    h += rowHtml(x.g, FILMS.filter(function (f) { return (f.genres || []).indexOf(x.g) >= 0; }).slice(0, 14), "g:" + x.g);
+  });
+  var pr = FILMS.filter(function (f) { return f.access !== "free"; });
+  if (pr.length) h += rowHtml("Premium", pr.slice(0, 14), "prem");
+  return h;
+}
+/* KATALOG */
+function filtered() {
+  var t = C.q.trim().toLowerCase();
+  var rows = FILMS.filter(function (f) {
+    if (C.type === "film" && f.series) return false;
+    if (C.type === "series" && !f.series) return false;
+    if (C.genre && (f.genres || []).indexOf(C.genre) < 0) return false;
+    if (t && f.title.toLowerCase().indexOf(t) < 0 && f.code.toLowerCase() !== t && (f.genres || []).join(" ").toLowerCase().indexOf(t) < 0 && String(f.year || "").indexOf(t) < 0) return false;
+    return true;
+  });
+  if (C.sort === "pop") rows.sort(function (a, b) { return b.views - a.views; });
+  else if (C.sort === "az") rows.sort(function (a, b) { return a.title.localeCompare(b.title); });
+  return rows;
+}
+function catHtml() {
+  var gs = allGenres(), rows = filtered();
+  var h = '<div class="cat"><div class="sr"><svg class="i" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.500-3.500"/></svg><input id="q" value="' + esc(C.q) + '" placeholder="Nom, janr yoki yil bo\'yicha qidirish..." autocomplete="off"></div>';
+  h += '<div class="sg">' + [["all", "Barchasi"], ["film", "Kinolar"], ["series", "Seriallar"]].map(function (x) { return '<button data-type="' + x[0] + '"' + (C.type === x[0] ? ' class="on"' : "") + ">" + x[1] + "</button>"; }).join("") + "</div>";
+  if (gs.length) h += '<div class="ch"><button data-g=""' + (C.genre ? "" : ' class="on"') + ">Hammasi</button>" + gs.map(function (x) { return '<button data-g="' + esc(x.g) + '"' + (C.genre === x.g ? ' class="on"' : "") + ">" + esc(x.g) + "</button>"; }).join("") + "</div>";
+  h += '<div class="cm"><span><b>' + rows.length + "</b> ta natija</span><select id=\"so\"><option value=\"new\"" + (C.sort === "new" ? " selected" : "") + ">Yangilari</option><option value=\"pop\"" + (C.sort === "pop" ? " selected" : "") + ">Mashhurlari</option><option value=\"az\"" + (C.sort === "az" ? " selected" : "") + ">Nomi (A-Z)</option></select></div>";
+  h += rows.length ? '<div class="gd" id="gd">' + rows.map(function (f) { return poster(f); }).join("") + "</div>" : '<div class="emp"><b>🔎</b>Hech narsa topilmadi</div>';
+  return h + "</div>";
+}
+function favHtml() {
+  var set = favs(), rows = set.map(function (c) { return FILMS.filter(function (f) { return f.code === c; })[0]; }).filter(Boolean);
+  if (!rows.length) return '<div class="emp"><b>💔</b>Sevimli filmlar yo\'q.<br>Film ichidagi yurakcha tugmasini bosing.</div>';
+  return '<div class="cat"><div class="cm"><span><b>' + rows.length + '</b> ta sevimli</span></div><div class="gd">' + rows.map(function (f) { return poster(f); }).join("") + "</div></div>";
+}
+function render(keep) {
+  var app = document.getElementById("app");
+  app.innerHTML = TAB === "home" ? homeHtml() : TAB === "cat" ? catHtml() : favHtml();
+  document.querySelectorAll("#nv button").forEach(function (b) { b.classList.toggle("on", b.getAttribute("data-tab") === TAB); });
+  if (!keep) window.scrollTo(0, 0);
+  var hs = document.getElementById("hs");
+  if (hs) {
+    var dots = document.querySelectorAll("#dots i"), n = dots.length, pause = false, idx = 0;
+    hs.addEventListener("scroll", function () { idx = Math.round(hs.scrollLeft / (hs.firstChild.offsetWidth + 12)); dots.forEach(function (d, i) { d.classList.toggle("on", i === idx); }); });
+    hs.addEventListener("touchstart", function () { pause = true; }, {passive: true});
+    clearInterval(window.__hero);
+    window.__hero = setInterval(function () { if (pause || n < 2 || !document.getElementById("hs")) return; idx = (idx + 1) % n; hs.scrollTo({left: idx * (hs.firstChild.offsetWidth + 12), behavior: "smooth"}); }, 5500);
+  }
+  var q = document.getElementById("q");
+  if (q) q.oninput = function () { C.q = q.value; var pos = q.selectionStart; render(true); var q2e = document.getElementById("q"); q2e.focus(); try { q2e.setSelectionRange(pos, pos); } catch (e) {} };
+  var so = document.getElementById("so"); if (so) so.onchange = function () { C.sort = so.value; render(true); };
+}
+function go(tab, patch) { TAB = tab; if (patch) { for (var k in patch) C[k] = patch[k]; } render(); }
+document.addEventListener("click", function (e) {
+  var t = e.target.closest("[data-c],[data-tab],[data-genre],[data-more],[data-type],[data-g]"); if (!t) return;
+  if (t.hasAttribute("data-tab")) return go(t.getAttribute("data-tab"));
+  if (t.hasAttribute("data-genre")) return go("cat", {genre: t.getAttribute("data-genre"), type: "all", q: ""});
+  if (t.hasAttribute("data-more")) {
+    var m = t.getAttribute("data-more");
+    if (m === "new") return go("cat", {sort: "new", type: "all", genre: "", q: ""});
+    if (m === "pop") return go("cat", {sort: "pop", type: "all", genre: "", q: ""});
+    if (m === "series") return go("cat", {type: "series", sort: "new", genre: "", q: ""});
+    if (m.indexOf("g:") === 0) return go("cat", {genre: m.slice(2), type: "all", q: ""});
+    return go("cat", {type: "all", genre: "", q: ""});
+  }
+  if (t.hasAttribute("data-type")) { C.type = t.getAttribute("data-type"); return render(true); }
+  if (t.hasAttribute("data-g")) { C.genre = t.getAttribute("data-g"); return render(true); }
+  if (t.hasAttribute("data-c")) openFilm(t.getAttribute("data-c"));
+});
+document.getElementById("bSearch").onclick = function () { go("cat"); setTimeout(function () { var q = document.getElementById("q"); if (q) q.focus(); }, 60); };
+document.getElementById("bFav").onclick = function () { go("fav"); };
+/* FILM SAHIFASI */
 async function openFilm(code) {
-  var det = document.getElementById("det"), din = document.getElementById("din");
-  din.innerHTML = '<div class="emp">Yuklanmoqda...</div>'; det.style.display = "block"; det.scrollTop = 0;
+  var det = document.getElementById("det");
+  det.innerHTML = '<div class="emp">Yuklanmoqda...</div>'; det.classList.add("on"); det.scrollTop = 0; document.getElementById("nv").style.display = "none";
   if (tg && tg.BackButton) { tg.BackButton.show(); tg.BackButton.onClick(closeFilm); }
   try {
     var r = await fetch(q2("/api/kw/film", "&code=" + encodeURIComponent(code))); if (!r.ok) throw 0;
     CUR = await r.json();
-  } catch (e) { din.innerHTML = '<div class="emp">Film topilmadi</div>'; return; }
-  var f = CUR, b = badge(f.access, f.series);
-  var h = '<img class="cv" src="' + q2("/api/kw/cover", "&code=" + encodeURIComponent(f.code)) + '" alt=""><div class="bd"><h2>' + esc(f.title) + "</h2>" + (b ? '<span class="nt">' + b + "</span>" : "") +
-    '<div class="ds">' + esc(f.desc) + '</div><div id="pl"></div>';
+  } catch (e) { det.innerHTML = '<div class="dtop"><button class="ib" id="bk">' + ico("back") + '</button></div><div class="emp"><b>😕</b>Film topilmadi</div>'; document.getElementById("bk").onclick = closeFilm; return; }
+  var f = CUR, fav = isFav(f.code);
   var NOUN = (BOT.root && BOT.root !== "kino") ? (BOT.root.charAt(0).toUpperCase() + BOT.root.slice(1)) : "Film";
-  h += '<button class="btn" id="watch">' + (BOT.emoji || "&#127916;") + " " + esc(NOUN) + 'ni ko\'rish</button><div class="nt" id="wmsg"></div>';
+  var meta = '';
+  if (f.year) meta += '<span class="a">' + f.year + "</span>";
+  (f.genres || []).forEach(function (g) { meta += "<span>" + esc(g) + "</span>"; });
+  if (f.series) meta += "<span>📺 " + (f.episodes.length || "") + " qism</span>";
+  if (f.access === "vip") meta += '<span class="a">💎 VIP</span>'; else if (f.access === "paid") meta += '<span class="a">💰 Pullik</span>';
+  var h = '<div class="dh" style="' + hv(f.code) + '">' + imgTag(f.code) + '<div class="dtop"><button class="ib" id="bk">' + ico("back") + '</button><button class="ib" id="hf">' + (fav ? '<svg class="i" viewBox="0 0 24 24" style="fill:var(--ac);stroke:var(--ac)">' : '<svg class="i" viewBox="0 0 24 24">') + '<path d="M12 20.500s-7.500-4.600-9.200-9.400C1.700 7.700 4 4.500 7.300 4.500c2 0 3.700 1.100 4.700 2.800 1-1.700 2.700-2.800 4.700-2.800 3.300 0 5.600 3.200 4.500 6.600-1.700 4.800-9.200 9.400-9.200 9.400z"/></svg></button></div></div>' +
+    '<div class="dc"><h1>' + esc(f.title) + '</h1><div class="mt">' + meta + '</div><div class="ds">' + esc(f.desc) + '</div><div id="pl"></div>' +
+    '<button class="pb" id="watch">' + ico("bot") + " " + esc(NOUN) + 'ni botda ko\'rish</button><div class="nt" id="wmsg"></div>';
   if (f.access !== "free") {
     h += '<div class="nt">' + (f.access === "vip" ? "🔒 Bu film faqat Premium foydalanuvchilar uchun." : "💰 Bu film pullik" + (f.price ? " (" + f.price + " so'm)" : "") + ".") + "</div>";
   } else {
     if (f.series && f.episodes.length) h += '<div class="eps" id="eps">' + f.episodes.map(function (e, i) { return '<i data-e="' + esc(e) + '"' + (i ? "" : ' class="on"') + ">" + esc(e) + "-qism</i>"; }).join("") + "</div>";
-    h += '<button class="btn g" id="play">&#9654;&#65039; Shu yerda ko\'rish</button>';
+    h += '<button class="sb" id="play">' + ico("play") + " Shu yerda ko'rish</button>";
   }
-  din.innerHTML = h + "</div>";
+  var rel = FILMS.filter(function (x) { return x.code !== f.code && (x.genres || []).some(function (g) { return (f.genres || []).indexOf(g) >= 0; }); }).slice(0, 12);
+  if (!rel.length) rel = FILMS.filter(function (x) { return x.code !== f.code; }).slice(0, 10);
+  if (rel.length) h += '<div class="rel">' + rowHtml("O'xshash " + NOUN.toLowerCase() + "lar", rel) + "</div>";
+  det.innerHTML = h + "</div>";
+  document.getElementById("bk").onclick = closeFilm;
+  document.getElementById("hf").onclick = function () { var on = toggleFav(f.code); this.innerHTML = '<svg class="i" viewBox="0 0 24 24" style="' + (on ? "fill:var(--ac);stroke:var(--ac)" : "") + '"><path d="M12 20.500s-7.500-4.600-9.200-9.400C1.700 7.700 4 4.500 7.300 4.500c2 0 3.700 1.100 4.700 2.800 1-1.700 2.700-2.800 4.700-2.800 3.300 0 5.600 3.200 4.500 6.600-1.700 4.800-9.200 9.400-9.200 9.400z"/></svg>'; };
   var ep = f.series && f.episodes.length ? f.episodes[0] : "1";
-  document.querySelectorAll("#eps i").forEach(function (el) { el.onclick = function () { ep = el.getAttribute("data-e"); document.querySelectorAll("#eps i").forEach(function (x) { x.classList.remove("on"); }); el.classList.add("on"); if (document.querySelector("#pl video")) play(f, ep); }; });
+  document.querySelectorAll("#eps i").forEach(function (el) { el.onclick = function () { ep = el.getAttribute("data-e"); document.querySelectorAll("#eps i").forEach(function (x) { x.classList.remove("on"); }); el.classList.add("on"); var pb = document.getElementById("play"); if (pb && document.querySelector("#pl video")) play(f, ep); }; });
   var pb = document.getElementById("play"); if (pb) pb.onclick = function () { play(f, ep); };
   document.getElementById("watch").onclick = function () { watchInBot(f, this); };
+  det.scrollTop = 0;
 }
 async function watchInBot(f, btn) {
   var wm = document.getElementById("wmsg"), old = btn.innerHTML; wm.textContent = "";
@@ -28775,20 +29572,19 @@ async function play(f, ep) {
   } catch (e) { pl.innerHTML = '<div class="nt">Videoni ochib bo\'lmadi. Botda ko\'rib chiqing.</div>'; return; }
   pl.innerHTML = '<video controls playsinline autoplay src="' + u + '"></video>';
 }
+
 function closeFilm() {
-  document.getElementById("det").style.display = "none"; document.getElementById("din").innerHTML = "";
+  var det = document.getElementById("det"); det.classList.remove("on"); det.innerHTML = ""; document.getElementById("nv").style.display = "";
   if (tg && tg.BackButton) tg.BackButton.hide();
 }
-document.getElementById("bk").onclick = closeFilm;
-document.getElementById("q").oninput = render;
 (async function () {
   try {
     var r = await fetch(q2("/api/kw/list")); if (!r.ok) throw 0;
     var j = await r.json(); FILMS = j.films || []; BOT = j.bot || {};
-    if (BOT.name) { document.getElementById("ttl").textContent = (BOT.emoji || "🎬") + " " + BOT.name; document.title = BOT.name; }
-    if (BOT.root) { var cr = BOT.root.charAt(0).toUpperCase() + BOT.root.slice(1); document.getElementById("q").placeholder = cr + " nomi bo'yicha qidirish..."; }
+    if (BOT.name) { document.getElementById("ttl").textContent = BOT.name; document.title = BOT.name; }
+    document.getElementById("lgo").textContent = BOT.emoji || "🎬";
     applyTheme(BOT.theme);
-  } catch (e) { document.getElementById("app").style.display = "block"; document.getElementById("app").innerHTML = '<div class="emp">Sahifani ochib bo\'lmadi</div>'; return; }
+  } catch (e) { document.getElementById("app").innerHTML = '<div class="emp"><b>⚠️</b>Sahifani ochib bo\'lmadi</div>'; return; }
   render();
 })();
 </script>
