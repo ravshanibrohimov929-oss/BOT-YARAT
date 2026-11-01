@@ -20746,7 +20746,14 @@ import time as _ct_time
 import copy as _ct_copy
 import random as _ct_random
 
-CITY_GRID = 24                 # xarita 24x24 katak
+CITY_GRID = 24                 # eski o'yinchilar uchun boshlang'ich yer (migratsiya)
+CITY_START_OWN = [6, 6, 12, 12]   # yangi o'yinchi egallagan yer [x, y, w, h]
+CITY_TILE_BASE = 25            # 1 katak narxi (tanga) — boshlang'ich
+CITY_TILE_GROW = 0.35          # har bir egallangan katak narxga shuncha qo'shadi
+CITY_TILE_GEM_DIV = 30         # gem narxi = tanga narxi / 30
+CITY_MAX_BLOCK = 5             # bir martada eng ko'pi 5x5 katak
+CITY_MAX_COORD = 3000          # xarita "cheksiz", lekin shu chegaragacha
+CITY_MAX_RECTS = 4000
 CITY_MAX_LV = 30               # shahar darajasi chegarasi
 CITY_UP_MULT = (1.0, 1.5, 2.2, 3.2, 4.6)   # bino darajasi -> daromad ko'paytmasi
 CITY_CAP_H = 12.0              # yig'ilmagan daromad ko'pi bilan shuncha soat to'planadi
@@ -20911,6 +20918,7 @@ def city_new_player(uid: int, name: str) -> dict:
     p = {"uid": uid, "name": (name or "Shahar")[:24], "coins": 600, "gems": 5, "xp": 0, "lv": 1, "nid": 1,
          "b": [], "created": now, "seen": now, "daily": {"d": "", "s": 0}, "gift": 0, "refs": 0,
          "earned": 0, "buys": 0}
+    p["own"] = [list(CITY_START_OWN)]
     for x in range(8, 16):
         city_put(p, "road", x, 12, now, secs=0)
     city_put(p, "house", 10, 10, now, secs=0)
@@ -20939,10 +20947,42 @@ def city_occupied(p: dict, ignore=None) -> dict:
     return occ
 
 
+def city_own(p: dict) -> list:
+    """O'yinchining egallagan yerlari: [[x, y, w, h], ...]. Eski o'yinchilarga 24x24 beriladi."""
+    own = p.get("own")
+    if own is None:
+        own = p["own"] = [[0, 0, CITY_GRID, CITY_GRID]]
+    return own
+
+
+def city_owned_count(p: dict) -> int:
+    return sum(r[2] * r[3] for r in city_own(p))
+
+
+def city_owns(p: dict, x: int, y: int) -> bool:
+    for r in city_own(p):
+        if r[0] <= x < r[0] + r[2] and r[1] <= y < r[1] + r[3]:
+            return True
+    return False
+
+
+def city_tile_price(n_owned: int, k: int) -> int:
+    """Hozir n_owned katak egallangan bo'lsa, keyingi k katak narxi (tanga)."""
+    return sum(CITY_TILE_BASE + int(CITY_TILE_GROW * (n_owned + i)) for i in range(k))
+
+
+def city_tile_gems(coins: int) -> int:
+    return max(1, -(-coins // CITY_TILE_GEM_DIV))
+
+
 def city_fits(p: dict, t: str, x: int, y: int, ignore=None) -> bool:
     d = CITY_BUILDINGS[t]
-    if x < 0 or y < 0 or x + d["w"] > CITY_GRID or y + d["h"] > CITY_GRID:
+    if abs(x) > CITY_MAX_COORD or abs(y) > CITY_MAX_COORD:
         return False
+    for dx in range(d["w"]):
+        for dy in range(d["h"]):
+            if not city_owns(p, x + dx, y + dy):
+                return False
     occ = city_occupied(p, ignore)
     for dx in range(d["w"]):
         for dy in range(d["h"]):
@@ -21035,6 +21075,8 @@ def city_state(p: dict, now: float) -> dict:
         "bonus": round(city_bonus(p), 3), "val": city_value(p),
         "daily": p["daily"]["d"] != city_today(), "streak": p["daily"]["s"],
         "b": [[b["i"], b["t"], b["x"], b["y"], b["l"], max(0, int(round(b["r"] - now)))] for b in p["b"]],
+        "own": city_own(p), "ownn": city_owned_count(p),
+        "tp": [CITY_TILE_BASE, CITY_TILE_GROW, CITY_TILE_GEM_DIV, CITY_MAX_BLOCK, CITY_MAX_COORD],
     }
 
 
@@ -21106,6 +21148,70 @@ def city_act(info: dict, p: dict, act: str, body: dict) -> dict:
         b = city_put(p, t, x, y, now)
         ups = city_gain_xp(p, (d["cost"] // 8) or (d.get("gem", 0) * 5) or 2)
         res["new"] = b["i"]
+    elif act == "buytile":
+        try:
+            x, y = int(body.get("x")), int(body.get("y"))
+            w, h = int(body.get("w", 1)), int(body.get("h", 1))
+        except Exception:
+            return _cerr("bad", "Noto'g'ri joy.")
+        cur = "gems" if body.get("cur") == "gems" else "coins"
+        if not (1 <= w <= CITY_MAX_BLOCK and 1 <= h <= CITY_MAX_BLOCK):
+            return _cerr("bad", "Noto'g'ri o'lcham.")
+        if abs(x) > CITY_MAX_COORD or abs(y) > CITY_MAX_COORD or abs(x + w) > CITY_MAX_COORD or abs(y + h) > CITY_MAX_COORD:
+            return _cerr("edge", "Xarita chegarasi.")
+        own = city_own(p)
+        new = [[(x + i, y + j) for i in range(w)] for j in range(h)]
+        rows = []   # har qatorda yangi (egallanmagan) katak oraliqlari
+        cnt = 0
+        for j in range(h):
+            run = None
+            for i in range(w):
+                tx, ty = x + i, y + j
+                if city_owns(p, tx, ty):
+                    if run:
+                        rows.append(run); run = None
+                else:
+                    cnt += 1
+                    if run:
+                        run[2] += 1
+                    else:
+                        run = [tx, ty, 1, 1]
+            if run:
+                rows.append(run)
+        if cnt == 0:
+            return _cerr("owned", "Bu yer allaqachon sizniki.")
+        # yangi yer mavjud yerga ttutashgan bo'lishi shart
+        touch = False
+        for r in rows:
+            for tx in range(r[0], r[0] + r[2]):
+                if (city_owns(p, tx - 1, r[1]) or city_owns(p, tx + 1, r[1]) or
+                        city_owns(p, tx, r[1] - 1) or city_owns(p, tx, r[1] + 1)):
+                    touch = True
+                    break
+            if touch:
+                break
+        if not touch:
+            # blok ichidagi katak tashqaridan ham tegishi mumkin: eski yer bilan chegaradosh bo'lmasa rad
+            return _cerr("far", "Yangi yer sizning yeringizga tutashgan bo'lishi kerak.")
+        if len(own) + len(rows) > CITY_MAX_RECTS:
+            return _cerr("full", "Xarita juda bo'lakka bo'linib ketgan.")
+        price = city_tile_price(city_owned_count(p), cnt)
+        if cur == "gems":
+            g = city_tile_gems(price)
+            if p["gems"] < g:
+                return _cerr("gems", f"Gem yetarli emas (kerak: {g}).")
+            p["gems"] -= g
+        else:
+            if p["coins"] < price:
+                return _cerr("coins", "Tanga yetarli emas.")
+            p["coins"] -= price
+        # bitta to'liq to'rtburchak bo'lsa — bittaga birlashtiramiz
+        if cnt == w * h:
+            own.append([x, y, w, h])
+        else:
+            own.extend(rows)
+        ups = city_gain_xp(p, max(1, cnt // 2))
+        res["bought"] = cnt
     elif act == "move":
         b = city_find(p, body.get("i"))
         if not b:
@@ -21205,6 +21311,7 @@ def city_top(info: dict, uid: int, limit: int = 30) -> dict:
 
 def city_visit_view(p: dict, now: float) -> dict:
     return {"name": p["name"], "uid": p["uid"], "lv": p["lv"], "val": city_value(p), "pop": city_pop(p, now),
+            "own": city_own(p),
             "b": [[b["i"], b["t"], b["x"], b["y"], b["l"], max(0, int(round(b["r"] - now)))] for b in p["b"]]}
 
 
@@ -21684,7 +21791,7 @@ html,body{margin:0;height:100%;overflow:hidden;background:#4aa8e8;color:var(--tx
 #lvb i b{display:block;height:100%;width:0;background:var(--ok)}
 #hud .sp{flex:1}
 #bar{position:fixed;left:0;right:0;bottom:0;padding:8px 10px calc(env(safe-area-inset-bottom,0px) + 10px);display:flex;gap:8px;justify-content:center;z-index:5}
-.btn{pointer-events:auto;border:0;color:#fff;font:inherit;font-weight:800;border-radius:16px;padding:10px 6px;min-width:62px;flex:1;max-width:112px;background:linear-gradient(#5b97ff,#3a6fe0);box-shadow:0 4px 0 #244aa6,0 6px 12px rgba(0,0,0,.3);display:flex;flex-direction:column;align-items:center;gap:1px;font-size:12px}
+.btn{pointer-events:auto;border:0;color:#fff;font:inherit;font-weight:800;border-radius:16px;padding:10px 2px;min-width:0;flex:1;max-width:100px;background:linear-gradient(#5b97ff,#3a6fe0);box-shadow:0 4px 0 #244aa6,0 6px 12px rgba(0,0,0,.3);display:flex;flex-direction:column;align-items:center;gap:1px;font-size:11px}
 .btn b{font-size:21px;line-height:1}
 .btn:active{transform:translateY(2px);box-shadow:0 2px 0 #244aa6}
 .btn.g{background:linear-gradient(#ffd75e,#ff9d2e);box-shadow:0 4px 0 #b56a12,0 6px 12px rgba(0,0,0,.3);color:#4a2600}
@@ -21692,6 +21799,12 @@ html,body{margin:0;height:100%;overflow:hidden;background:#4aa8e8;color:var(--tx
 .btn.g.pulse{animation:pl 1.2s infinite}
 @keyframes pl{50%{transform:scale(1.07)}}
 .btn.d{opacity:.55}
+.ic{width:1.1em;height:1.1em;vertical-align:-.2em;display:inline-block;flex:none}
+.bi{width:56px;height:56px;object-fit:contain;display:block;margin:0 auto;filter:drop-shadow(0 3px 2px rgba(0,0,0,.25))}
+h2 .bi{display:inline-block;width:38px;height:38px;vertical-align:middle;margin:0 4px 0 0}
+#gT .bi{display:inline-block;width:30px;height:30px;vertical-align:middle;margin-right:4px}
+#load .l .ic{width:84px;height:84px}
+.btn b .ic{width:26px;height:26px;vertical-align:middle}
 #sheetbg{position:fixed;inset:0;background:rgba(5,10,25,.45);z-index:8;display:none}
 #sheet{position:fixed;left:0;right:0;bottom:0;max-height:78%;overflow:auto;background:var(--panel);border-top-left-radius:22px;border-top-right-radius:22px;border:1px solid var(--line);padding:14px 14px calc(env(safe-area-inset-bottom,0px) + 16px);z-index:9;transform:translateY(105%);transition:transform .22s ease;touch-action:pan-y}
 #sheet.on{transform:none}
@@ -21700,7 +21813,7 @@ html,body{margin:0;height:100%;overflow:hidden;background:#4aa8e8;color:var(--tx
 #sheet .x{position:absolute;right:12px;top:10px;width:32px;height:32px;border-radius:50%;background:rgba(255,255,255,.1);border:0;color:#fff;font-size:16px}
 .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
 .card{background:rgba(255,255,255,.07);border:1px solid var(--line);border-radius:14px;padding:9px 6px;text-align:center;position:relative;min-height:104px}
-.card .em{font-size:30px;line-height:1.1}
+.card .em{min-height:58px}
 .card .nm{font-weight:700;font-size:13px;margin-top:2px}
 .card .pr{font-size:12px;color:var(--gold);font-weight:700;margin-top:3px}
 .card .in{font-size:11px;color:var(--mu)}
@@ -21727,6 +21840,15 @@ html,body{margin:0;height:100%;overflow:hidden;background:#4aa8e8;color:var(--tx
 #ghostbar .t small{display:block;color:var(--mu);font-weight:600}
 #ghostbar button{border:0;border-radius:12px;padding:11px 14px;font:inherit;font-weight:800;color:#fff}
 #ghostbar .ok{background:#2fae63}#ghostbar .no{background:#e04545}
+#landbar{position:fixed;left:10px;right:10px;bottom:calc(env(safe-area-inset-bottom,0px) + 10px);z-index:6;display:none;flex-direction:column;background:var(--panel);border:1px solid var(--line);border-radius:18px;padding:10px;gap:8px}
+#landbar .lt{font-weight:700;font-size:14px}#landbar .lt small{display:block;color:var(--mu);font-weight:600}
+#landbar .sz,#landbar .lr{display:flex;gap:8px}
+#landbar button{flex:1;border:0;border-radius:12px;padding:10px 6px;font:inherit;font-weight:800;color:#fff;background:rgba(255,255,255,.12)}
+#landbar .sz button.on{background:var(--ac)}
+#landbar .lr .no{flex:0 0 52px;background:#e04545}
+#landbar .lr .c{background:linear-gradient(#ffd75e,#ff9d2e);color:#4a2600}
+#landbar .lr .gm{background:linear-gradient(#5fd9ff,#2b9be0);color:#06263f}
+#landbar button:disabled{opacity:.4}
 #visit{position:fixed;left:10px;right:10px;top:calc(env(safe-area-inset-top,0px) + 66px);z-index:6;display:none;background:var(--panel);border:1px solid var(--gold);border-radius:14px;padding:8px 10px;align-items:center;gap:8px}
 #visit .t{flex:1;font-weight:700}
 #visit button{border:0;border-radius:10px;padding:8px 12px;font:inherit;font-weight:800;color:#4a2600;background:linear-gradient(#ffd75e,#ff9d2e)}
@@ -21746,12 +21868,14 @@ html,body{margin:0;height:100%;overflow:hidden;background:#4aa8e8;color:var(--tx
 <div id="visit"><div class="t" id="visitT"></div><button id="visitBack">◀️ Mening shahrim</button></div>
 <div id="bar">
   <button class="btn" id="bBuild"><b>🏗</b>Qurish</button>
+  <button class="btn" id="bLand"><b>🗺</b>Yer</button>
   <button class="btn g" id="bCollect"><b>💰</b><span id="vPend">Yig'ish</span></button>
   <button class="btn" id="bTop"><b>🏆</b>Reyting</button>
   <button class="btn" id="bDaily"><b>🎁</b>Bonus</button>
   <button class="btn" id="bShop"><b>💎</b>Gem</button>
 </div>
 <div id="ghostbar"><div class="t" id="gT"></div><button class="no" id="gNo">✖</button><button class="ok" id="gOk">✔ Qurish</button></div>
+<div id="landbar"><div class="lt" id="lT"></div><div class="sz" id="lSz"><button data-s="1">1×1</button><button data-s="3">3×3</button><button data-s="5">5×5</button></div><div class="lr"><button class="no" id="lNo">✖</button><button class="c" id="lCoin">🪙</button><button class="gm" id="lGem">💎</button></div></div>
 <div id="sheetbg"></div>
 <div id="sheet"></div>
 <div id="toast"></div>
@@ -21767,14 +21891,42 @@ if (TG) {
 }
 var BOT = new URLSearchParams(location.search).get("b");
 var INIT = TG ? TG.initData : "";
-var N = 24, TW = 72, TH = 36;
+var TW = 72, TH = 36, MINZ = 0.5, MAXZ = 2.2, MAXC = 3000;
 var $ = function (id) { return document.getElementById(id); };
 var cv = $("cv"), ctx = cv.getContext("2d");
 var W = 0, H = 0, DPR = 1;
 
 var S = {st: null, cat: null, at: 0, mode: null, ghost: null, sel: null, vis: null, busy: false, cars: [], roadKey: "", last: 0};
-var cam = {x: 0, y: (N / 2) * TH, z: 1.15};
+var cam = {x: 0, y: 12 * TH, z: 1.0};
 
+var IC = {
+  coin: '<circle cx="12" cy="12" r="10" fill="#ffc83d" stroke="#a8620c" stroke-width="1.6"/><circle cx="12" cy="12" r="6.6" fill="#ffdf6e" stroke="#e39a1c" stroke-width="1.4"/><rect x="10.7" y="7.6" width="2.6" height="8.8" rx="1.1" fill="#d98a14"/><path d="M6 8a7 7 0 0 1 5-3.4" stroke="#fff6c9" stroke-width="1.4" fill="none" stroke-linecap="round"/>',
+  gem: '<path d="M7 3.5h10l5 6.5-10 11.5L2 10z" fill="#4fcbff" stroke="#0f6aa3" stroke-width="1.5" stroke-linejoin="round"/><path d="M2 10h20M7 3.5l2.3 6.5L12 21.5M17 3.5L14.7 10 12 21.5M9.3 10L12 3.5l2.7 6.5" fill="none" stroke="#0f6aa3" stroke-width="1" stroke-linejoin="round"/><path d="M7.4 4.6l-3 4.2" stroke="#d6f6ff" stroke-width="1.5" stroke-linecap="round"/>',
+  people: '<circle cx="8.5" cy="7.5" r="3.4" fill="#f2c9a0" stroke="#7a5230" stroke-width="1.2"/><path d="M2 20c0-4.4 2.9-7 6.5-7s6.5 2.6 6.5 7z" fill="#4f8cff" stroke="#1d3f94" stroke-width="1.2" stroke-linejoin="round"/><circle cx="16.5" cy="8.5" r="3" fill="#f2c9a0" stroke="#7a5230" stroke-width="1.2"/><path d="M13.5 14c1-.5 2-.7 3-.7 3 0 5.5 2.2 5.5 6.7h-5.5" fill="#ff7b7b" stroke="#a62e2e" stroke-width="1.2" stroke-linejoin="round"/>',
+  hammer: '<rect x="10.3" y="9" width="3.6" height="13" rx="1.4" fill="#b9854e" stroke="#6b4423" stroke-width="1.2" transform="rotate(35 12 12)"/><rect x="3.5" y="3" width="13" height="6" rx="1.6" fill="#aab4c4" stroke="#4a5568" stroke-width="1.3" transform="rotate(35 12 12)"/>',
+  map: '<path d="M2.5 6l6-2.5 7 2.5 6-2.5v15l-6 2.5-7-2.5-6 2.5z" fill="#7ed67c" stroke="#2c7a3d" stroke-width="1.4" stroke-linejoin="round"/><path d="M8.5 3.5v15M15.5 6v15" stroke="#2c7a3d" stroke-width="1.1"/><circle cx="14" cy="10.5" r="3" fill="#ff5d5d" stroke="#8f1d1d" stroke-width="1.2"/><circle cx="14" cy="10.5" r="1" fill="#fff"/>',
+  trophy: '<path d="M7 3h10v6a5 5 0 0 1-10 0z" fill="#ffc83d" stroke="#a8620c" stroke-width="1.5" stroke-linejoin="round"/><path d="M7 5H3.5c0 4 1.5 5.5 3.7 5.7M17 5h3.5c0 4-1.5 5.5-3.7 5.7" fill="none" stroke="#a8620c" stroke-width="1.5"/><rect x="10.5" y="14" width="3" height="4" fill="#e39a1c" stroke="#a8620c" stroke-width="1.2"/><rect x="7" y="18" width="10" height="3" rx="1" fill="#ffc83d" stroke="#a8620c" stroke-width="1.4"/><path d="M9 5v4" stroke="#fff6c9" stroke-width="1.6" stroke-linecap="round"/>',
+  gift: '<rect x="3" y="10" width="18" height="11" rx="1.5" fill="#ff6b6b" stroke="#9c2323" stroke-width="1.4"/><rect x="2" y="6.5" width="20" height="4.5" rx="1.2" fill="#ff8d8d" stroke="#9c2323" stroke-width="1.4"/><rect x="10.4" y="6.5" width="3.2" height="14.5" fill="#ffd75e" stroke="#a8620c" stroke-width="1"/><path d="M12 6.5C9 1.5 5 3.5 7.5 6.5M12 6.5c3-5 7-3 4.5 0" fill="none" stroke="#a8620c" stroke-width="1.5" stroke-linecap="round"/>',
+  bag: '<path d="M8.5 3.5l1.5 3h4l1.5-3z" fill="#b9854e" stroke="#6b4423" stroke-width="1.2" stroke-linejoin="round"/><path d="M9.5 6.5C4 9 2.5 14 4 18c1 2.5 4 3.5 8 3.5s7-1 8-3.5c1.5-4 0-9-5.5-11.5z" fill="#ffc83d" stroke="#a8620c" stroke-width="1.5" stroke-linejoin="round"/><path d="M12 10v8M14.2 11.2c-.6-.8-1.4-1-2.2-1-1.3 0-2.2.6-2.2 1.6 0 2.2 4.6 1 4.6 3.4 0 1-.9 1.7-2.4 1.7-1 0-1.9-.4-2.5-1.2" fill="none" stroke="#8a4b08" stroke-width="1.3" stroke-linecap="round"/>',
+  up: '<path d="M12 3l8 9h-5v9H9v-9H4z" fill="#43d17c" stroke="#16743c" stroke-width="1.5" stroke-linejoin="round"/>',
+  bolt: '<path d="M13.5 2L4.5 13.5h6L9.5 22l10-12.5h-6.2z" fill="#ffd23f" stroke="#a8620c" stroke-width="1.5" stroke-linejoin="round"/>',
+  box: '<path d="M3 8l9-4.5L21 8v9l-9 4.5L3 17z" fill="#d9a766" stroke="#7a5230" stroke-width="1.4" stroke-linejoin="round"/><path d="M3 8l9 4.5L21 8M12 12.5v9" fill="none" stroke="#7a5230" stroke-width="1.3"/><path d="M7.5 5.7l9 4.5" stroke="#f3d9a8" stroke-width="2"/>',
+  trash: '<path d="M5 7h14l-1.2 13.5a1.5 1.5 0 0 1-1.5 1.4H7.7a1.5 1.5 0 0 1-1.5-1.4z" fill="#cfd6e3" stroke="#4a5568" stroke-width="1.4" stroke-linejoin="round"/><rect x="3.5" y="4" width="17" height="3" rx="1.3" fill="#e4e9f2" stroke="#4a5568" stroke-width="1.4"/><rect x="9.5" y="2" width="5" height="2.4" rx="1" fill="#e4e9f2" stroke="#4a5568" stroke-width="1.2"/><path d="M9.5 10v8M14.5 10v8" stroke="#8a95a8" stroke-width="1.5" stroke-linecap="round"/>',
+  lock: '<path d="M7.5 11V8a4.5 4.5 0 0 1 9 0v3" fill="none" stroke="#c7ced9" stroke-width="2.4"/><rect x="4.5" y="10.5" width="15" height="11" rx="2.4" fill="#ffc83d" stroke="#a8620c" stroke-width="1.5"/><circle cx="12" cy="15.2" r="1.7" fill="#7a4a0a"/><rect x="11.2" y="15.5" width="1.6" height="3.4" rx=".7" fill="#7a4a0a"/>',
+  star: '<path d="M12 2.5l2.9 6.2 6.6.8-4.9 4.6 1.3 6.6L12 17.3 6.1 20.7l1.3-6.6L2.5 9.5l6.6-.8z" fill="#ffd23f" stroke="#a8620c" stroke-width="1.5" stroke-linejoin="round"/>',
+  city: '<rect x="2.5" y="11" width="6" height="10.5" fill="#6fa8ff" stroke="#1d3f94" stroke-width="1.3"/><rect x="8.5" y="3" width="7" height="18.5" fill="#4f8cff" stroke="#1d3f94" stroke-width="1.3"/><rect x="15.5" y="8" width="6" height="13.5" fill="#8dbbff" stroke="#1d3f94" stroke-width="1.3"/><path d="M10.5 6h3M10.5 9.5h3M10.5 13h3M10.5 16.5h3M4.5 14h2M4.5 17.5h2M17.5 11h2M17.5 14.5h2M17.5 18h2" stroke="#ffe9a3" stroke-width="1.5" stroke-linecap="round"/>',
+  build: '<path d="M5 21V8l7-5 7 5v13z" fill="#f2d9a6" stroke="#7a5230" stroke-width="1.4" stroke-linejoin="round"/><path d="M3.5 9L12 2.5 20.5 9" fill="none" stroke="#d9534f" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/><rect x="9.8" y="13" width="4.4" height="8" fill="#7a4a2a"/><rect x="7" y="10" width="3" height="3" fill="#9fd3f2"/><rect x="14" y="10" width="3" height="3" fill="#9fd3f2"/>',
+  ok: '<circle cx="12" cy="12" r="10" fill="#43d17c" stroke="#16743c" stroke-width="1.5"/><path d="M6.8 12.4l3.5 3.6 6.9-7.6" fill="none" stroke="#fff" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/>',
+  warn: '<path d="M12 3L22 20.5H2z" fill="#ffd23f" stroke="#a8620c" stroke-width="1.5" stroke-linejoin="round"/><path d="M12 9.5v5" stroke="#5a3a00" stroke-width="2.2" stroke-linecap="round"/><circle cx="12" cy="17.4" r="1.2" fill="#5a3a00"/>',
+  m1: '<circle cx="12" cy="13" r="8.5" fill="#ffc83d" stroke="#a8620c" stroke-width="1.6"/><path d="M8 2.5l4 6 4-6" fill="#e04545" stroke="#8f1d1d" stroke-width="1.2"/><text x="12" y="17.3" text-anchor="middle" font-size="12" font-weight="800" fill="#7a4a0a" font-family="sans-serif">1</text>',
+  m2: '<circle cx="12" cy="13" r="8.5" fill="#d7dde8" stroke="#6b7689" stroke-width="1.6"/><path d="M8 2.5l4 6 4-6" fill="#4f8cff" stroke="#1d3f94" stroke-width="1.2"/><text x="12" y="17.3" text-anchor="middle" font-size="12" font-weight="800" fill="#4a5568" font-family="sans-serif">2</text>',
+  m3: '<circle cx="12" cy="13" r="8.5" fill="#e0a070" stroke="#8a5a30" stroke-width="1.6"/><path d="M8 2.5l4 6 4-6" fill="#43d17c" stroke="#16743c" stroke-width="1.2"/><text x="12" y="17.3" text-anchor="middle" font-size="12" font-weight="800" fill="#5a3418" font-family="sans-serif">3</text>'
+};
+var EMO = {"🪙": "coin", "💎": "gem", "👥": "people", "🔨": "hammer", "🗺": "map", "🏆": "trophy", "🎁": "gift", "💰": "bag", "⬆": "up", "⚡": "bolt", "📦": "box", "🗑": "trash", "🔒": "lock", "⭐": "star", "🎉": "star", "🏙": "city", "🏗": "build", "✅": "ok", "⚠": "warn", "🥇": "m1", "🥈": "m2", "🥉": "m3"};
+function ico(n) { return '<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">' + IC[n] + '</svg>'; }
+var EMO_RE = /(🪙|💎|👥|🔨|🗺|🏆|🎁|💰|⬆|⚡|📦|🗑|🔒|⭐|🎉|🏙|🏗|✅|⚠|🥇|🥈|🥉)\uFE0F?/g;
+function E(str) { return String(str).replace(EMO_RE, function (m, g) { return ico(EMO[g]); }).replace(/\uFE0F/g, ""); }
+["hud", "bar", "ghostbar", "landbar", "visit", "load"].forEach(function (id) { var el = document.getElementById(id); if (el) el.innerHTML = E(el.innerHTML); });
 function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]; }); }
 function fmt(n) {
   n = Math.floor(n);
@@ -21791,7 +21943,7 @@ function dur(s) {
 }
 function haptic(k) { try { if (TG && TG.HapticFeedback) { k === "ok" ? TG.HapticFeedback.notificationOccurred("success") : k === "err" ? TG.HapticFeedback.notificationOccurred("error") : TG.HapticFeedback.impactOccurred("light"); } } catch (e) {} }
 var toastT = 0;
-function toast(m) { var t = $("toast"); t.textContent = m; t.classList.add("on"); clearTimeout(toastT); toastT = setTimeout(function () { t.classList.remove("on"); }, 2300); }
+function toast(m) { var t = $("toast"); t.innerHTML = E(esc(m)); t.classList.add("on"); clearTimeout(toastT); toastT = setTimeout(function () { t.classList.remove("on"); }, 2300); }
 
 // ---------------- API ----------------
 function api(act, extra) {
@@ -21853,16 +22005,14 @@ function toTile(px, py) {
   return [(u + v) / 2, (v - u) / 2];
 }
 function clampCam() {
-  var lim = (N * TW / 2) * 1.05;
-  cam.x = Math.max(-lim, Math.min(lim, cam.x));
-  cam.y = Math.max(-TH * 2, Math.min(N * TH + TH * 2, cam.y));
+  cam.x = Math.max(-MAXC * TW, Math.min(MAXC * TW, cam.x));
+  cam.y = Math.max(-MAXC * TH, Math.min(MAXC * TH, cam.y));
 }
 function resize() {
   DPR = Math.min(2, window.devicePixelRatio || 1);
   W = window.innerWidth; H = window.innerHeight;
   cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
-  var minZ = Math.min(W / (N * TW * 1.05), 0.45);
-  if (cam.z < minZ) cam.z = minZ;
+  if (cam.z < MINZ) cam.z = MINZ;
 }
 window.addEventListener("resize", resize);
 
@@ -21887,9 +22037,10 @@ function box(gx, gy, gw, gh, h, col, z0) {
   var A = P(gx, gy), B = P(gx + gw, gy), C = P(gx + gw, gy + gh), D = P(gx, gy + gh);
   var A2 = up(A, z0 + h), B2 = up(B, z0 + h), C2 = up(C, z0 + h), D2 = up(D, z0 + h);
   var Cb = up(C, z0), Db = up(D, z0), Bb = up(B, z0);
-  poly([D2, C2, Cb, Db], shade(col, 0.78));   // chap devor
-  poly([C2, B2, Bb, Cb], shade(col, 0.62));   // o'ng devor
-  poly([A2, B2, C2, D2], shade(col, 1.12));   // tom
+  var ol = "rgba(18,28,50,.3)";
+  poly([D2, C2, Cb, Db], shade(col, 0.78), ol);   // chap devor
+  poly([C2, B2, Bb, Cb], shade(col, 0.62), ol);   // o'ng devor
+  poly([A2, B2, C2, D2], shade(col, 1.12), ol);   // tom
   return {A: A, B: B, C: C, D: D, A2: A2, B2: B2, C2: C2, D2: D2, Cb: Cb, Db: Db, Bb: Bb, z0: z0, h: h};
 }
 // Devor sirtidagi to'rtburchak: e - devor qirrasi (ikki nuqta pastda), u/v - 0..1
@@ -21932,6 +22083,45 @@ function tree(cx, cy, s, col) {
 }
 function stripes(p0, p1, h, v0, v1, c1, c2, n) {
   for (var i = 0; i < n; i++) wallRect(p0, p1, h, i / n, (i + 1) / n, v0, v1, i % 2 ? c1 : c2);
+}
+
+// ---------------- Kichik rasmlar (bino rasmi menyu uchun) ----------------
+var THUMBS = {};
+function thumb(k, lv) {
+  var key = k + "_" + (lv || 1);
+  if (THUMBS[key]) return THUMBS[key];
+  var d = S.cat[k], sz = 128, c = document.createElement("canvas"); c.width = c.height = sz;
+  var saved = ctx; ctx = c.getContext("2d");
+  var hm = (HMAX[k] || 40) + 6, left = -d.h * TW / 2, right = d.w * TW / 2, top = -hm, bot = (d.w + d.h) * TH / 2 + 4;
+  var bw = right - left, bh = bot - top, sc = Math.min((sz - 8) / bw, (sz - 8) / bh);
+  ctx.save(); ctx.translate(sz / 2 - (left + right) / 2 * sc, sz / 2 - (top + bot) / 2 * sc); ctx.scale(sc, sc);
+  try { if (k === "road") { drawRoad([0, "road", 0, 0, 1, 0], {}); } else { drawBuilding([0, k, 0, 0, lv || 1, 0], 1, 0); } } catch (er) {}
+  ctx.restore(); ctx = saved;
+  THUMBS[key] = c.toDataURL("image/png");
+  return THUMBS[key];
+}
+function bimg(k, lv) { return '<img class="bi" alt="" src="' + thumb(k, lv) + '">'; }
+
+// ---------------- Odamlar ----------------
+var SHIRT = ["#e5484d", "#3b82f6", "#f5b301", "#2fae63", "#9b59b6", "#ff8a3d", "#14b8c4"], SKIN = ["#f2c9a0", "#d9a273", "#a8754a", "#f7d9bd"], HAIR = ["#3a2a1a", "#1c1c1c", "#8a5a2b", "#d8b04a"];
+function person(wx, wy, shirt, ph, skin, hair, hat) {
+  var p = P(wx, wy), x = p[0], y = p[1], sw = Math.sin(ph) * 2.2;
+  ctx.fillStyle = "rgba(0,0,0,.22)"; ctx.beginPath(); ctx.ellipse(x, y, 5.5, 2.6, 0, 0, 7); ctx.fill();
+  ctx.fillStyle = "#2b3a67";
+  ctx.fillRect(x - 3.2, y - 7, 2.7, 7 - Math.max(0, -sw)); ctx.fillRect(x + 0.5, y - 7, 2.7, 7 - Math.max(0, sw));
+  ctx.fillStyle = shirt; ctx.fillRect(x - 3.7, y - 13.5, 7.4, 7); ctx.fillStyle = shade(shirt, 0.78); ctx.fillRect(x + 0.6, y - 13.5, 3.1, 7);
+  ctx.fillStyle = skin; ctx.fillRect(x - 5.6, y - 13 + sw * 0.35, 1.9, 5); ctx.fillRect(x + 3.7, y - 13 - sw * 0.35, 1.9, 5);
+  ctx.fillRect(x - 3, y - 19.5, 6, 6);
+  ctx.fillStyle = hat || hair; ctx.fillRect(x - 3.3, y - 20.2, 6.6, hat ? 3.4 : 2.6);
+  if (hat) ctx.fillRect(x - 4.2, y - 17.2, 8.4, 1.2);
+  ctx.fillStyle = "#1a1a1a"; ctx.fillRect(x - 1.8, y - 16.2, 1, 1); ctx.fillRect(x + 0.8, y - 16.2, 1, 1);
+}
+function cico(n, x, y, s) {
+  ctx.save(); ctx.translate(x, y); ctx.scale(s / 24, s / 24); ctx.translate(-12, -12);
+  if (n === "coin") { ctx.fillStyle = "#ffc83d"; ctx.strokeStyle = "#a8620c"; ctx.lineWidth = 1.8; ctx.beginPath(); ctx.arc(12, 12, 10, 0, 7); ctx.fill(); ctx.stroke(); ctx.fillStyle = "#e39a1c"; ctx.fillRect(10.5, 7, 3, 10); }
+  else if (n === "hammer") { ctx.rotate(0.6); ctx.translate(6, -2); ctx.fillStyle = "#b9854e"; ctx.fillRect(10, 8, 4, 14); ctx.fillStyle = "#aab4c4"; ctx.strokeStyle = "#4a5568"; ctx.lineWidth = 1.3; ctx.fillRect(3, 3, 15, 7); ctx.strokeRect(3, 3, 15, 7); }
+  else if (n === "up") { ctx.fillStyle = "#43d17c"; ctx.strokeStyle = "#16743c"; ctx.lineWidth = 1.6; ctx.beginPath(); ctx.moveTo(12, 3); ctx.lineTo(20, 12); ctx.lineTo(15, 12); ctx.lineTo(15, 21); ctx.lineTo(9, 21); ctx.lineTo(9, 12); ctx.lineTo(4, 12); ctx.closePath(); ctx.fill(); ctx.stroke(); }
+  ctx.restore();
 }
 
 // ---------------- Binolar ----------------
@@ -22110,15 +22300,21 @@ function roadsChanged() {
   S.roadKey = key; roadSet = {};
   curBuildings().forEach(function (b) { if (b[1] === "road") roadSet[b[2] + "," + b[3]] = 1; });
   var tiles = Object.keys(roadSet), want = Math.min(10, Math.floor(tiles.length / 5));
-  S.cars = [];
+  S.cars = []; S.peds = [];
+  var pw = Math.min(16, Math.floor(tiles.length / 2));
+  for (var pi = 0; pi < pw; pi++) {
+    var pk = tiles[Math.floor(Math.random() * tiles.length)].split(",");
+    S.peds.push({x: +pk[0], y: +pk[1], px: +pk[0], py: +pk[1], tx: +pk[0], ty: +pk[1], t: Math.random(), v: 0.45 + Math.random() * 0.2, side: pi % 2 ? 0.3 : -0.3, sh: SHIRT[pi % SHIRT.length], sk: SKIN[pi % SKIN.length], hr: HAIR[(pi * 3) % HAIR.length], ph: Math.random() * 6});
+  }
   for (var i = 0; i < want; i++) {
     var tk = tiles[Math.floor(Math.random() * tiles.length)].split(",");
     S.cars.push({x: +tk[0], y: +tk[1], px: +tk[0], py: +tk[1], tx: +tk[0], ty: +tk[1], t: 1, col: ["#e5484d", "#3b82f6", "#f5b301", "#2fae63", "#9b59b6", "#ffffff"][i % 6]});
   }
 }
 function stepCars(dt) {
-  S.cars.forEach(function (c) {
-    c.t += dt * 0.9;
+  (S.peds || []).forEach(function (c) { c.ph += dt * 9; });
+  S.cars.concat(S.peds || []).forEach(function (c) {
+    c.t += dt * (c.v || 0.9);
     while (c.t >= 1) {
       c.t -= 1; c.px = c.tx; c.py = c.ty;
       var opts = [[1, 0], [-1, 0], [0, 1], [0, -1]].filter(function (dv) { return roadSet[(c.px + dv[0]) + "," + (c.py + dv[1])]; });
@@ -22144,41 +22340,77 @@ function groundTile(x, y, col) {
 }
 function hash(x, y) { var h = (x * 374761393 + y * 668265263) ^ 0x5bd1e995; h = (h ^ (h >> 13)) * 1274126177; return ((h ^ (h >> 16)) >>> 0) / 4294967295; }
 var FLOW = ["#ff7eb6", "#ffe14a", "#ffffff", "#b388ff"];
-function drawSea(t) {
-  for (var i = 0; i < 70; i++) {
-    var gx = -8 + hash(i, 3) * (N + 16), gy = -8 + hash(i, 7) * (N + 16);
-    if (gx > -1.5 && gx < N + 1.5 && gy > -1.5 && gy < N + 1.5) continue;
-    var p = P(gx, gy), a = 0.25 + 0.25 * Math.sin(t / 700 + i);
-    ctx.strokeStyle = "rgba(255,255,255," + a + ")"; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.arc(p[0], p[1], 9, Math.PI * 1.15, Math.PI * 1.85); ctx.stroke();
-    ctx.beginPath(); ctx.arc(p[0] + 14, p[1] + 4, 6, Math.PI * 1.15, Math.PI * 1.85); ctx.stroke();
-  }
+var OWN = {}, OWNSRC = null;
+function curOwn() { return S.vis ? (S.vis.own || []) : (S.st ? S.st.own : []); }
+function ownSync() {
+  var src = curOwn();
+  if (src === OWNSRC) return;
+  OWNSRC = src; OWN = {}; S.gridKey = "";
+  src.forEach(function (r) { for (var i = 0; i < r[2]; i++) for (var j = 0; j < r[3]; j++) OWN[(r[0] + i) + "," + (r[1] + j)] = 1; });
 }
+function isOwn(x, y) { return OWN[x + "," + y] === 1; }
+function viewRange() {
+  var c = [toTile(0, 0), toTile(W, 0), toTile(0, H), toTile(W, H)], x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9;
+  c.forEach(function (q) { x0 = Math.min(x0, q[0]); x1 = Math.max(x1, q[0]); y0 = Math.min(y0, q[1]); y1 = Math.max(y1, q[1]); });
+  return {x0: Math.floor(x0) - 2, x1: Math.ceil(x1) + 3, y0: Math.floor(y0) - 2, y1: Math.ceil(y1) + 3};
+}
+var GRID = null;
+function gridFor(R) {
+  var key = R.x0 + "," + R.x1 + "," + R.y0 + "," + R.y1;
+  if (GRID && S.gridKey === key) return GRID;
+  S.gridKey = key;
+  var gx0 = R.x0 - 1, gy0 = R.y0 - 1, gw = R.x1 - R.x0 + 3, gh = R.y1 - R.y0 + 3, g = new Uint8Array(gw * gh);
+  for (var x = 0; x < gw; x++) for (var y = 0; y < gh; y++) g[x * gh + y] = OWN[(gx0 + x) + "," + (gy0 + y)] === 1 ? 1 : 0;
+  GRID = {g: g, gx0: gx0, gy0: gy0, gh: gh, R: R};
+  return GRID;
+}
+function gOwn(G, x, y) { return G.g[(x - G.gx0) * G.gh + (y - G.gy0)] === 1; }
+var WILD = [];
 function drawGround(t) {
-  drawSea(t);
-  var m = 0.8, a0 = P(-m, -m), b0 = P(N + m, -m), c0 = P(N + m, N + m), d0 = P(-m, N + m), dep = 30;
-  // orol "tuprog'i" va plyaj
-  poly([d0, c0, [c0[0], c0[1] + dep], [d0[0], d0[1] + dep]], "#8a6a45");
-  poly([c0, b0, [b0[0], b0[1] + dep], [c0[0], c0[1] + dep]], "#6b4e30");
-  poly([a0, b0, c0, d0], "#f3e2aa");
-  var a = P(0, 0), b = P(N, 0), c = P(N, N), d = P(0, N);
-  poly([a, b, c, d], "#6fcf7b");
-  for (var x = 0; x < N; x++) for (var y = 0; y < N; y++) {
-    if ((x + y) % 2 === 0) groundTile(x, y, "rgba(255,255,255,.08)");
-    var r = hash(x + 50, y + 90);
-    if (r < 0.1) { var q = P(x + 0.3 + r * 3, y + 0.5); ctx.fillStyle = FLOW[(x + y) % 4]; ctx.beginPath(); ctx.arc(q[0], q[1], 2.2, 0, 7); ctx.fill(); }
+  ownSync();
+  var R = viewRange(), G = gridFor(R), tl = toWorldScreen(0, 0), br = toWorldScreen(W, H), x, y;
+  ctx.fillStyle = "#5aa55f"; ctx.fillRect(tl[0] - 8, tl[1] - 8, br[0] - tl[0] + 16, br[1] - tl[1] + 16);
+  WILD = [];
+  var buy = S.mode === "buy", show = !S.vis && !S.mode;
+  for (x = R.x0; x <= R.x1; x++) for (y = R.y0; y <= R.y1; y++) {
+    if (gOwn(G, x, y)) {
+      groundTile(x, y, (x + y) % 2 === 0 ? "#7ddc89" : "#6fcf7b");
+      var r = hash(x + 50, y + 90);
+      if (r < 0.1) { var q = P(x + 0.3 + r * 3, y + 0.5); ctx.fillStyle = FLOW[(x + y) & 3]; ctx.beginPath(); ctx.arc(q[0], q[1], 2.2, 0, 7); ctx.fill(); }
+    } else {
+      var fr = gOwn(G, x - 1, y) || gOwn(G, x + 1, y) || gOwn(G, x, y - 1) || gOwn(G, x, y + 1);
+      if (fr && (buy || show)) {
+        groundTile(x, y, buy ? "rgba(255,225,80,.34)" : "rgba(255,255,255,.12)");
+        if (show && cam.z >= 0.7) { var c = P(x + 0.5, y + 0.5); ctx.fillStyle = "rgba(255,255,255,.75)"; ctx.font = "bold 18px sans-serif"; ctx.textAlign = "center"; ctx.fillText("+", c[0], c[1] + 6); }
+      }
+      var h = hash(x, y);
+      if (h < 0.28) WILD.push({x: x, y: y, r: h / 0.28});
+    }
+  }
+  for (x = R.x0; x <= R.x1; x++) for (y = R.y0; y <= R.y1; y++) {
+    if (!gOwn(G, x, y)) continue;
+    var e0, e1;
+    if (!gOwn(G, x + 1, y)) { e0 = P(x + 1, y); e1 = P(x + 1, y + 1); poly([e0, e1, [e1[0], e1[1] + 11], [e0[0], e0[1] + 11]], "#6b4e30"); }
+    if (!gOwn(G, x, y + 1)) { e0 = P(x, y + 1); e1 = P(x + 1, y + 1); poly([e0, e1, [e1[0], e1[1] + 11], [e0[0], e0[1] + 11]], "#8a6a45"); }
+  }
+  ctx.strokeStyle = "#2f8f4d"; ctx.lineWidth = 2.5; ctx.beginPath();
+  for (x = R.x0; x <= R.x1; x++) for (y = R.y0; y <= R.y1; y++) {
+    if (!gOwn(G, x, y)) continue;
+    var a, b2;
+    if (!gOwn(G, x + 1, y)) { a = P(x + 1, y); b2 = P(x + 1, y + 1); ctx.moveTo(a[0], a[1]); ctx.lineTo(b2[0], b2[1]); }
+    if (!gOwn(G, x - 1, y)) { a = P(x, y); b2 = P(x, y + 1); ctx.moveTo(a[0], a[1]); ctx.lineTo(b2[0], b2[1]); }
+    if (!gOwn(G, x, y + 1)) { a = P(x, y + 1); b2 = P(x + 1, y + 1); ctx.moveTo(a[0], a[1]); ctx.lineTo(b2[0], b2[1]); }
+    if (!gOwn(G, x, y - 1)) { a = P(x, y); b2 = P(x + 1, y); ctx.moveTo(a[0], a[1]); ctx.lineTo(b2[0], b2[1]); }
+  }
+  ctx.stroke();
+  if (buy && S.buyBlock) {
+    var bi = blockInfo();
+    for (var i = 0; i < bi.s; i++) for (var j = 0; j < bi.s; j++) {
+      var tx = bi.ox + i, ty = bi.oy + j;
+      groundTile(tx, ty, isOwn(tx, ty) ? "rgba(90,160,255,.4)" : (bi.ok ? "rgba(255,200,40,.7)" : "rgba(255,93,93,.65)"));
+    }
   }
 }
-function deco() {
-  var out = [];
-  for (var x = 0; x < N; x++) for (var y = 0; y < N; y++) {
-    if (x > 1 && x < N - 2 && y > 1 && y < N - 2) continue;
-    var r = hash(x, y);
-    if (r < 0.45) out.push({x: x, y: y, r: r});
-  }
-  return out;
-}
-var DECO = deco();
 var occCache = null;
 function occMap() {
   var o = {};
@@ -22187,10 +22419,12 @@ function occMap() {
 }
 function fitsClient(k, x, y, ignore) {
   var d = S.cat[k];
-  if (x < 0 || y < 0 || x + d.w > N || y + d.h > N) return false;
+  ownSync();
+  var i, j;
+  for (i = 0; i < d.w; i++) for (j = 0; j < d.h; j++) if (!isOwn(x + i, y + j)) return false;
   var occ = {};
   S.st.b.forEach(function (b) { if (b[0] === ignore) return; var dd = S.cat[b[1]]; for (var i = 0; i < dd.w; i++) for (var j = 0; j < dd.h; j++) occ[(b[2] + i) + "," + (b[3] + j)] = 1; });
-  for (var i = 0; i < d.w; i++) for (var j = 0; j < d.h; j++) if (occ[(x + i) + "," + (y + j)]) return false;
+  for (i = 0; i < d.w; i++) for (j = 0; j < d.h; j++) if (occ[(x + i) + "," + (y + j)]) return false;
   return true;
 }
 
@@ -22209,18 +22443,18 @@ function draw(t) {
   roads.forEach(function (b) { drawRoad(b, roadSet); });
   // yer bezaklari (chekka daraxtlar)
   var list = [];
-  DECO.forEach(function (q) { list.push({k: (q.x + q.y) + 0.5, f: function () { var p = P(q.x + 0.5, q.y + 0.5); tree(p[0], p[1], 0.9 + q.r, q.r < 0.2 ? "#2f9e4f" : "#3fb85f"); }}); });
+  WILD.forEach(function (q) { list.push({k: (q.x + q.y) + 0.5, f: function () { var p = P(q.x + 0.5, q.y + 0.5); tree(p[0], p[1], 0.8 + q.r * 0.5, q.r < 0.5 ? "#2f9e4f" : "#3fb85f"); }}); });
   items.forEach(function (b) {
     var d = S.cat[b[1]], rem = bRem(b), prog = rem > 0 ? Math.max(0.12, 1 - rem / Math.max(1, d.secs)) : 1;
     list.push({k: b[2] + b[3] + d.w + d.h - 0.2, f: function () {
       drawBuilding(b, rem > 0 ? 0.3 + 0.55 * prog : 1, t);
-      if (rem > 0) scaffold(b, d);
+      if (rem > 0) { scaffold(b, d); person(b[2] + d.w * 0.55 + Math.sin(t / 500) * 0.12, b[3] + d.h + 0.2, "#ff8a3d", t / 140, "#f2c9a0", "#3a2a1a", "#ffd23f"); }
       var cx = P(b[2] + d.w / 2, b[3] + d.h / 2);
       var top = cx[1] - (HMAX[b[1]] || 40) * (rem > 0 ? 0.6 : 1);
       if (rem > 0) {
         ctx.fillStyle = "rgba(10,18,36,.85)"; ctx.fillRect(cx[0] - 24, top - 14, 48, 12);
         ctx.fillStyle = "#43d17c"; ctx.fillRect(cx[0] - 23, top - 13, 46 * prog, 10);
-        ctx.fillStyle = "#fff"; ctx.font = "bold 9px sans-serif"; ctx.textAlign = "center"; ctx.fillText("🔨 " + dur(rem), cx[0], top - 5);
+        ctx.fillStyle = "#fff"; ctx.font = "bold 9px sans-serif"; ctx.textAlign = "center"; ctx.fillText(dur(rem), cx[0] + 6, top - 5); cico("hammer", cx[0] - 17, top - 8, 10);
       } else if (b[4] > 1) {
         ctx.fillStyle = "#ffc83d"; ctx.beginPath(); ctx.arc(cx[0] + d.w * 12, top + 4, 8, 0, 7); ctx.fill();
         ctx.fillStyle = "#4a2600"; ctx.font = "bold 10px sans-serif"; ctx.textAlign = "center"; ctx.fillText(b[4], cx[0] + d.w * 12, top + 7.5);
@@ -22232,6 +22466,10 @@ function draw(t) {
     }});
   });
   S.cars.forEach(function (c) { list.push({k: c.px + c.py + 1.1 + (c.tx + c.ty - c.px - c.py) * c.t * 0.5, f: function () { drawCar(c); }}); });
+  (S.peds || []).forEach(function (c) {
+    var alongX = c.tx !== c.px, wx = c.px + (c.tx - c.px) * c.t + 0.5 + (alongX ? 0 : c.side), wy = c.py + (c.ty - c.py) * c.t + 0.5 + (alongX ? c.side : 0);
+    list.push({k: wx + wy + 0.9, f: function () { person(wx, wy, c.sh, c.ph, c.sk, c.hr); }});
+  });
   list.sort(function (a, b) { return a.k - b.k; });
   list.forEach(function (it) { it.f(); });
   // arvoh (qurish / ko'chirish)
@@ -22249,12 +22487,14 @@ function draw(t) {
   S.fx.forEach(function (f) {
     var p = (now - f.t0) / 1400, q = P(f.x, f.y);
     ctx.globalAlpha = 1 - p; ctx.fillStyle = f.c; ctx.font = "bold 16px sans-serif"; ctx.textAlign = "center";
-    ctx.strokeStyle = "rgba(0,0,0,.5)"; ctx.lineWidth = 3; ctx.strokeText(f.s, q[0], q[1] - 30 - p * 50); ctx.fillText(f.s, q[0], q[1] - 30 - p * 50);
+    var tw = f.s ? ctx.measureText(f.s).width : 0, fy = q[1] - 30 - p * 50;
+    ctx.strokeStyle = "rgba(0,0,0,.5)"; ctx.lineWidth = 3; ctx.strokeText(f.s, q[0] - (f.i ? 8 : 0), fy); ctx.fillText(f.s, q[0] - (f.i ? 8 : 0), fy);
+    if (f.i) cico(f.i, q[0] + tw / 2 - 8 + 12, fy - 5, 16);
     ctx.globalAlpha = 1;
   });
   ctx.restore();
 }
-function fx(x, y, s, c) { (S.fx = S.fx || []).push({x: x, y: y, s: s, c: c || "#ffe14a", t0: performance.now()}); }
+function fx(x, y, s, c, i) { (S.fx = S.fx || []).push({x: x, y: y, s: s, c: c || "#ffe14a", i: i, t0: performance.now()}); }
 
 function loop(t) {
   var dt = Math.min(0.1, (t - (S.last || t)) / 1000); S.last = t;
@@ -22269,7 +22509,8 @@ function loop(t) {
 var ptrs = {}, drag = null, pinch = null;
 function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
 cv.addEventListener("pointerdown", function (e) {
-  cv.setPointerCapture(e.pointerId);
+  if (e.isPrimary) { ptrs = {}; pinch = null; drag = null; }
+  try { cv.setPointerCapture(e.pointerId); } catch (er) {}
   ptrs[e.pointerId] = {x: e.clientX, y: e.clientY};
   var ks = Object.keys(ptrs);
   if (ks.length === 1) drag = {sx: e.clientX, sy: e.clientY, cx: cam.x, cy: cam.y, moved: false};
@@ -22281,7 +22522,7 @@ cv.addEventListener("pointermove", function (e) {
   var ks = Object.keys(ptrs);
   if (ks.length >= 2 && pinch) {
     var nd = dist(ptrs[ks[0]], ptrs[ks[1]]);
-    cam.z = Math.max(Math.min(W / (N * TW * 1.05), 0.45), Math.min(2.2, pinch.z * nd / pinch.d));
+    cam.z = Math.max(MINZ, Math.min(MAXZ, pinch.z * nd / pinch.d));
   } else if (drag) {
     var dx = e.clientX - drag.sx, dy = e.clientY - drag.sy;
     if (!drag.moved && Math.hypot(dx, dy) > 8) drag.moved = true;
@@ -22299,9 +22540,10 @@ function endPtr(e) {
 }
 cv.addEventListener("pointerup", endPtr);
 cv.addEventListener("pointercancel", endPtr);
+window.addEventListener("blur", function () { ptrs = {}; pinch = null; drag = null; });
 cv.addEventListener("wheel", function (e) {
   e.preventDefault();
-  cam.z = Math.max(Math.min(W / (N * TW * 1.05), 0.45), Math.min(2.2, cam.z * (e.deltaY < 0 ? 1.12 : 0.89)));
+  cam.z = Math.max(MINZ, Math.min(MAXZ, cam.z * (e.deltaY < 0 ? 1.12 : 0.89)));
 }, {passive: false});
 
 function hitBuilding(px, py) {
@@ -22327,20 +22569,28 @@ function pointIn(x, y, pts) {
 }
 function onTap(px, py) {
   if (!S.st || !S.cat) return;
+  if (S.mode === "buy") {
+    var tb = toTile(px, py);
+    S.buyBlock.x = Math.floor(tb[0]); S.buyBlock.y = Math.floor(tb[1]);
+    haptic(); updLand(); return;
+  }
   if (S.mode) {
     var tl = toTile(px, py), d = S.cat[S.ghost.t];
-    S.ghost.x = Math.max(0, Math.min(N - d.w, Math.floor(tl[0] - (d.w - 1) / 2 + 0.0)));
-    S.ghost.y = Math.max(0, Math.min(N - d.h, Math.floor(tl[1] - (d.h - 1) / 2 + 0.0)));
+    S.ghost.x = Math.floor(tl[0] - (d.w - 1) / 2);
+    S.ghost.y = Math.floor(tl[1] - (d.h - 1) / 2);
     haptic(); ghostInfo(); return;
   }
   var b = hitBuilding(px, py);
   if (b) { S.sel = b[0]; haptic(); S.vis ? visitInfo(b) : buildingSheet(b); }
-  else { S.sel = null; closeSheet(); }
+  else {
+    S.sel = null; closeSheet();
+    if (!S.vis) { var tt = toTile(px, py), fx0 = Math.floor(tt[0]), fy0 = Math.floor(tt[1]); ownSync(); if (!isOwn(fx0, fy0)) startBuy(fx0, fy0); }
+  }
 }
 
 // ---------------- Panellar ----------------
 function openSheet(html) {
-  $("sheet").innerHTML = '<button class="x" id="shX">✕</button>' + html;
+  $("sheet").innerHTML = '<button class="x" id="shX">✕</button>' + E(html);
   $("sheet").classList.add("on"); $("sheetbg").style.display = "block";
   $("shX").onclick = closeSheet;
 }
@@ -22353,7 +22603,7 @@ function buildMenu() {
   var s = S.st, h = '<h2>🏗 Qurish</h2><div class="sub">' + s.lv + '-daraja · 🪙 ' + fmt(s.coins) + ' · 💎 ' + s.gems + '</div><div class="grid">';
   Object.keys(S.cat).forEach(function (k) {
     var d = S.cat[k], lock = s.lv < d.lv;
-    h += '<div class="card' + (lock ? " lk" : "") + '" data-k="' + k + '"><div class="em">' + d.e + '</div><div class="nm">' + esc(d.n) + '</div><div class="pr">' + costTxt(d) + '</div><div class="in">' +
+    h += '<div class="card' + (lock ? " lk" : "") + '" data-k="' + k + '"><div class="em">' + bimg(k) + '</div><div class="nm">' + esc(d.n) + '</div><div class="pr">' + costTxt(d) + '</div><div class="in">' +
       (d.inc ? "+" + fmt(d.inc) + "/soat" : (d.bonus ? "+" + Math.round(d.bonus * 100) + "% daromad" : (d.cap ? "+ombor" : "bezak"))) + (d.pop ? " · 👥" + d.pop : "") + '</div>' +
       (lock ? '<div class="lkb">🔒 ' + d.lv + '-daraja</div>' : "") + '</div>';
   });
@@ -22367,8 +22617,10 @@ function buildMenu() {
   });
 }
 function startPlace(k) {
-  var d = S.cat[k], w = toTile(W / 2, H / 2);
-  S.mode = "place"; S.ghost = {t: k, x: Math.max(0, Math.min(N - d.w, Math.floor(w[0]))), y: Math.max(0, Math.min(N - d.h, Math.floor(w[1])))};
+  var d = S.cat[k], w = toTile(W / 2, H / 2), gx = Math.floor(w[0]), gy = Math.floor(w[1]);
+  ownSync();
+  if (!isOwn(gx, gy) && S.st.own.length) { var r0 = S.st.own[0]; gx = r0[0] + Math.floor(r0[2] / 2); gy = r0[1] + Math.floor(r0[3] / 2); }
+  S.mode = "place"; S.ghost = {t: k, x: gx, y: gy};
   closeSheet(); $("bar").style.display = "none"; $("ghostbar").style.display = "flex"; ghostInfo();
 }
 function startMove(b) {
@@ -22377,17 +22629,17 @@ function startMove(b) {
 }
 function ghostInfo() {
   var d = S.cat[S.ghost.t];
-  $("gT").innerHTML = d.e + " " + esc(d.n) + "<small>" + (S.mode === "move" ? "Yangi joyni tanlang" : costTxt(d) + " · joyni bosib tanlang") + "</small>";
+  $("gT").innerHTML = bimg(S.ghost.t) + esc(d.n) + "<small>" + E(S.mode === "move" ? "Yangi joyni tanlang" : costTxt(d) + " · joyni bosib tanlang") + "</small>";
 }
 function endMode() { S.mode = null; S.ghost = null; $("ghostbar").style.display = "none"; $("bar").style.display = "flex"; }
 $("gNo").onclick = function () { endMode(); };
 $("gOk").onclick = function () {
   if (!S.ghost) return;
-  if (!S.ghostOk) { toast("Bu yerga bo'lmaydi (band yoki chegaradan tashqari)."); haptic("err"); return; }
+  if (!S.ghostOk) { toast("Bu yerga bo'lmaydi (band yoki sizning yeringiz emas)."); haptic("err"); return; }
   var g = S.ghost, m = S.mode;
   if (m === "place") {
     act("build", {t: g.t, x: g.x, y: g.y}).then(function (j) {
-      if (j && j.ok) { fx(g.x + 0.5, g.y + 0.5, "🔨", "#fff"); haptic("ok"); var d = S.cat[g.t]; if (g.t === "road") { return; } endMode(); }
+      if (j && j.ok) { fx(g.x + 0.5, g.y + 0.5, "", "#fff", "hammer"); haptic("ok"); var d = S.cat[g.t]; if (g.t === "road") { return; } endMode(); }
       else if (j && j.error === "coins") { endMode(); toast("Tanga yetarli emas — daromad yig'ing 💰"); }
       else if (j && j.error && j.error !== "spot") endMode();
     });
@@ -22399,7 +22651,7 @@ function incOf(k, lv) { var d = S.cat[k]; return d.inc * [1, 1.5, 2.2, 3.2, 4.6]
 function upCost(k, lv) { return Math.round(S.cat[k].cost * Math.pow(1.7, lv)); }
 function buildingSheet(b) {
   var k = b[1], d = S.cat[k], lv = b[4], rem = bRem(b), s = S.st;
-  var h = '<h2>' + d.e + " " + esc(d.n) + ' <span style="color:var(--gold)">· ' + lv + "-daraja</span></h2>";
+   var h = '<h2>' + bimg(k) + esc(d.n) + ' <span style="color:var(--gold)">· ' + lv + "-daraja</span></h2>";
   if (rem > 0) {
     var need = Math.max(1, Math.ceil(rem / 60));
     h += '<div class="sub">🔨 Qurilmoqda — qoldi: ' + dur(rem) + '</div><div class="act"><button class="g" id="aFin">⚡ Tezlatish (💎 ' + need + ')</button></div>';
@@ -22421,20 +22673,20 @@ function buildingSheet(b) {
   openSheet(h);
   var el;
   if ((el = $("aFin"))) el.onclick = function () { act("finish", {i: b[0]}).then(function (j) { if (j && j.ok) { closeSheet(); haptic("ok"); } }); };
-  if ((el = $("aUp"))) el.onclick = function () { act("upgrade", {i: b[0]}).then(function (j) { if (j && j.ok) { fx(b[2] + d.w / 2, b[3] + d.h / 2, "⬆️ " + (lv + 1) + "-daraja", "#43d17c"); haptic("ok"); var nb = S.st.b.filter(function (x) { return x[0] === b[0]; })[0]; if (nb) buildingSheet(nb); } }); };
+  if ((el = $("aUp"))) el.onclick = function () { act("upgrade", {i: b[0]}).then(function (j) { if (j && j.ok) { fx(b[2] + d.w / 2, b[3] + d.h / 2, (lv + 1) + "-daraja", "#43d17c", "up"); haptic("ok"); var nb = S.st.b.filter(function (x) { return x[0] === b[0]; })[0]; if (nb) buildingSheet(nb); } }); };
   if ((el = $("aMv"))) el.onclick = function () { startMove(b); };
   if ((el = $("aSell"))) el.onclick = function () { if (!el.dataset.c) { el.dataset.c = 1; el.innerHTML = "Aniq sotilsinmi?<br>Ha, sotish"; return; } act("sell", {i: b[0]}).then(function (j) { if (j && j.ok) { closeSheet(); S.sel = null; haptic("ok"); } }); };
 }
 function visitInfo(b) {
   var d = S.cat[b[1]];
-  openSheet('<h2>' + d.e + " " + esc(d.n) + ' <span style="color:var(--gold)">· ' + b[4] + "-daraja</span></h2>" + (d.pop ? '<div class="kv"><span>Aholi</span><span>👥 ' + (d.pop * b[4]) + "</span></div>" : '<div class="sub">' + esc(S.vis.name) + " shahri</div>"));
+  openSheet('<h2>' + bimg(b[1]) + esc(d.n) + ' <span style="color:var(--gold)">· ' + b[4] + "-daraja</span></h2>" + (d.pop ? '<div class="kv"><span>Aholi</span><span>👥 ' + (d.pop * b[4]) + "</span></div>" : '<div class="sub">' + esc(S.vis.name) + " shahri</div>"));
 }
 $("bBuild").onclick = function () { if (S.vis) return; buildMenu(); };
 $("bCollect").onclick = function () {
   if (S.vis) return;
   var before = S.st.coins;
   act("collect").then(function (j) {
-    if (j && j.ok) { if (j.gain > 0) { var c = toTile(W / 2, H / 2); fx(Math.max(2, Math.min(N - 2, c[0])), Math.max(2, Math.min(N - 2, c[1])), "+" + fmt(j.gain) + " 🪙", "#ffe14a"); haptic("ok"); } else toast("Hozircha yig'ish uchun daromad yo'q."); }
+    if (j && j.ok) { if (j.gain > 0) { var c = toTile(W / 2, H / 2); fx(c[0], c[1], "+" + fmt(j.gain), "#ffe14a", "coin"); haptic("ok"); } else toast("Hozircha yig'ish uchun daromad yo'q."); }
   });
 };
 $("bDaily").onclick = function () {
@@ -22463,16 +22715,75 @@ function visit(u) {
   if (S.st && u === S.st.uid) { closeSheet(); return; }
   api("visit", {u: u}).then(function (j) {
     if (!j.ok) { toast(j.msg || "Xatolik"); return; }
-    S.vis = j.visit; roadsChanged(); closeSheet();
-    $("visit").style.display = "flex"; $("visitT").textContent = "🏙 " + j.visit.name + " · " + j.visit.lv + "-daraja";
-    $("bar").style.display = "none"; cam.x = 0; cam.y = (N / 2) * TH;
+    S.camSave = {x: cam.x, y: cam.y, z: cam.z}; S.vis = j.visit; roadsChanged(); closeSheet();
+    $("visit").style.display = "flex"; $("visitT").innerHTML = ico("city") + " " + esc(j.visit.name) + " · " + j.visit.lv + "-daraja";
+    $("bar").style.display = "none";
+    var ox0 = 1e9, ox1 = -1e9, oy0 = 1e9, oy1 = -1e9;
+    (j.visit.own || []).forEach(function (r) { ox0 = Math.min(ox0, r[0]); ox1 = Math.max(ox1, r[0] + r[2]); oy0 = Math.min(oy0, r[1]); oy1 = Math.max(oy1, r[1] + r[3]); });
+    if (ox0 > ox1) { ox0 = 0; ox1 = 24; oy0 = 0; oy1 = 24; }
+    var vcx = (ox0 + ox1) / 2, vcy = (oy0 + oy1) / 2;
+    cam.x = (vcx - vcy) * TW / 2; cam.y = (vcx + vcy) * TH / 2;
+    var span = Math.max(ox1 - ox0, oy1 - oy0); cam.z = Math.max(MINZ, Math.min(1.0, (Math.min(W, H) * 1.1) / (span * TW * 0.75)));
   });
 }
-$("visitBack").onclick = function () { S.vis = null; S.sel = null; roadsChanged(); $("visit").style.display = "none"; $("bar").style.display = "flex"; };
+$("visitBack").onclick = function () { if (S.camSave) { cam.x = S.camSave.x; cam.y = S.camSave.y; cam.z = S.camSave.z; } S.vis = null; S.sel = null; roadsChanged(); $("visit").style.display = "none"; $("bar").style.display = "flex"; };
+// ---------------- Yer sotib olish ----------------
+function blockInfo() {
+  var b = S.buyBlock, s = b.s, ox = b.x - Math.floor(s / 2), oy = b.y - Math.floor(s / 2), cnt = 0, touch = false, tp = S.st.tp, i, j;
+  ownSync();
+  for (i = 0; i < s; i++) for (j = 0; j < s; j++) {
+    var x = ox + i, y = oy + j;
+    if (!isOwn(x, y)) { cnt++; if (isOwn(x - 1, y) || isOwn(x + 1, y) || isOwn(x, y - 1) || isOwn(x, y + 1)) touch = true; }
+  }
+  var coins = 0;
+  for (i = 0; i < cnt; i++) coins += tp[0] + Math.floor(tp[1] * (S.st.ownn + i));
+  var inb = Math.abs(ox) <= MAXC - 6 && Math.abs(oy) <= MAXC - 6;
+  return {ox: ox, oy: oy, s: s, cnt: cnt, touch: touch, coins: coins, gems: Math.max(1, Math.ceil(coins / tp[2])), ok: cnt > 0 && touch && inb};
+}
+function updLand() {
+  if (S.mode !== "buy") return;
+  var bi = blockInfo(), st = S.st;
+  var msg = bi.cnt === 0 ? "Bu yer allaqachon sizniki" : (!bi.touch ? "Yangi yer sizning yeringizga tutashgan bo'lishi kerak" : bi.cnt + " katak · 🪙 " + fmt(bi.coins) + " yoki 💎 " + bi.gems);
+  $("lT").innerHTML = E("🗺 Yer sotib olish<small>" + msg + "</small>");
+  document.querySelectorAll("#lSz button").forEach(function (b) { b.classList.toggle("on", +b.getAttribute("data-s") === bi.s); });
+  $("lCoin").innerHTML = E("🪙 " + fmt(bi.coins)); $("lGem").innerHTML = E("💎 " + bi.gems);
+  $("lCoin").disabled = !bi.ok || st.coins < bi.coins; $("lGem").disabled = !bi.ok || st.gems < bi.gems;
+}
+function startBuy(x, y) {
+  if (S.vis || !S.st) return;
+  if (x === undefined) {
+    var c = toTile(W / 2, H / 2), R = viewRange(), best = null, bd = 1e18;
+    ownSync();
+    for (var a = R.x0; a <= R.x1; a++) for (var b = R.y0; b <= R.y1; b++) {
+      if (isOwn(a, b) || !(isOwn(a - 1, b) || isOwn(a + 1, b) || isOwn(a, b - 1) || isOwn(a, b + 1))) continue;
+      var dd = Math.hypot(a + 0.5 - c[0], b + 0.5 - c[1]);
+      if (dd < bd) { bd = dd; best = [a, b]; }
+    }
+    if (!best) { var r0 = S.st.own[0]; best = [r0[0] - 1, r0[1] + 1]; }
+    x = best[0]; y = best[1];
+  }
+  S.mode = "buy"; S.buyBlock = {x: x, y: y, s: S.buyBlock ? S.buyBlock.s : 1};
+  closeSheet(); $("bar").style.display = "none"; $("landbar").style.display = "flex"; updLand();
+}
+function endBuy() { S.mode = null; S.buyBlock = null; $("landbar").style.display = "none"; $("bar").style.display = "flex"; }
+$("bLand").onclick = function () { startBuy(); };
+$("lNo").onclick = endBuy;
+document.querySelectorAll("#lSz button").forEach(function (b) { b.onclick = function () { if (S.buyBlock) { S.buyBlock.s = +b.getAttribute("data-s"); updLand(); } }; });
+function doBuyLand(cur) {
+  var bi = blockInfo();
+  if (!bi.ok) { toast("Bu yerni sotib olib bo'lmaydi."); return; }
+  act("buytile", {x: bi.ox, y: bi.oy, w: bi.s, h: bi.s, cur: cur}).then(function (j) {
+    if (j && j.ok) { toast("✅ +" + j.bought + " katak yer sizniki!"); haptic("ok"); updLand(); }
+    else if (j && j.error === "coins") toast("Tanga yetarli emas — daromad yig'ing 💰");
+  });
+}
+$("lCoin").onclick = function () { doBuyLand("coins"); };
+$("lGem").onclick = function () { doBuyLand("gems"); };
+
 function shopSheet() {
   api("packs").then(function (j) {
     if (!j.ok) return;
-    var h = '<h2>💎 Gem do\'koni</h2><div class="sub">Gem bilan qurilishni tezlatish va maxsus binolar (Yodgorlik, Teleminora) sotib olish mumkin.</div>';
+    var h = '<h2>💎 Gem do\'koni</h2><div class="sub">Gem bilan qurilishni tezlatish, yer sotib olish va maxsus binolar (Yodgorlik, Teleminora) sotib olish mumkin.</div>';
     j.packs.forEach(function (p) { h += '<button class="big g" data-p="' + esc(p.id) + '">💎 ' + p.gems + ' gem &nbsp;—&nbsp; ' + p.stars + ' ⭐</button>'; });
     h += '<div class="sub" style="margin-top:12px">To\'lov Telegram Stars orqali amalga oshiriladi.</div>';
     openSheet(h);
@@ -22497,15 +22808,16 @@ function introSheet() {
     '<div class="kv"><span>2.</span><span>💰 Daromadni muntazam yig\'ing</span></div>' +
     '<div class="kv"><span>3.</span><span>⬆️ Binoni bosib yangilang</span></div>' +
     '<div class="kv"><span>4.</span><span>🏆 Reytingda boshqa shaharlarni ko\'ring</span></div>' +
-    '<div class="kv"><span>5.</span><span>🎁 Har kuni bonus oling</span></div><button class="big g" id="okb">Boshladik!</button>');
+    '<div class="kv"><span>5.</span><span>🗺 Yer — xarita cheksiz, yerni sotib olib shaharni kengaytiring</span></div><div class="kv"><span>6.</span><span>🎁 Har kuni bonus oling</span></div><button class="big g" id="okb">Boshladik!</button>');
   $("okb").onclick = closeSheet;
 }
 function boot() {
   resize();
+  cam.z = W < 520 ? 0.95 : 1.15;
   clampCam();
   api("state", {cat: 1}).then(function (j) {
     $("load").style.display = "none";
-    if (j.error) { $("load").style.display = "flex"; $("load").innerHTML = '<div class="l">⚠️</div>' + esc(j.error === "auth" ? "Sahifani Telegram ichidan oching." : (j.msg || "Xatolik yuz berdi.")); return; }
+    if (j.error) { $("load").style.display = "flex"; $("load").innerHTML = '<div class="l">' + ico("warn") + '</div>' + esc(j.error === "auth" ? "Sahifani Telegram ichidan oching." : (j.msg || "Xatolik yuz berdi.")); return; }
     applyState(j);
     if (j.gifts && j.gifts.length) j.gifts.forEach(function (g) { toast("🎁 Sovg'a: " + (g.gems ? "💎" + g.gems + " " : "") + (g.coins ? "🪙" + g.coins : "") + (g.text ? " — " + g.text : "")); });
     if (j.first) setTimeout(introSheet, 400);
