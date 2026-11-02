@@ -11499,7 +11499,7 @@ def setup_kino_bot(dp: Dispatcher, token: str):
             await message.answer(f"⚠️ Kod {code} allaqachon band: <b>{html_escape(kino_title(code, existing))}</b>. Davom etsangiz, u almashtiriladi.")
         await state.update_data(code=code)
         await message.answer(
-            "🎞 Kino <b>nomini</b> yozing.\n\nYoki hammasini bir yo'la yuboring:\n"
+            "🎞 Kino <b>nomini</b> yozing" + (" — AI qolgan ma'lumotlarni (janr, yil, tavsif) o'zi topadi." if GEMINI_API_KEY else ".") + "\n\nYoki hammasini bir yo'la yuboring:\n"
             "<code>Nom - Janr, Janr - Yil</code>\n"
             "masalan: <code>Dune: Ikkinchi qism - Fantastika, Sarguzasht - 2024</code>",
             reply_markup=kino_cancel_kb())
@@ -11524,6 +11524,13 @@ def setup_kino_bot(dp: Dispatcher, token: str):
         await state.set_state(AddKino.cover)
 
     async def kino_ask_desc(message: Message, state: FSMContext):
+        _ai_desc = (await state.get_data()).get("ai_desc")
+        if _ai_desc:
+            await state.update_data(desc=_ai_desc)
+            await message.answer("📝 Tavsif AI tomonidan yozildi:\n\n<i>" + html_escape(_ai_desc[:600]) + "</i>")
+            await message.answer("Endi filmni (videoni) <b>forward (uzatib)</b> yuboring:", reply_markup=kino_cancel_kb())
+            await state.set_state(AddMovie.waiting_video)
+            return
         await message.answer(
             "📝 Kino <b>tavsifini</b> yozing (kamida " + str(KINO_WEB_MIN_DESC) + " belgi — veb sahifada ko'rinishi uchun).\n\n"
             "Tavsif kerak bo'lmasa «🚫 Tavsif yo'q» ni bosing.",
@@ -11550,8 +11557,27 @@ def setup_kino_bot(dp: Dispatcher, token: str):
             title, genres, year = meta["title"], meta["genres"], meta["year"]
         else:
             title, genres, year = (raw.splitlines()[0])[:80], [], None
+            if GEMINI_API_KEY and len(raw) <= 100:
+                wait = await message.answer("🔎 AI orqali kino ma'lumotlari qidirilmoqda...")
+                ai = await kino_ai_lookup(title)
+                try:
+                    await wait.delete()
+                except Exception:
+                    pass
+                if ai:
+                    title, genres, year = ai["title"], ai["genres"], ai["year"]
+                    if len(ai.get("desc") or "") >= KINO_WEB_MIN_DESC:
+                        await state.update_data(ai_desc=ai["desc"])
+                    meta = {"ai": True}
+                    await message.answer(
+                        "🤖 AI topdi:\n🎞 Nom: <b>" + html_escape(title) + "</b>\n"
+                        "🏷 Janr: " + (html_escape(", ".join(genres)) or "—") + "\n📅 Yil: " + (str(year) if year else "—")
+                        + ("\n📝 Tavsif ham yozildi." if ai.get("desc") else "")
+                        + "\n\n<i>Noto'g'ri bo'lsa, keyin «🏷 Janr belgilash» orqali tuzatish mumkin.</i>")
+                else:
+                    await message.answer("ℹ️ AI kinoni topa olmadi. Janr va yilni o'zingiz kiriting.")
         await state.update_data(title=title, genres=genres, year=year)
-        if meta:
+        if meta and not meta.get("ai"):
             await message.answer(
                 "🤖 Avtomatik aniqlandi:\n🎞 Nom: <b>" + html_escape(title) + "</b>\n"
                 "🏷 Janr: " + (html_escape(", ".join(genres)) or "—") + "\n📅 Yil: " + (str(year) if year else "—"))
@@ -27225,6 +27251,55 @@ def kino_auth(request, perm=None, perm_post=None):
 
 
 # ---------- Janr / yil (nom - janr - yil) ----------
+async def kino_ai_lookup(query: str):
+    """Gemini (Google qidiruvi bilan) kino nomi bo'yicha janr, yil va tavsifni topadi.
+    Topilsa {"title","genres","year","desc"}, aks holda None."""
+    if not GEMINI_API_KEY:
+        return None
+    prompt = (
+        "Quyidagi so'rov kino, multfilm yoki serial nomi. Google qidiruvi orqali uni toping va FAQAT bitta JSON qaytaring "
+        "(boshqa matn, izoh, ``` belgilarsiz):\n"
+        '{"found": true/false, "title": "asl yoki eng mashhur nomi", "year": 2024, '
+        '"genres": ["..."], "desc": "..."}\n'
+        "Qoidalar:\n- genres faqat shu ro'yxatdan (1-3 ta): " + ", ".join(KINO_GENRES) + "\n"
+        "- desc: o'zbek tilida (lotin), 2-3 gap, spoilersiz, 120-350 belgi.\n"
+        "- Aniq topa olmasangiz found=false yozing, o'ylab topmang.\n"
+        "So'rov: " + query[:120]
+    )
+    payload = {"contents": [{"role": "user", "parts": [{"text": prompt}]}],
+               "tools": [{"google_search": {}}]}
+    headers = {"x-goog-api-key": GEMINI_API_KEY, "content-type": "application/json"}
+    try:
+        async with httpx.AsyncClient(timeout=45) as client:
+            r = await client.post(GEMINI_URL, headers=headers, json=payload)
+            r.raise_for_status()
+            parts = r.json()["candidates"][0]["content"]["parts"]
+        txt = "".join(p.get("text", "") for p in parts)
+        s, e = txt.find("{"), txt.rfind("}")
+        data = json.loads(txt[s:e + 1])
+    except Exception as ex:
+        logging.warning(f"kino_ai_lookup: {ex}")
+        return None
+    if not data.get("found"):
+        return None
+    genres = []
+    for g in data.get("genres") or []:
+        g2 = kino_genre_of(str(g))
+        if g2 and g2 not in genres:
+            genres.append(g2)
+    try:
+        year = int(data.get("year"))
+        if not 1890 <= year <= 2100:
+            year = None
+    except Exception:
+        year = None
+    title = str(data.get("title") or "").strip()[:80]
+    desc = str(data.get("desc") or "").strip()[:900]
+    if not title or not (genres or year):
+        return None
+    return {"title": title, "genres": genres[:3], "year": year, "desc": desc}
+
+
 KINO_GENRES = ["Fantastika", "Triller", "Drama", "Komediya", "Jangari", "Sarguzasht", "Qo'rqinchli", "Detektiv",
                "Melodrama", "Tarixiy", "Animatsiya", "Oilaviy", "Urush", "Fentezi", "Kriminal", "Mistika",
                "Hujjatli", "Biografik", "Musiqiy", "Sport"]
