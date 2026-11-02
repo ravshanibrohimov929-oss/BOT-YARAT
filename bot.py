@@ -2347,6 +2347,22 @@ def is_premium_active(info: dict, uid: int) -> bool:
         return False
 
 
+def kino_all_vip(info: dict) -> bool:
+    """Premium yoqilgan (va tariflar bor) bo'lsa — bot butunlay VIP: barcha kontent VIP."""
+    return bool(info.get("premium_enabled", False)) and bool(info.get("premium_tariffs"))
+
+
+def kino_is_vip(info: dict, code: str) -> bool:
+    if code in info.get("vip_codes", []):
+        return True
+    if not kino_all_vip(info):
+        return False
+    e = (info.get("movies") or {}).get(code)
+    if not e:
+        return False
+    return not (e.get("access") == "paid" and e.get("price"))
+
+
 async def require_subscription(event, info: dict, admin_id: int) -> bool:
     uid = event.from_user.id
     if is_admin(info, uid):
@@ -2354,7 +2370,9 @@ async def require_subscription(event, info: dict, admin_id: int) -> bool:
     if is_premium_active(info, uid):
         return True
     channels = info.get("channels", {})
-    premium_required = info.get("premium_enabled", False) and bool(info.get("premium_tariffs"))
+    # Kino botda Premium yoqilgan bo'lsa ham menyular hammaga ochiq; VIP kontent alohida yopiladi
+    premium_required = (info.get("premium_enabled", False) and bool(info.get("premium_tariffs"))
+                        and info.get("type") != "kino_pro")
     missing = await get_missing_channels(event.bot, channels, uid) if channels else []
 
     if premium_required:
@@ -2557,7 +2575,8 @@ def setup_subscription_handlers(dp: Dispatcher, token: str, admin_id: int):
     @dp.callback_query(F.data == "check_sub")
     async def check_sub_cb(callback: CallbackQuery):
         missing = await get_missing_channels(callback.bot, info["channels"], callback.from_user.id)
-        premium_required = info.get("premium_enabled", False) and bool(info.get("premium_tariffs"))
+        premium_required = (info.get("premium_enabled", False) and bool(info.get("premium_tariffs"))
+                            and info.get("type") != "kino_pro")
         if missing:
             await callback.answer("Hali barcha kanallarga obuna bo'lmagansiz ❌", show_alert=True)
         elif premium_required and not is_premium_active(info, callback.from_user.id):
@@ -7206,8 +7225,33 @@ def setup_premium_system(dp: Dispatcher, token: str, admin_id: int):
             for tid, t in info["premium_tariffs"].items():
                 s = info.get("premium_stats", {}).get(tid, {"count": 0, "revenue": 0})
                 lines.append(f"▪️ {t['name']} ({t['price']:,} so'm): {s['count']} ta ({s['revenue']:,} so'm)")
-        await callback.message.answer("\n".join(lines))
+        lines.append("\n<i>🔄 Pullarni 0 ga tushirish uchun pastdagi tugmani 4 marta bosing.</i>")
+        await callback.message.answer("\n".join(lines), reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔄 Qaytadan boshlash", callback_data="pt_vipreset")]]))
         await callback.answer()
+
+    VIP_RESET_CLICKS = {}   # admin_id -> (bosishlar soni, oxirgi bosilgan vaqt)
+
+    @dp.callback_query(F.data == "pt_vipreset")
+    async def pt_vipreset_cb(callback: CallbackQuery):
+        uid = callback.from_user.id
+        if not is_admin(info, uid):
+            return
+        now_ts = datetime.now().timestamp()
+        n, last = VIP_RESET_CLICKS.get(uid, (0, 0))
+        n = n + 1 if now_ts - last < 30 else 1
+        if n < 4:
+            VIP_RESET_CLICKS[uid] = (n, now_ts)
+            await callback.answer(f"⚠️ Tasdiqlash: yana {4 - n} marta bosing (jami 4 marta)", show_alert=False)
+            return
+        VIP_RESET_CLICKS.pop(uid, None)
+        for s in info.setdefault("premium_stats", {}).values():
+            s["count"] = 0
+            s["revenue"] = 0
+        save_data()
+        await callback.answer("✅ VIP statistika 0 ga tushirildi", show_alert=True)
+        await callback.message.answer("✅ VIP statistikadagi barcha tushumlar 0 so'mga qaytarildi.\n"
+                                      "ℹ️ Faol Premium foydalanuvchilar o'zgarmadi.")
 
     @dp.callback_query(F.data == "pt_add")
     async def pt_add_cb(callback: CallbackQuery, state: FSMContext):
@@ -10106,7 +10150,7 @@ def setup_kino_bot(dp: Dispatcher, token: str):
         _wurl = get_kinoweb_url(info.get("id"))
         if _wurl and any(kw_visible(_m) for _m in (info.get("movies") or {}).values()):
             # Klaviatura tugmasidagi web_app initData BERMAYDI (film yuborish ishlamaydi) — oddiy tugma, bosilganda inline web_app tugma chiqadi
-            rows.append([KeyboardButton(text="🌐 Veb kino")])
+            rows.append([KeyboardButton(text="🌐 Veb panel")])
         return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
     def ultra_admin_kb():
@@ -10401,7 +10445,7 @@ def setup_kino_bot(dp: Dispatcher, token: str):
         else:
             await message.answer("🎬 <b>Kinolar bo'limidasiz:</b>", reply_markup=content_menu_kb())
 
-    @dp.message(F.text == "🌐 Veb kino")
+    @dp.message(F.text.in_({"🌐 Veb panel", "🌐 Veb kino"}))
     async def kino_webapp_btn(message: Message, state: FSMContext):
         await state.clear()
         if not await kino_guard(message):
@@ -10410,8 +10454,8 @@ def setup_kino_bot(dp: Dispatcher, token: str):
         if not _wurl:
             await message.answer("⚠️ Veb kino manzili sozlanmagan.")
             return
-        await message.answer("🌐 <b>Veb kino</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🌐 Veb kinoni ochish", web_app=WebAppInfo(url=_wurl))]]))
+        await message.answer("🌐 <b>Veb panel</b>", reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🌐 Veb panelni ochish", web_app=WebAppInfo(url=_wurl))]]))
 
     # ---------- /start ----------
     @dp.message(Command("start"))
@@ -10488,11 +10532,12 @@ def setup_kino_bot(dp: Dispatcher, token: str):
         if not is_pro():
             return
         uid = message.from_user.id
-        if not info["vip_codes"]:
+        _vip_list = [c for c in info["movies"] if kino_is_vip(info, c)]
+        if not _vip_list:
             await message.answer("Hozircha VIP kontent mavjud emas.")
             return
         lines = []
-        for code in info["vip_codes"]:
+        for code in _vip_list:
             m = info["movies"].get(code)
             if not m:
                 continue
@@ -10956,7 +11001,7 @@ def setup_kino_bot(dp: Dispatcher, token: str):
             return True
         if code and info.get("protect_premium"):
             e = info["movies"].get(code) or {}
-            if e.get("access") == "paid" or code in info.get("vip_codes", []):
+            if e.get("access") == "paid" or kino_is_vip(info, code):
                 return True
         return False
 
@@ -12098,7 +12143,7 @@ def setup_kino_bot(dp: Dispatcher, token: str):
         e = info["movies"].get(code, {})
         if e.get("access") == "paid" and e.get("price"):
             return "paid"
-        return "premium" if code in info["vip_codes"] else "free"
+        return "premium" if kino_is_vip(info, code) else "free"
 
     def has_purchased(uid: int, code: str) -> bool:
         return code in info.get("movie_purchases", {}).get(str(uid), [])
@@ -12489,7 +12534,7 @@ def setup_kino_bot(dp: Dispatcher, token: str):
         for code, m in info["movies"].items():
             cat = info["categories"].get(m.get("category", ""), "")
             cat_note = f" [{cat}]" if cat else ""
-            vip_mark = "🔒 VIP" if code in info["vip_codes"] else "🆓"
+            vip_mark = "🔒 VIP" if kino_is_vip(info, code) else "🆓"
             if m.get("type") == "series":
                 lines.append(f"• Kod {code} {vip_mark} 📺 [Serial] {m.get('title', '-')} ({len(m.get('episodes', {}))} qism){cat_note}")
             else:
@@ -13752,7 +13797,7 @@ def setup_kino_bot(dp: Dispatcher, token: str):
         e = info["movies"].get(code) or {}
         if e.get("access") == "paid" and e.get("price"):
             return "✅" if (has_purchased(uid, code) or is_moderator(uid)) else "💰"
-        if is_pro() and info.get("vip_system", True) and code in info["vip_codes"]:
+        if is_pro() and info.get("vip_system", True) and kino_is_vip(info, code):
             return "💎" if is_premium_user(uid) else "🔒"
         return ""
 
@@ -13914,7 +13959,7 @@ def setup_kino_bot(dp: Dispatcher, token: str):
             await target.answer("❌ Bunday kontent topilmadi.")
             return
         if not free_pass:
-            if is_pro() and info.get("vip_system", True) and code in info["vip_codes"] and not is_premium_user(uid):
+            if is_pro() and info.get("vip_system", True) and kino_is_vip(info, code) and not is_premium_user(uid):
                 vip_kb = InlineKeyboardMarkup(inline_keyboard=[[
                     InlineKeyboardButton(text="💎 Premium sotib olish", callback_data="buy_premium")]])
                 await target.answer("🔒 Bu kontent faqat <b>VIP (Premium)</b> foydalanuvchilar uchun.", reply_markup=vip_kb)
@@ -14693,7 +14738,7 @@ def setup_kino_bot(dp: Dispatcher, token: str):
             await message.answer("❌ Bunday kodli film topilmadi.", reply_markup=not_found_kb)
             return
 
-        if is_pro() and info.get("vip_system", True) and code in info["vip_codes"] and not is_premium_user(uid):
+        if is_pro() and info.get("vip_system", True) and kino_is_vip(info, code) and not is_premium_user(uid):
             vip_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💎 Premium sotib olish", callback_data="buy_premium")]])
             await message.answer(
                 "🔒 Bu kontent faqat <b>VIP (Premium)</b> foydalanuvchilar uchun.",
@@ -27355,7 +27400,7 @@ async def kino_api_movies(request):
     token, info, uid, err = kino_auth(request)
     if err:
         return err
-    vip = set(info.get("vip_codes", []))
+    vip = {c for c in info.get("movies", {}) if kino_is_vip(info, c)}
     counts = info.get("request_counts", {})
     items = []
     for code, m in info.get("movies", {}).items():
@@ -27410,7 +27455,7 @@ def kw_find(request):
 
 
 def kw_access(info: dict, code: str, m: dict) -> str:
-    if info.get("type") == "kino_pro" and info.get("vip_system", True) and code in info.get("vip_codes", []):
+    if info.get("type") == "kino_pro" and info.get("vip_system", True) and kino_is_vip(info, code):
         return "vip"
     if m.get("access") == "paid" and m.get("price"):
         return "paid"
@@ -29349,6 +29394,12 @@ video{width:100%;border-radius:18px;background:#000;margin:8px 0;max-height:70vh
 .rel{margin:30px -18px 0}
 .btn.g{background:var(--acs);color:var(--ac)}
 .btn{display:block;width:100%;padding:14px;border:0;border-radius:14px;background:var(--ac);color:#fff;font-weight:700;margin:8px 0;text-align:center}
+html,body{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
+img,video{-webkit-user-drag:none;user-drag:none;-webkit-touch-callout:none}
+img{pointer-events:none}
+#shield{position:fixed;inset:0;z-index:99999;background:#000;display:none;align-items:center;justify-content:center;color:#888;font:600 15px system-ui}
+body.sh #shield{display:flex}
+@media print{html,body{display:none!important}}
 </style>
 </head>
 <body>
@@ -29588,6 +29639,19 @@ function closeFilm() {
   render();
 })();
 </script>
+<script>(function(){
+var d=document,B=d.body;
+function hide(){B.classList.add("sh")}function show(){B.classList.remove("sh")}
+d.addEventListener("contextmenu",function(e){e.preventDefault()});
+d.addEventListener("dragstart",function(e){e.preventDefault()});
+d.addEventListener("copy",function(e){e.preventDefault()});
+d.addEventListener("selectstart",function(e){if(!/INPUT|TEXTAREA/.test((e.target||{}).tagName||""))e.preventDefault()});
+d.addEventListener("visibilitychange",function(){d.hidden?hide():show()});
+window.addEventListener("blur",hide);window.addEventListener("focus",show);window.addEventListener("pagehide",hide);
+d.addEventListener("keyup",function(e){if(e.key==="PrintScreen"||e.keyCode===44){hide();try{navigator.clipboard.writeText("")}catch(x){}setTimeout(show,1500)}});
+d.addEventListener("keydown",function(e){var k=(e.key||"").toLowerCase();if((e.ctrlKey||e.metaKey)&&(k==="p"||k==="s"||k==="u"||(e.shiftKey&&(k==="s"||k==="i")))||e.keyCode===123)e.preventDefault()});
+var sh=d.createElement("div");sh.id="shield";sh.textContent="🔒 Himoyalangan kontent";B.appendChild(sh);
+})();</script>
 </body>
 </html>
 """
