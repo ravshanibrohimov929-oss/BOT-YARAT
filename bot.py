@@ -627,6 +627,7 @@ BOT_TYPES = {
     "download": "📥 Yuklovchi bot",
     "subs": "💳 Obuna (pullik kanal) boti",
     "city": "🏙 Shahar qurish o'yini",
+    "hub": "🎮 O'yinlar markazi",
 }
 
 # 🎬 MEDIA BOT turlari (ichki bot turi o'zgarmaydi: "kino_pro" — barcha kino funksiyalari saqlanadi).
@@ -695,6 +696,7 @@ DEFAULT_PRICES = {
     "download": 120_000,
     "subs": 120_000,
     "city": 120_000,
+    "hub": 120_000,
 }
 DEFAULT_MONTHLY_RATE = 0.2  # keyingi oylar uchun narxning 20 foizi (standart) — eskirgan, endi ishlatilmaydi
 
@@ -883,6 +885,16 @@ try:
     if "subs" not in data["bot_menu"] and not data.get("_sb_menu_added"):
         data["bot_menu"]["subs"] = {"name": BOT_TYPES["subs"], "enabled": True}
         data["_sb_menu_added"] = True
+        save_data()
+except Exception:
+    pass
+
+
+# Yangi «O'yinlar markazi» turi bir marta avtomatik menyuga qo'shiladi
+try:
+    if "hub" not in data["bot_menu"] and not data.get("_hub_menu_added"):
+        data["bot_menu"]["hub"] = {"name": BOT_TYPES["hub"], "enabled": True}
+        data["_hub_menu_added"] = True
         save_data()
 except Exception:
     pass
@@ -1491,6 +1503,12 @@ def tariff_card_text(tid: str, t: dict) -> str:
 
 # Har bir bot turi uchun tavsif (bot yaratish oynasida ko'rsatiladi)
 BOT_DESCRIPTIONS = {
+    "hub": (
+        "<i>Do'stlar bilan 2–10 kishilik kreativ o'yinlar: xona oching, kod yoki havola bilan chaqiring va birga o'ynang.</i>\n\n"
+        "🔪 Mafia, 🕵️ Josus, 🎨 Chizib top, 📖 Hikoya zanjiri, 😂 Kulgili javob, 🔴 4 ketma-ket, 🔤 So'z zanjiri.\n"
+        "💬 Chat va 🎙 mikrofon (xohlasa yoqadi, xohlasa o'chiradi) — hammasi o'yin ichida.\n\n"
+        "📊 Admin panelda: statistika, ommaviy xabar, majburiy obuna, adminlar."
+    ),
     "city": (
         "<i>Telegram ichida shahar qurish o'yini: o'yinchi o'z shahrini quradi, binolarni yangilaydi, daromad yig'adi va reytingda raqobatlashadi.</i>\n\n"
         "🏗 15 xil bino (uy, ferma, maktab, bank, zavod, stadion...), 🌆 izometrik 3D ko'rinish, 🚗 harakatlanuvchi mashinalar, "
@@ -14030,6 +14048,11 @@ def setup_kino_bot(dp: Dispatcher, token: str):
             return "maintenance"
         chans = info.get("channels") or {}
         b = _new_bot(token)
+        # Oddiy yuborish bilan bir xil: cover (video ko'rinishi), tugma ranglari va tarjima middleware'lari
+        b.session.middleware(kino_cover_middleware)
+        b.session.middleware(kino_btn_style_middleware)
+        b.session.middleware(media_kind_request_middleware)
+        b.session.middleware(kino_i18n_request_middleware)
         try:
             if chans and not is_admin(info, uid) and not is_premium_user(uid):
                 if await get_missing_channels(b, chans, uid):
@@ -23400,8 +23423,2169 @@ boot();
 # ===================== /SHAHAR QURISH O'YINI =====================
 
 
+import random
+import time
+
+# ===================== 🎮 O'YINLAR MARKAZI =====================
+# 2-10 kishilik xonalar, yozma chat, ixtiyoriy mikrofon (WebRTC) va 7 ta kreativ o'yin.
+# Hamma holat xotirada (RAM) saqlanadi — xonalar vaqtinchalik.
+
+HUB_ROOMS = {}          # (bot_id, kod) -> HubRoom
+HUB_MAX_ROOMS = 400
+
+
+def hub_now() -> float:
+    return time.time()
+
+
+def hub_ms(sec: float) -> int:
+    return int((hub_now() + sec) * 1000)
+
+
+def hub_norm(w: str) -> str:
+    w = (w or "").lower()
+    for ch in "ʻʼ’‘`'":
+        w = w.replace(ch, "")
+    return re.sub(r"[^a-z0-9а-яё]", "", w)
+
+
+class HubP:
+    __slots__ = ("uid", "name", "conn", "mic", "wins", "joined")
+
+    def __init__(self, uid, name):
+        self.uid = uid
+        self.name = (name or "O'yinchi")[:20]
+        self.conn = None
+        self.mic = False
+        self.wins = 0
+        self.joined = hub_now()
+
+
+class HubGame:
+    key = ""
+    name = ""
+    emoji = ""
+    desc = ""
+    min = 2
+    max = 10
+
+    def __init__(self, room):
+        self.room = room
+        self.timers = {}
+        self.over = False
+
+    # --- vaqt ---
+    def after(self, tag, sec, fn):
+        self.cancel(tag)
+
+        def run():
+            self.timers.pop(tag, None)
+            if self.over or self.room.g is not self:
+                return
+            try:
+                fn()
+            except Exception as ex:
+                logging.warning(f"hub {self.key} timer {tag}: {ex}")
+            self.room.changed()
+        self.timers[tag] = asyncio.get_running_loop().call_later(max(0.05, sec), run)
+
+    def cancel(self, tag=None):
+        if tag is None:
+            for h in self.timers.values():
+                h.cancel()
+            self.timers.clear()
+            return
+        h = self.timers.pop(tag, None)
+        if h:
+            h.cancel()
+
+    def stop(self):
+        self.over = True
+        self.cancel()
+
+    # --- interfeys ---
+    def start(self):
+        pass
+
+    def act(self, uid, m):
+        pass
+
+    def view(self, uid) -> dict:
+        return {}
+
+    def on_leave(self, uid):
+        pass
+
+    def on_chat(self, uid, text):
+        return None          # None — hammaga; set — faqat shularga; False — yutiladi
+
+    def talk(self, uid) -> bool:
+        return True
+
+    def uids(self):
+        return list(self.room.players.keys())
+
+    def name_of(self, uid):
+        p = self.room.players.get(uid)
+        return p.name if p else "?"
+
+
+# ---------------------------------------------------------------- 🎨 Chizib top
+HUB_WORDS = ["olma", "mashina", "uy", "quyosh", "baliq", "samolyot", "kitob", "tog'", "daryo", "telefon", "qalam", "soat",
+             "gul", "it", "mushuk", "ot", "tovuq", "velosiped", "ko'prik", "bulut", "yomg'ir", "qor", "stol", "stul",
+             "eshik", "deraza", "kalit", "qaychi", "tarvuz", "uzum", "non", "choynak", "piyola", "poyabzal", "ko'zoynak",
+             "gitara", "do'ppi", "tuya", "arslon", "fil", "ilon", "kapalak", "o'rgimchak", "chiroq", "televizor",
+             "kompyuter", "raketa", "kema", "poyezd", "avtobus", "traktor", "olov", "oy", "yulduz", "kamalak", "o'rmon",
+             "soyabon", "sumka", "pichoq", "qoshiq", "oyna", "karavot", "yostiq", "ko'ylak", "paypoq", "qo'lqop",
+             "bolta", "narvon", "minora", "chelak", "shar", "tort", "muzqaymoq", "pitsa", "banan", "limon", "sabzi",
+             "pomidor", "kartoshka", "qurbaqa", "toshbaqa", "delfin", "burgut", "maymun", "ayiq", "bo'ri", "tulki",
+             "quyon", "echki", "sigir", "eshak", "tuxum", "paxta", "chakmon", "dutor", "somsa", "palov", "samovar"]
+
+
+class DrawGame(HubGame):
+    key, name, emoji = "draw", "Chizib top", "🎨"
+    desc = "Biri chizadi, qolganlar so'zni topadi. Tez topgan ko'p ball oladi."
+    min, max = 2, 10
+
+    def start(self):
+        us = self.uids()
+        random.shuffle(us)
+        self.queue = us * (2 if len(us) <= 3 else 1)
+        self.turn = -1
+        self.pts = {u: 0 for u in us}
+        self.strokes = []
+        self.sid = 0
+        self.next_turn()
+
+    def next_turn(self):
+        self.turn += 1
+        while self.turn < len(self.queue) and self.queue[self.turn] not in self.room.players:
+            self.turn += 1
+        if self.turn >= len(self.queue):
+            return self.finish()
+        self.drawer = self.queue[self.turn]
+        self.sid += 1
+        self.phase = "choose"
+        self.choices = random.sample(HUB_WORDS, 3)
+        self.word = None
+        self.guessed = []
+        self.strokes = []
+        self.revealed = set()
+        self.deadline = hub_ms(12)
+        self.after("t", 12, self.auto_pick)
+
+    def auto_pick(self):
+        if self.phase == "choose":
+            self.begin_draw(random.choice(self.choices))
+
+    def begin_draw(self, w):
+        self.word = w
+        self.phase = "draw"
+        self.t0 = hub_now()
+        self.deadline = hub_ms(80)
+        self.after("t", 80, self.end_turn)
+        self.after("h1", 35, lambda: self.hint())
+        self.after("h2", 55, lambda: self.hint())
+
+    def hint(self):
+        if self.phase != "draw" or not self.word:
+            return
+        idx = [i for i, c in enumerate(self.word) if c.isalpha() and i not in self.revealed]
+        if len(idx) > 1:
+            self.revealed.add(random.choice(idx))
+
+    def end_turn(self):
+        if self.phase != "draw":
+            return
+        self.cancel("h1"); self.cancel("h2")
+        self.phase = "reveal"
+        self.deadline = hub_ms(6)
+        self.after("t", 6, self.next_turn)
+
+    def finish(self):
+        self.phase = "over"
+        self.over = True
+        self.cancel()
+        top = max(self.pts.values()) if self.pts else 0
+        if top > 0:
+            self.room.win([u for u, v in self.pts.items() if v == top])
+        self.room.after_game()
+
+    def act(self, uid, m):
+        a = m.get("a")
+        if a == "pick" and self.phase == "choose" and uid == self.drawer:
+            w = str(m.get("w", ""))
+            if w in self.choices:
+                self.begin_draw(w)
+
+    def on_chat(self, uid, text):
+        if self.phase != "draw":
+            return None
+        if uid == self.drawer:
+            if hub_norm(text) == hub_norm(self.word):
+                return False
+            return None
+        if uid in self.guessed:
+            return set(self.guessed) | {self.drawer}
+        if hub_norm(text) == hub_norm(self.word):
+            left = max(0.0, (self.deadline / 1000.0) - hub_now())
+            gain = 50 + int(left / 80.0 * 100)
+            self.pts[uid] = self.pts.get(uid, 0) + gain
+            self.pts[self.drawer] = self.pts.get(self.drawer, 0) + 30
+            self.guessed.append(uid)
+            self.room.sys(f"✅ {self.name_of(uid)} so'zni topdi! (+{gain})")
+            others = [u for u in self.room.players if u != self.drawer]
+            if all(u in self.guessed for u in others):
+                self.end_turn()
+            return False
+        return None
+
+    def on_leave(self, uid):
+        if self.phase in ("choose", "draw") and uid == self.drawer:
+            if self.phase == "choose":
+                self.phase = "reveal"
+                self.word = self.word or self.choices[0]
+                self.deadline = hub_ms(3)
+                self.after("t", 3, self.next_turn)
+            else:
+                self.end_turn()
+
+    def mask(self):
+        if not self.word:
+            return ""
+        return " ".join((c if (i in self.revealed or not c.isalpha()) else "_") for i, c in enumerate(self.word))
+
+    def view(self, uid):
+        v = {"phase": self.phase, "sid": self.sid, "drawer": getattr(self, "drawer", None), "deadline": getattr(self, "deadline", 0),
+             "n": min(self.turn + 1, len(self.queue)), "of": len(self.queue), "guessed": self.guessed,
+             "pts": self.pts, "mask": self.mask()}
+        if self.phase == "choose" and uid == self.drawer:
+            v["choices"] = self.choices
+        if self.word and (uid == self.drawer or uid in self.guessed or self.phase in ("reveal", "over")):
+            v["word"] = self.word
+        return v
+
+    # chizma
+    def stroke(self, uid, s):
+        if self.phase == "draw" and uid == self.drawer and len(self.strokes) < 900 and isinstance(s, dict):
+            p = s.get("p")
+            if not isinstance(p, list) or not p or len(p) > 60:
+                return False
+            try:
+                s = {"c": str(s.get("c", "#000"))[:9], "w": min(30, max(1, int(s.get("w", 4)))), "id": int(s.get("id", 0)),
+                     "p": [[round(float(a), 4), round(float(b), 4)] for a, b in p]}
+            except Exception:
+                return False
+            self.strokes.append(s)
+            self.last_stroke = s
+            return True
+        return False
+
+    def clear(self, uid):
+        if self.phase == "draw" and uid == self.drawer:
+            self.strokes = []
+            return True
+        return False
+
+    def undo(self, uid):
+        if self.phase == "draw" and uid == self.drawer and self.strokes:
+            sid = self.strokes[-1].get("id")
+            self.strokes.pop()
+            while sid is not None and self.strokes and self.strokes[-1].get("id") == sid:
+                self.strokes.pop()
+            return True
+        return False
+
+
+# ---------------------------------------------------------------- 🕵️ Josus
+HUB_LOCS = ["Aeroport", "Bank", "Maktab", "Kasalxona", "Bozor", "Choyxona", "Kinoteatr", "Stadion", "Mehmonxona", "Qo'shiq to'yi",
+            "Poyezd", "Kema", "Kutubxona", "Zoopark", "Plyaj", "Restoran", "Politsiya bo'limi", "Universitet", "Sirk",
+            "Kosmik stansiya", "Fermer xo'jaligi", "Muzey", "Avtobus bekati", "Sartaroshxona"]
+
+
+class SpyGame(HubGame):
+    key, name, emoji = "spy", "Josus", "🕵️"
+    desc = "Bitta josus joyni bilmaydi. Savol-javob orqali uni toping — yoki josus joyni topib oladi!"
+    min, max = 3, 10
+
+    def start(self):
+        us = self.uids()
+        self.spy = random.choice(us)
+        self.loc = random.choice(HUB_LOCS)
+        self.phase = "talk"
+        self.votes = {}
+        self.called = None
+        self.result = None
+        self.deadline = hub_ms(300)
+        self.after("t", 300, self.open_vote)
+
+    def open_vote(self):
+        if self.phase != "talk":
+            return
+        self.phase = "vote"
+        self.votes = {}
+        self.deadline = hub_ms(45)
+        self.after("t", 45, self.tally)
+
+    def tally(self):
+        if self.phase != "vote":
+            return
+        cnt = {}
+        for t in self.votes.values():
+            cnt[t] = cnt.get(t, 0) + 1
+        top = max(cnt.values()) if cnt else 0
+        winners = [u for u, c in cnt.items() if c == top]
+        if top and len(winners) == 1 and winners[0] == self.spy:
+            self.phase = "guess"
+            self.deadline = hub_ms(30)
+            self.after("t", 30, lambda: self.finish(False, "Josus joyni topa olmadi"))
+        else:
+            who = self.name_of(winners[0]) if (top and len(winners) == 1) else None
+            self.finish(True, (f"Noto'g'ri odam ayblandi: {who}" if who else "Hech kim ayblanmadi"))
+
+    def finish(self, spy_wins, why):
+        self.phase = "over"
+        self.over = True
+        self.cancel()
+        self.spy_won = spy_wins
+        self.result = why
+        us = self.uids()
+        self.room.win([self.spy] if spy_wins else [u for u in us if u != self.spy])
+        self.room.after_game()
+
+    def act(self, uid, m):
+        a = m.get("a")
+        if a == "call" and self.phase == "talk" and self.called is None:
+            self.called = uid
+            self.room.sys(f"🗳 {self.name_of(uid)} ovoz berishni boshladi!")
+            self.open_vote()
+        elif a == "vote" and self.phase == "vote":
+            t = m.get("u")
+            if t in self.room.players and t != uid:
+                self.votes[uid] = t
+                if len(self.votes) >= len(self.room.players):
+                    self.tally()
+        elif a == "guess" and uid == self.spy and self.phase in ("talk", "guess"):
+            loc = str(m.get("loc", ""))
+            if loc in HUB_LOCS:
+                if loc == self.loc:
+                    self.finish(True, f"Josus joyni topdi: {self.loc}")
+                else:
+                    self.finish(False, f"Josus adashdi ({loc}). To'g'ri joy: {self.loc}")
+
+    def on_leave(self, uid):
+        if self.phase != "over" and uid == self.spy:
+            self.finish(False, "Josus chiqib ketdi")
+
+    def view(self, uid):
+        v = {"phase": self.phase, "deadline": getattr(self, "deadline", 0), "locs": HUB_LOCS,
+             "voted": list(self.votes.keys()), "called": self.called}
+        if self.phase == "vote" or self.phase == "guess":
+            v["accused"] = None
+        if uid == self.spy:
+            v["spy"] = True
+        else:
+            v["loc"] = self.loc
+        if self.phase == "over":
+            v.update(loc=self.loc, spyUid=self.spy, result=self.result, spyWon=self.spy_won,
+                     votes=self.votes)
+        if self.phase == "vote":
+            v["myVote"] = self.votes.get(uid)
+        return v
+
+
+# ---------------------------------------------------------------- 🔪 Mafia
+class MafiaGame(HubGame):
+    key, name, emoji = "mafia", "Mafia", "🔪"
+    desc = "Tunda mafia o'ldiradi, kunduzi hamma gaplashib mafiyani topadi. Rollar: mafia, shifokor, komissar."
+    min, max = 4, 10
+
+    def start(self):
+        us = self.uids()
+        random.shuffle(us)
+        n = len(us)
+        nm = max(1, n // 3)
+        self.roles = {}
+        for i, u in enumerate(us):
+            if i < nm:
+                self.roles[u] = "mafia"
+        rest = [u for u in us if u not in self.roles]
+        self.roles[rest.pop()] = "detective"
+        if n >= 5:
+            self.roles[rest.pop()] = "doctor"
+        for u in rest:
+            self.roles[u] = "civil"
+        self.alive = set(us)
+        self.dead = []          # [(uid, role, sabab)]
+        self.log = []
+        self.day_no = 0
+        self.winner = None
+        self.phase = "reveal"
+        self.deadline = hub_ms(9)
+        self.after("t", 9, self.begin_night)
+
+    def alive_of(self, role):
+        return [u for u in self.alive if self.roles[u] == role]
+
+    def begin_night(self):
+        self.day_no += 1
+        self.phase = "night"
+        self.kills = {}
+        self.save = None
+        self.check = None
+        self.det = None
+        self.news = None
+        self.deadline = hub_ms(40)
+        self.after("t", 40, self.resolve_night)
+
+    def night_done(self):
+        if any(m not in self.kills for m in self.alive_of("mafia")):
+            return False
+        if self.alive_of("doctor") and self.save is None:
+            return False
+        if self.alive_of("detective") and self.check is None:
+            return False
+        return True
+
+    def resolve_night(self):
+        if self.phase != "night":
+            return
+        victim = None
+        if self.kills:
+            cnt = {}
+            for t in self.kills.values():
+                cnt[t] = cnt.get(t, 0) + 1
+            top = max(cnt.values())
+            victim = random.choice([u for u, c in cnt.items() if c == top])
+        if self.check is not None:
+            self.det = {"u": self.check, "mafia": self.roles.get(self.check) == "mafia"}
+        if victim is not None and victim == self.save:
+            self.news = "🌙 Tun o'tdi. Mafia hujum qildi, lekin shifokor jonni saqlab qoldi! Hech kim o'lmadi."
+        elif victim is not None:
+            self.alive.discard(victim)
+            self.dead.append((victim, self.roles[victim], "tunda o'ldirildi"))
+            self.news = f"🌙 Tunda <b>{html_escape(self.name_of(victim))}</b> o'ldirildi. U — {HUB_ROLE_NAMES[self.roles[victim]]} edi."
+        else:
+            self.news = "🌙 Tun tinch o'tdi. Hech kim o'lmadi."
+        if self.check_win():
+            return
+        self.phase = "day"
+        self.ready = set()
+        self.deadline = hub_ms(110)
+        self.after("t", 110, self.begin_vote)
+
+    def begin_vote(self):
+        if self.phase != "day":
+            return
+        self.phase = "vote"
+        self.votes = {}
+        self.deadline = hub_ms(35)
+        self.after("t", 35, self.resolve_vote)
+
+    def resolve_vote(self):
+        if self.phase != "vote":
+            return
+        cnt = {}
+        for t in self.votes.values():
+            if t:
+                cnt[t] = cnt.get(t, 0) + 1
+        top = max(cnt.values()) if cnt else 0
+        w = [u for u, c in cnt.items() if c == top]
+        if top and len(w) == 1:
+            u = w[0]
+            self.alive.discard(u)
+            self.dead.append((u, self.roles[u], "ovoz bilan chiqarildi"))
+            self.news = f"⚖️ Xalq qarori: <b>{html_escape(self.name_of(u))}</b> chiqarildi. U — {HUB_ROLE_NAMES[self.roles[u]]} edi."
+        else:
+            self.news = "⚖️ Ovozlar teng yoki o'tkazib yuborildi — hech kim chiqarilmadi."
+        if self.check_win():
+            return
+        self.begin_night()
+
+    def check_win(self):
+        m = len(self.alive_of("mafia"))
+        o = len(self.alive) - m
+        if m == 0:
+            return self.end("civil")
+        if m >= o:
+            return self.end("mafia")
+        return False
+
+    def end(self, who):
+        self.winner = who
+        self.phase = "over"
+        self.over = True
+        self.cancel()
+        us = self.uids()
+        self.room.win([u for u in us if (self.roles.get(u) == "mafia") == (who == "mafia")])
+        self.room.after_game()
+        return True
+
+    def act(self, uid, m):
+        a = m.get("a")
+        t = m.get("u")
+        if self.phase == "night" and uid in self.alive:
+            role = self.roles[uid]
+            if t not in self.alive:
+                return
+            if a == "kill" and role == "mafia":
+                self.kills[uid] = t
+            elif a == "save" and role == "doctor":
+                self.save = t
+            elif a == "check" and role == "detective" and t != uid:
+                self.check = t
+            if self.night_done():
+                self.resolve_night()
+        elif self.phase == "day" and a == "ready" and uid in self.alive:
+            self.ready.add(uid)
+            if len(self.ready) * 2 > len(self.alive):
+                self.begin_vote()
+        elif self.phase == "vote" and a == "vote" and uid in self.alive:
+            if t == 0 or t in self.alive:
+                self.votes[uid] = t
+                if len(self.votes) >= len(self.alive):
+                    self.resolve_vote()
+
+    def on_chat(self, uid, text):
+        if self.phase in ("reveal", "over"):
+            return None
+        if self.phase == "night":
+            if uid in self.alive and self.roles[uid] == "mafia":
+                return set(self.alive_of("mafia")) | {d[0] for d in self.dead}
+            return False
+        if uid in self.alive:
+            return None
+        return {d[0] for d in self.dead}
+
+    def talk(self, uid):
+        if self.phase in ("reveal", "over"):
+            return True
+        if self.phase == "night":
+            return False
+        return uid in self.alive
+
+    def on_leave(self, uid):
+        if self.phase not in ("over",) and uid in self.alive:
+            self.alive.discard(uid)
+            self.dead.append((uid, self.roles[uid], "o'yindan chiqdi"))
+            if not self.check_win():
+                if self.phase == "night" and self.night_done():
+                    self.resolve_night()
+
+    def view(self, uid):
+        role = self.roles.get(uid)
+        v = {"phase": self.phase, "role": role, "deadline": getattr(self, "deadline", 0), "news": getattr(self, "news", None),
+             "alive": sorted(self.alive), "dead": [{"u": u, "r": r, "w": w} for u, r, w in self.dead],
+             "day": self.day_no, "me": uid in self.alive, "talk": self.talk(uid)}
+        if role == "mafia":
+            v["mates"] = [u for u in self.roles if self.roles[u] == "mafia"]
+        if self.phase == "night" and uid in self.alive:
+            if role == "mafia":
+                v["mine"] = self.kills.get(uid)
+                v["mafiaVotes"] = {str(k): t for k, t in self.kills.items()}
+            elif role == "doctor":
+                v["mine"] = self.save
+            elif role == "detective":
+                v["mine"] = self.check
+        if role == "detective" and getattr(self, "det", None):
+            v["det"] = self.det
+        if self.phase == "day":
+            v["ready"] = len(self.ready)
+        if self.phase == "vote":
+            cnt = {}
+            for t in self.votes.values():
+                cnt[str(t)] = cnt.get(str(t), 0) + 1
+            v["tally"] = cnt
+            v["mine"] = self.votes.get(uid)
+        if self.phase == "over":
+            v["winner"] = self.winner
+            v["roles"] = {str(u): r for u, r in self.roles.items()}
+        return v
+
+
+HUB_ROLE_NAMES = {"mafia": "🔪 Mafia", "doctor": "💉 Shifokor", "detective": "🕵️ Komissar", "civil": "👤 Tinch aholi"}
+
+
+# ---------------------------------------------------------------- 📖 Hikoya zanjiri
+HUB_STORY_STARTS = [
+    "Bir kuni tongda shahar ustidan g'alati binafsha bulut paydo bo'ldi.",
+    "Eski choyxona yerto'lasidan ajoyib ovoz eshitila boshladi.",
+    "Mening tug'ilgan kunimda mehmonlar o'rniga to'tiqush keldi.",
+    "Telefonimga noma'lum raqamdan «Tez kel, xazina topildi!» degan xabar tushdi.",
+    "Kechasi derazamni kimdir uch marta taqillatdi.",
+    "Bozorda sotilayotgan tarvuzning ichidan nimadir yaltirab turardi.",
+    "Maktab direktori bugun hammaga g'alati vazifa berdi.",
+]
+
+
+class StoryGame(HubGame):
+    key, name, emoji = "story", "Hikoya zanjiri", "📖"
+    desc = "Har biri navbat bilan bitta gap qo'shadi — faqat oldingi gapni ko'rasiz. Oxirida kulgili hikoya chiqadi!"
+    min, max = 2, 10
+
+    def start(self):
+        us = self.uids()
+        random.shuffle(us)
+        self.order = us
+        n = len(us)
+        self.total = min(12, n * 2 if n <= 5 else n)
+        self.entries = [{"u": None, "x": random.choice(HUB_STORY_STARTS)}]
+        self.likes = {}
+        self.i = 0
+        self.phase = "write"
+        self.set_turn()
+
+    def set_turn(self):
+        self.writer = self.order[self.i % len(self.order)]
+        while self.writer not in self.room.players:
+            self.i += 1
+            self.writer = self.order[self.i % len(self.order)]
+            if self.i > self.total + 20:
+                return self.reveal()
+        self.deadline = hub_ms(50)
+        self.after("t", 50, lambda: self.add(self.writer, "…"))
+
+    def add(self, uid, x):
+        if self.phase != "write" or uid != self.writer:
+            return
+        self.entries.append({"u": uid, "x": x})
+        self.i += 1
+        if len(self.entries) - 1 >= self.total:
+            return self.reveal()
+        self.set_turn()
+
+    def reveal(self):
+        self.phase = "read"
+        self.cancel()
+        self.deadline = 0
+
+    def act(self, uid, m):
+        a = m.get("a")
+        if a == "write" and self.phase == "write":
+            x = str(m.get("x", "")).strip()[:160]
+            if len(x) >= 2:
+                self.add(uid, x)
+        elif a == "like" and self.phase == "read":
+            try:
+                i = int(m.get("i"))
+            except Exception:
+                return
+            if 1 <= i < len(self.entries) and self.entries[i]["u"] != uid:
+                s = self.likes.setdefault(i, set())
+                if uid in s:
+                    s.discard(uid)
+                else:
+                    s.add(uid)
+        elif a == "finish" and self.phase == "read" and uid == self.room.host:
+            sc = {}
+            for i, s in self.likes.items():
+                au = self.entries[i]["u"]
+                sc[au] = sc.get(au, 0) + len(s)
+            top = max(sc.values()) if sc else 0
+            if top:
+                self.room.win([u for u, c in sc.items() if c == top])
+            self.over = True
+            self.room.after_game()
+
+    def view(self, uid):
+        v = {"phase": self.phase, "deadline": getattr(self, "deadline", 0), "writer": getattr(self, "writer", None),
+             "n": len(self.entries) - 1, "of": self.total}
+        if self.phase == "write":
+            v["prev"] = self.entries[-1]["x"]
+        else:
+            v["story"] = [{"u": e["u"], "x": e["x"], "l": len(self.likes.get(i, ())), "me": uid in self.likes.get(i, ())}
+                          for i, e in enumerate(self.entries)]
+        return v
+
+
+# ---------------------------------------------------------------- 😂 Kulgili javob
+HUB_FUNNY = [
+    "Dunyoning yangi mo'jizasi: ____",
+    "Mening maxfiy super kuchim: ____",
+    "Ertalab uyg'onsam, oynada ____ ni ko'rdim.",
+    "Choyxonada eng g'alati buyurtma: ____",
+    "Robotlar dunyoni egallagach, birinchi qiladigani: ____",
+    "Dadamning eng sevimli gapi: «____»",
+    "Mening ismim bo'lsa, filmning nomi: «____»",
+    "Maktabda yangi fan paydo bo'ldi: «____»",
+    "Prezident bugun e'lon qildi: endi hamma ____ qilishi shart!",
+    "Bozorda yangi mahsulot: ____ — faqat 5 000 so'm!",
+    "Marsga borganimizda birinchi qilgan ishimiz: ____",
+    "Eng yomon to'y sovg'asi: ____",
+    "Mening reklamam: «____ — hayotingizni o'zgartiradi!»",
+    "Qo'shnimning to'tiqushi tinmay ____ deb baqiradi.",
+    "Agar men ot bo'lsam, ____ ni yeyman.",
+    "Kechqurun oshxonada eshitgan g'alati ovoz: ____",
+]
+
+
+class FunnyGame(HubGame):
+    key, name, emoji = "funny", "Kulgili javob", "😂"
+    desc = "Gapni eng kulgili tarzda to'ldiring. Hamma ovoz beradi — eng kulgili javob g'olib!"
+    min, max = 3, 10
+
+    def start(self):
+        self.prompts = random.sample(HUB_FUNNY, 4)
+        self.round = 0
+        self.pts = {u: 0 for u in self.uids()}
+        self.new_round()
+
+    def new_round(self):
+        self.phase = "write"
+        self.answers = {}
+        self.votes = {}
+        self.order = []
+        self.last = {}
+        self.deadline = hub_ms(60)
+        self.after("t", 60, self.begin_vote)
+
+    def begin_vote(self):
+        if self.phase != "write":
+            return
+        us = [u for u in self.answers]
+        if len(us) < 2:
+            return self.next_round()
+        random.shuffle(us)
+        self.order = us
+        self.phase = "vote"
+        self.deadline = hub_ms(40)
+        self.after("t", 40, self.show)
+
+    def show(self):
+        if self.phase != "vote":
+            return
+        cnt = {}
+        for t in self.votes.values():
+            cnt[t] = cnt.get(t, 0) + 1
+        for u, c in cnt.items():
+            self.pts[u] = self.pts.get(u, 0) + c * 100
+        self.last = cnt
+        self.phase = "show"
+        self.deadline = hub_ms(9)
+        self.after("t", 9, self.next_round)
+
+    def next_round(self):
+        self.round += 1
+        if self.round >= len(self.prompts):
+            self.phase = "over"
+            self.over = True
+            self.cancel()
+            top = max(self.pts.values()) if self.pts else 0
+            if top > 0:
+                self.room.win([u for u, v in self.pts.items() if v == top])
+            self.room.after_game()
+            return
+        self.new_round()
+
+    def act(self, uid, m):
+        a = m.get("a")
+        if a == "ans" and self.phase == "write" and uid in self.room.players:
+            x = str(m.get("x", "")).strip()[:90]
+            if x:
+                self.answers[uid] = x
+                if len(self.answers) >= len(self.room.players):
+                    self.begin_vote()
+        elif a == "vote" and self.phase == "vote":
+            t = m.get("u")
+            if t in self.answers and t != uid:
+                self.votes[uid] = t
+                if len(self.votes) >= len([u for u in self.room.players]):
+                    self.show()
+
+    def view(self, uid):
+        v = {"phase": self.phase, "deadline": getattr(self, "deadline", 0), "prompt": self.prompts[min(self.round, len(self.prompts) - 1)],
+             "round": self.round + 1, "of": len(self.prompts), "pts": self.pts,
+             "done": list(self.answers.keys()) if self.phase == "write" else [], "mine": self.answers.get(uid)}
+        if self.phase == "vote":
+            v["cards"] = [{"u": u, "x": self.answers[u], "own": u == uid} for u in self.order]
+            v["voted"] = list(self.votes.keys())
+            v["myVote"] = self.votes.get(uid)
+        if self.phase == "show":
+            v["cards"] = [{"u": u, "x": self.answers[u], "c": self.last.get(u, 0)} for u in self.order]
+        return v
+
+
+# ---------------------------------------------------------------- 🔴 4 ketma-ket
+class C4Game(HubGame):
+    key, name, emoji = "c4", "4 ketma-ket", "🔴"
+    desc = "Ikki kishilik klassik duel: 4 ta donani bir qatorga tering."
+    min, max = 2, 2
+
+    def start(self):
+        us = self.uids()
+        random.shuffle(us)
+        self.p = us
+        self.b = [[0] * 7 for _ in range(6)]
+        self.turn = 0
+        self.winner = None
+        self.line = []
+        self.phase = "play"
+        self.last = None
+        self.deadline = hub_ms(30)
+        self.after("t", 30, self.timeout)
+
+    def timeout(self):
+        if self.phase == "play":
+            self.drop(self.p[self.turn], random.choice([c for c in range(7) if self.b[0][c] == 0]))
+
+    def drop(self, uid, c):
+        if self.phase != "play" or uid != self.p[self.turn] or not (0 <= c < 7) or self.b[0][c]:
+            return
+        for r in range(5, -1, -1):
+            if not self.b[r][c]:
+                self.b[r][c] = self.turn + 1
+                self.last = [r, c]
+                break
+        line = self.find(r, c)
+        if line:
+            return self.end(uid, line)
+        if all(self.b[0][i] for i in range(7)):
+            return self.end(None, [])
+        self.turn = 1 - self.turn
+        self.deadline = hub_ms(30)
+        self.after("t", 30, self.timeout)
+
+    def find(self, r, c):
+        v = self.b[r][c]
+        for dr, dc in ((0, 1), (1, 0), (1, 1), (1, -1)):
+            cells = [[r, c]]
+            for s in (1, -1):
+                rr, cc = r + dr * s, c + dc * s
+                while 0 <= rr < 6 and 0 <= cc < 7 and self.b[rr][cc] == v:
+                    cells.append([rr, cc])
+                    rr += dr * s
+                    cc += dc * s
+            if len(cells) >= 4:
+                return cells
+        return None
+
+    def end(self, uid, line):
+        self.phase = "over"
+        self.over = True
+        self.cancel()
+        self.winner = uid
+        self.line = line
+        if uid:
+            self.room.win([uid])
+        self.room.after_game()
+
+    def act(self, uid, m):
+        if m.get("a") == "drop":
+            try:
+                self.drop(uid, int(m.get("c")))
+            except Exception:
+                pass
+
+    def on_leave(self, uid):
+        if self.phase == "play":
+            other = [u for u in self.p if u != uid]
+            self.end(other[0] if other else None, [])
+
+    def view(self, uid):
+        return {"phase": self.phase, "b": self.b, "p": self.p, "turn": self.p[self.turn], "winner": self.winner,
+                "line": self.line, "last": self.last, "deadline": getattr(self, "deadline", 0)}
+
+
+# ---------------------------------------------------------------- 🔤 So'z zanjiri
+class ChainGame(HubGame):
+    key, name, emoji = "chain", "So'z zanjiri", "🔤"
+    desc = "Oldingi so'zning oxirgi harfidan boshlanadigan yangi so'z ayting. 3 ta jon — xato qilsangiz bittasi ketadi!"
+    min, max = 2, 10
+
+    def start(self):
+        us = self.uids()
+        random.shuffle(us)
+        self.order = us
+        self.lives = {u: 3 for u in us}
+        self.used = []
+        self.letter = random.choice("aekmnorstbd")
+        self.i = 0
+        self.msg = None
+        self.phase = "play"
+        self.winner = None
+        self.speed = 0
+        self.new_turn()
+
+    def cur(self):
+        return self.order[self.i % len(self.order)]
+
+    def new_turn(self):
+        n = 0
+        while (self.lives.get(self.cur(), 0) <= 0 or self.cur() not in self.room.players) and n < 50:
+            self.i += 1
+            n += 1
+        sec = max(9, 22 - len(self.used) // 4)
+        self.deadline = hub_ms(sec)
+        self.after("t", sec, lambda: self.fail("vaqt tugadi"))
+
+    def last_letter(self, w):
+        w = hub_norm(w)
+        return w[-1] if w else ""
+
+    def fail(self, why):
+        u = self.cur()
+        self.lives[u] = self.lives.get(u, 1) - 1
+        self.msg = f"{self.name_of(u)}: {why} (-1 ❤️)"
+        self.advance()
+
+    def advance(self):
+        alive = [u for u in self.order if self.lives.get(u, 0) > 0 and u in self.room.players]
+        if len(alive) <= 1:
+            return self.end(alive[0] if alive else None)
+        self.i += 1
+        self.new_turn()
+
+    def end(self, uid):
+        self.phase = "over"
+        self.over = True
+        self.cancel()
+        self.winner = uid
+        if uid:
+            self.room.win([uid])
+        self.room.after_game()
+
+    def act(self, uid, m):
+        if m.get("a") != "word" or self.phase != "play" or uid != self.cur():
+            return
+        w = str(m.get("x", "")).strip().lower()[:30]
+        n = hub_norm(w)
+        if len(n) < 2:
+            self.room.toast(uid, "So'z kamida 2 harf bo'lsin")
+            return
+        if not re.fullmatch(r"[a-zʻʼ'’‘`\- ]+", w):
+            self.room.toast(uid, "Faqat lotin harflari")
+            return
+        if n[0] != hub_norm(self.letter)[:1]:
+            self.room.toast(uid, f"So'z «{self.letter.upper()}» harfidan boshlansin")
+            return
+        if n in [hub_norm(x) for x in self.used]:
+            self.room.toast(uid, "Bu so'z allaqachon aytilgan")
+            return
+        self.used.append(w)
+        self.letter = self.last_letter(w)
+        self.msg = None
+        self.i += 1
+        self.new_turn()
+
+    def on_leave(self, uid):
+        if self.phase == "play":
+            if self.cur() == uid:
+                self.lives[uid] = 0
+                self.advance()
+            else:
+                self.lives[uid] = 0
+                alive = [u for u in self.order if self.lives.get(u, 0) > 0 and u in self.room.players]
+                if len(alive) <= 1:
+                    self.end(alive[0] if alive else None)
+
+    def view(self, uid):
+        return {"phase": self.phase, "turn": self.cur() if self.phase == "play" else None, "letter": self.letter,
+                "lives": self.lives, "used": self.used[-14:], "n": len(self.used), "msg": self.msg,
+                "winner": self.winner, "deadline": getattr(self, "deadline", 0), "order": self.order}
+
+
+HUB_GAMES = {g.key: g for g in (MafiaGame, SpyGame, DrawGame, StoryGame, FunnyGame, C4Game, ChainGame)}
+
+
+def hub_games_info():
+    return [{"k": g.key, "n": g.name, "e": g.emoji, "d": g.desc, "min": g.min, "max": g.max} for g in HUB_GAMES.values()]
+
+
+# ---------------------------------------------------------------- Xona
+class HubRoom:
+    def __init__(self, bid, code, host, gkey):
+        self.bid, self.code, self.host = bid, code, host
+        self.gkey = gkey if gkey in HUB_GAMES else "mafia"
+        self.g = None
+        self.phase = "lobby"           # lobby | play | end
+        self.players = {}
+        self.chat = []
+        self.created = hub_now()
+        self.cleanup = None
+        self.dirty = False
+
+    # --- yordamchilar ---
+    def plist(self):
+        return [{"u": p.uid, "n": p.name, "m": p.mic, "o": p.conn is not None, "w": p.wins} for p in self.players.values()]
+
+    def public(self, uid):
+        return {"code": self.code, "host": self.host, "game": self.gkey, "phase": self.phase, "players": self.plist(),
+                "me": uid}
+
+    def view_for(self, uid):
+        v = {}
+        if self.g:
+            try:
+                v = self.g.view(uid)
+                v["talk"] = self.g.talk(uid) if self.phase == "play" else True
+            except Exception as ex:
+                logging.warning(f"hub view {self.gkey}: {ex}")
+        return v
+
+    async def send_to(self, uid, obj):
+        p = self.players.get(uid)
+        if p and p.conn:
+            await p.conn.send(obj)
+
+    async def send_all(self, obj, only=None):
+        for uid, p in list(self.players.items()):
+            if p.conn and (only is None or uid in only):
+                await p.conn.send(obj)
+
+    async def broadcast(self):
+        self.dirty = False
+        now = int(hub_now() * 1000)
+        for uid, p in list(self.players.items()):
+            if p.conn:
+                await p.conn.send({"t": "s", "now": now, "room": self.public(uid), "view": self.view_for(uid)})
+
+    def changed(self):
+        try:
+            asyncio.get_running_loop().create_task(self.broadcast())
+        except RuntimeError:
+            pass
+
+    def sys(self, text):
+        m = {"u": 0, "n": "", "x": text, "ts": int(hub_now())}
+        self.chat.append(m)
+        del self.chat[:-60]
+        try:
+            asyncio.get_running_loop().create_task(self.send_all({"t": "chat", "m": m}))
+        except RuntimeError:
+            pass
+
+    def toast(self, uid, text):
+        try:
+            asyncio.get_running_loop().create_task(self.send_to(uid, {"t": "toast", "m": text}))
+        except RuntimeError:
+            pass
+
+    def win(self, uids):
+        for u in uids:
+            p = self.players.get(u)
+            if p:
+                p.wins += 1
+
+    def after_game(self):
+        self.phase = "end"
+
+    # --- boshqaruv ---
+    def stop_game(self):
+        if self.g:
+            self.g.stop()
+        self.g = None
+
+    def back_to_lobby(self):
+        self.stop_game()
+        self.phase = "lobby"
+
+    def can_start(self):
+        G = HUB_GAMES[self.gkey]
+        n = len(self.players)
+        return G.min <= n <= G.max
+
+    def start_game(self):
+        G = HUB_GAMES[self.gkey]
+        n = len(self.players)
+        if n < G.min:
+            return f"Kamida {G.min} kishi kerak"
+        if n > G.max:
+            return f"Ko'pi bilan {G.max} kishi"
+        self.stop_game()
+        self.g = G(self)
+        self.phase = "play"
+        self.g.start()
+        return None
+
+    def remove(self, uid):
+        p = self.players.pop(uid, None)
+        if not p:
+            return
+        if self.g and self.phase == "play":
+            try:
+                self.g.on_leave(uid)
+            except Exception as ex:
+                logging.warning(f"hub on_leave: {ex}")
+        if self.host == uid and self.players:
+            online = [u for u, q in self.players.items() if q.conn]
+            self.host = (online or list(self.players))[0]
+        if self.phase == "play" and self.g:
+            G = HUB_GAMES[self.gkey]
+            if len(self.players) < G.min and not self.g.over:
+                self.back_to_lobby()
+                self.sys("⚠️ O'yinchilar yetarli emas — lobbiga qaytildi.")
+        self.changed()
+
+    def handle_chat(self, uid, text):
+        p = self.players.get(uid)
+        if not p:
+            return
+        text = (text or "").strip()[:300]
+        if not text:
+            return
+        to = None
+        if self.g and self.phase == "play":
+            try:
+                to = self.g.on_chat(uid, text)
+            except Exception as ex:
+                logging.warning(f"hub on_chat: {ex}")
+                to = None
+            if to is False:
+                self.changed()
+                return
+        m = {"u": uid, "n": p.name, "x": text, "ts": int(hub_now()), "p": bool(to)}
+        if to is None:
+            self.chat.append(m)
+            del self.chat[:-60]
+        asyncio.get_running_loop().create_task(self.send_all({"t": "chat", "m": m}, only=to))
+
+
+HUB_GC_TASK = {}
+
+
+def hub_new_code(bid):
+    for _ in range(50):
+        c = "".join(random.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(4))
+        if (bid, c) not in HUB_ROOMS:
+            return c
+    return None
+
+
+def hub_gc():
+    now = hub_now()
+    for k, r in list(HUB_ROOMS.items()):
+        online = any(p.conn for p in r.players.values())
+        if not online and now - r.created > 600 and (r.cleanup is None or now - r.cleanup > 300):
+            r.stop_game()
+            HUB_ROOMS.pop(k, None)
+
+
+class HubConn:
+    """Transportdan mustaqil ulanish: send(dict) — async."""
+
+    def __init__(self, ws):
+        self.ws = ws
+        self.uid = None
+        self.name = ""
+        self.bid = None
+        self.room = None
+
+    async def send(self, obj):
+        try:
+            await self.ws.send_str(json.dumps(obj, ensure_ascii=False))
+        except Exception:
+            pass
+
+
+async def hub_leave(conn: HubConn, hard: bool):
+    r = conn.room
+    conn.room = None
+    if not r:
+        return
+    p = r.players.get(conn.uid)
+    if not p or p.conn is not conn:
+        return
+    p.conn = None
+    p.mic = False
+    if hard or r.phase == "lobby":
+        # lobbida chiqib ketgan — o'chiriladi; o'yin paytida (uzilish) joyi saqlanadi
+        r.remove(conn.uid)
+    else:
+        r.changed()
+    r.cleanup = hub_now()
+    for q in r.players.values():
+        if q.conn:
+            await q.conn.send({"t": "left", "u": conn.uid, "hard": hard})
+    if not r.players:
+        HUB_ROOMS.pop((r.bid, r.code), None)
+
+
+async def hub_handle(conn: HubConn, m: dict):
+    """Bitta xabarni qayta ishlaydi. conn.uid / conn.bid autentifikatsiyadan keyin o'rnatiladi."""
+    t = m.get("t")
+    bid = conn.bid
+    if t == "create":
+        if len(HUB_ROOMS) >= HUB_MAX_ROOMS:
+            hub_gc()
+        if len(HUB_ROOMS) >= HUB_MAX_ROOMS:
+            return await conn.send({"t": "err", "m": "Hozir serverda xonalar ko'p. Birozdan so'ng urinib ko'ring."})
+        await hub_leave(conn, True)
+        code = hub_new_code(bid)
+        if not code:
+            return await conn.send({"t": "err", "m": "Xona yaratib bo'lmadi."})
+        r = HubRoom(bid, code, conn.uid, str(m.get("g", "mafia")))
+        HUB_ROOMS[(bid, code)] = r
+        p = HubP(conn.uid, conn.name)
+        p.conn = conn
+        r.players[conn.uid] = p
+        conn.room = r
+        return await r.broadcast()
+    if t == "join":
+        code = str(m.get("room", "")).strip().upper()
+        r = HUB_ROOMS.get((bid, code))
+        if not r:
+            return await conn.send({"t": "err", "m": "Bunday xona topilmadi.", "code": "noroom"})
+        old = r.players.get(conn.uid)
+        if old:                                   # qayta ulanish
+            if old.conn is not None and old.conn is not conn:
+                try:
+                    await old.conn.send({"t": "err", "m": "Boshqa qurilmadan kirdingiz.", "code": "dup"})
+                except Exception:
+                    pass
+                old.conn.room = None
+            old.conn = conn
+            old.name = conn.name or old.name
+            conn.room = r
+            await r.broadcast()
+            await conn.send({"t": "chatlog", "list": r.chat[-40:]})
+            if r.g and r.gkey == "draw" and getattr(r.g, "strokes", None):
+                await conn.send({"t": "strokes", "list": r.g.strokes, "sid": r.g.sid})
+            return
+        if r.phase != "lobby":
+            return await conn.send({"t": "err", "m": "O'yin allaqachon boshlangan.", "code": "started"})
+        if len(r.players) >= HUB_GAMES[r.gkey].max and len(r.players) >= 10:
+            return await conn.send({"t": "err", "m": "Xona to'la.", "code": "full"})
+        if len(r.players) >= 10:
+            return await conn.send({"t": "err", "m": "Xona to'la (10 kishi).", "code": "full"})
+        await hub_leave(conn, True)
+        p = HubP(conn.uid, conn.name)
+        p.conn = conn
+        r.players[conn.uid] = p
+        conn.room = r
+        r.sys(f"👋 {p.name} qo'shildi")
+        await r.broadcast()
+        await conn.send({"t": "chatlog", "list": r.chat[-40:]})
+        return
+    r = conn.room
+    if not r:
+        return
+    uid = conn.uid
+    if t == "leave":
+        await hub_leave(conn, True)
+        return await conn.send({"t": "home"})
+    if t == "chat":
+        return r.handle_chat(uid, m.get("x"))
+    if t == "game" and uid == r.host and r.phase == "lobby":
+        g = str(m.get("g", ""))
+        if g in HUB_GAMES:
+            r.gkey = g
+            await r.broadcast()
+        return
+    if t == "start" and uid == r.host and r.phase in ("lobby", "end"):
+        err = r.start_game()
+        if err:
+            return await conn.send({"t": "toast", "m": err})
+        return await r.broadcast()
+    if t == "again" and uid == r.host and r.phase in ("end", "play"):
+        r.back_to_lobby()
+        return await r.broadcast()
+    if t == "kick" and uid == r.host and r.phase == "lobby":
+        try:
+            ku = int(m.get("u"))
+        except Exception:
+            return
+        kp = r.players.get(ku)
+        if kp and ku != uid:
+            if kp.conn:
+                await kp.conn.send({"t": "kicked"})
+                kp.conn.room = None
+            r.remove(ku)
+        return
+    if t == "act" and r.g and r.phase == "play":
+        try:
+            r.g.act(uid, m)
+        except Exception as ex:
+            logging.warning(f"hub act {r.gkey}: {ex}")
+        if r.g and r.g.over and r.phase == "play":
+            r.phase = "end" if r.phase == "play" else r.phase
+        return await r.broadcast()
+    if t in ("stroke", "clear", "undo") and r.g and r.gkey == "draw" and r.phase == "play":
+        g = r.g
+        ok = g.stroke(uid, m.get("s")) if t == "stroke" else (g.clear(uid) if t == "clear" else g.undo(uid))
+        if ok:
+            out = {"t": t, "s": (g.last_stroke if t == "stroke" else None), "sid": g.sid}
+            await r.send_all(out, only={u for u in r.players if u != uid})
+        return
+    if t == "sync" and r.g and r.gkey == "draw":
+        await conn.send({"t": "strokes", "list": r.g.strokes, "sid": r.g.sid})
+        return
+    if t == "mic":
+        p = r.players.get(uid)
+        if p:
+            p.mic = bool(m.get("on"))
+            await r.broadcast()
+        return
+    if t == "rtc":
+        try:
+            to = int(m.get("to"))
+        except Exception:
+            return
+        if to in r.players and to != uid:
+            await r.send_to(to, {"t": "rtc", "from": uid, "d": m.get("d")})
+        return
+
+
+# ===================== /O'YINLAR MARKAZI =====================
+
+
+HUB_HTML = r"""<!DOCTYPE html>
+<html lang="uz"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>O'yinlar markazi</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{--bg:#0a0c16;--bg2:#10142200;--card:#161b2e;--card2:#1d2338;--bd:rgba(255,255,255,.09);--tx:#f2f4fb;--mu:#8f98b8;--ac:#7c5cff;--ac2:#ff5c9a;--ok:#38d6a0;--bad:#ff5d6c;--warn:#ffb84d}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--tx);font:15px/1.4 -apple-system,"Segoe UI",Roboto,system-ui,sans-serif;overflow:hidden;overscroll-behavior:none}
+button{font:inherit;color:inherit;cursor:pointer;border:0;background:none}
+input,textarea{font:inherit;color:var(--tx);background:var(--card2);border:1px solid var(--bd);border-radius:14px;padding:12px 14px;width:100%;outline:none}
+input:focus,textarea:focus{border-color:var(--ac)}
+#app{position:fixed;inset:0;display:flex;flex-direction:column;background:radial-gradient(900px 500px at 10% -10%,rgba(124,92,255,.22),transparent 60%),radial-gradient(700px 500px at 100% 0,rgba(255,92,154,.14),transparent 55%),var(--bg)}
+.top{display:flex;align-items:center;gap:10px;padding:calc(env(safe-area-inset-top,0px) + 12px) 16px 10px}
+.top h1{font-size:19px;margin:0;flex:1;font-weight:800;letter-spacing:-.2px}
+.ib{width:40px;height:40px;border-radius:13px;background:var(--card);border:1px solid var(--bd);display:flex;align-items:center;justify-content:center;font-size:18px;position:relative}
+.ib.on{background:linear-gradient(135deg,var(--ac),var(--ac2));border-color:transparent}
+.ib .bd{position:absolute;top:-5px;right:-5px;background:var(--bad);color:#fff;border-radius:99px;font-size:11px;font-weight:800;min-width:18px;height:18px;padding:0 5px;display:flex;align-items:center;justify-content:center}
+#main{flex:1;overflow-y:auto;overflow-x:hidden;padding:4px 16px calc(env(safe-area-inset-bottom,0px) + 90px);-webkit-overflow-scrolling:touch}
+.btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:14px 18px;border-radius:16px;font-weight:800;background:linear-gradient(135deg,var(--ac),var(--ac2));box-shadow:0 10px 30px rgba(124,92,255,.35)}
+.btn.sec{background:var(--card2);box-shadow:none;border:1px solid var(--bd)}
+.btn.bad{background:linear-gradient(135deg,#ff5d6c,#ff8a5d)}
+.btn[disabled]{opacity:.45;box-shadow:none}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:20px;padding:14px;margin:10px 0}
+.mu{color:var(--mu)}.sm{font-size:13px}.c{text-align:center}
+h2{font-size:17px;margin:18px 0 8px}
+.games{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.gc{position:relative;overflow:hidden;border-radius:22px;padding:16px 14px 14px;min-height:150px;text-align:left;border:1px solid var(--bd);display:flex;flex-direction:column;gap:6px}
+.gc .em{font-size:38px;line-height:1}
+.gc b{font-size:16px}.gc span{font-size:12px;opacity:.85;line-height:1.3}
+.gc .pl{margin-top:auto;font-size:12px;font-weight:700;background:rgba(0,0,0,.28);align-self:flex-start;padding:4px 10px;border-radius:99px}
+.g-mafia{background:linear-gradient(150deg,#3a1030,#14091f)}
+.g-spy{background:linear-gradient(150deg,#0f3a55,#0a1626)}
+.g-draw{background:linear-gradient(150deg,#5a2a0d,#1f1109)}
+.g-story{background:linear-gradient(150deg,#2f2b66,#12122b)}
+.g-funny{background:linear-gradient(150deg,#5a4a0a,#1d1707)}
+.g-c4{background:linear-gradient(150deg,#5a1020,#1c0910)}
+.g-chain{background:linear-gradient(150deg,#0b4a3a,#08201b)}
+.codebox{display:flex;gap:8px}
+.codebox input{text-transform:uppercase;letter-spacing:6px;text-align:center;font-weight:800;font-size:20px}
+.codebox button{width:auto;padding:0 22px;flex:none}
+.code{font-size:40px;font-weight:900;letter-spacing:10px;text-align:center;background:linear-gradient(135deg,var(--ac),var(--ac2));-webkit-background-clip:text;background-clip:text;color:transparent;padding-left:10px}
+.pl-row{display:flex;align-items:center;gap:12px;padding:10px 4px;border-bottom:1px solid var(--bd)}
+.pl-row:last-child{border:0}
+.av{width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:16px;color:#fff;flex:none;position:relative}
+.av.off{opacity:.4}.av .mic{position:absolute;right:-3px;bottom:-3px;font-size:13px;background:var(--bg);border-radius:50%;width:20px;height:20px;display:flex;align-items:center;justify-content:center}
+.chips{display:flex;gap:8px;overflow-x:auto;padding:2px 0 8px;scrollbar-width:none}
+.chip{flex:none;padding:9px 14px;border-radius:99px;background:var(--card2);border:1px solid var(--bd);font-weight:700;font-size:13px}
+.chip.on{background:linear-gradient(135deg,var(--ac),var(--ac2));border-color:transparent}
+.dock{position:fixed;left:0;right:0;bottom:0;padding:10px 16px calc(env(safe-area-inset-bottom,0px) + 12px);display:flex;gap:10px;background:linear-gradient(transparent,var(--bg) 40%);z-index:5}
+.dock .btn{flex:1}
+.mic{}
+.timer{font-weight:800;font-variant-numeric:tabular-nums;background:var(--card);border:1px solid var(--bd);padding:6px 12px;border-radius:99px;font-size:14px}
+.timer.low{color:var(--bad);border-color:var(--bad)}
+.pgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+.pc{background:var(--card);border:2px solid var(--bd);border-radius:18px;padding:12px;display:flex;align-items:center;gap:10px;text-align:left;position:relative;min-height:62px}
+.pc.sel{border-color:var(--ac);background:rgba(124,92,255,.18)}
+.pc.dead{opacity:.35}
+.pc .cnt{margin-left:auto;background:var(--bad);color:#fff;border-radius:99px;font-weight:800;font-size:12px;min-width:24px;height:24px;display:flex;align-items:center;justify-content:center;padding:0 6px}
+.pc[disabled]{opacity:.5}
+.role{border-radius:26px;padding:26px 18px;text-align:center;margin:12px 0;border:1px solid var(--bd)}
+.role .big{font-size:64px;line-height:1.1}.role h3{margin:8px 0 4px;font-size:24px}
+.banner{border-radius:20px;padding:14px 16px;margin:10px 0;background:var(--card2);border:1px solid var(--bd)}
+.night{background:linear-gradient(160deg,#0d1236,#07091c);border-color:#232a66}
+.win{background:linear-gradient(135deg,rgba(56,214,160,.25),rgba(124,92,255,.25));border-color:rgba(56,214,160,.5)}
+.locs{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.loc{padding:10px 6px;border-radius:14px;background:var(--card2);border:1px solid var(--bd);font-size:12.5px;font-weight:600;text-align:center}
+.loc.mine{border-color:var(--ok);background:rgba(56,214,160,.18)}
+.loc.x{opacity:.35;text-decoration:line-through}
+.cv-wrap{background:#fff;border-radius:20px;overflow:hidden;touch-action:none;position:relative;aspect-ratio:4/3;width:100%;box-shadow:0 8px 30px rgba(0,0,0,.4)}
+canvas{width:100%;height:100%;display:block;touch-action:none}
+.tools{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:10px 0}
+.sw{width:30px;height:30px;border-radius:50%;border:3px solid transparent;flex:none}
+.sw.on{border-color:#fff;box-shadow:0 0 0 2px var(--ac)}
+.mask{font-size:26px;font-weight:900;letter-spacing:5px;text-align:center;margin:8px 0}
+.score{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;margin:6px 0}
+.sc{flex:none;background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:6px 10px;font-size:12px;font-weight:700;display:flex;gap:6px;align-items:center}
+.sc.me{border-color:var(--ac)}
+.sc.cur{border-color:var(--ok);background:rgba(56,214,160,.14)}
+.story p{margin:6px 0;padding:10px 12px;background:var(--card2);border-radius:14px;display:flex;gap:10px;align-items:flex-start}
+.story p span{flex:1}
+.like{flex:none;background:var(--card);border:1px solid var(--bd);border-radius:99px;padding:3px 10px;font-size:13px;font-weight:700}
+.like.on{background:rgba(255,92,154,.25);border-color:var(--ac2)}
+.prompt{font-size:21px;font-weight:800;text-align:center;line-height:1.35;padding:18px 8px}
+.ans{width:100%;text-align:left;padding:14px;margin:8px 0;border-radius:16px;background:var(--card);border:2px solid var(--bd);font-weight:600;font-size:16px;display:flex;gap:10px;align-items:center}
+.ans.sel{border-color:var(--ac2);background:rgba(255,92,154,.15)}
+.ans .by{margin-left:auto;font-size:12px;color:var(--mu);white-space:nowrap}
+.board{display:grid;grid-template-columns:repeat(7,1fr);gap:5px;background:#1b3a8f;padding:8px;border-radius:20px;box-shadow:0 10px 30px rgba(0,0,0,.45)}
+.cell{aspect-ratio:1;border-radius:50%;background:#0a0c16;position:relative}
+.cell.r{background:radial-gradient(circle at 35% 30%,#ff8a95,#e0243a)}
+.cell.y{background:radial-gradient(circle at 35% 30%,#fff3a0,#f0b400)}
+.cell.w{box-shadow:0 0 0 3px #fff,0 0 18px #fff}
+.cell.l::after{content:"";position:absolute;inset:30%;border-radius:50%;background:rgba(255,255,255,.55)}
+.colbtns{display:grid;grid-template-columns:repeat(7,1fr);gap:5px;padding:0 8px;margin-bottom:6px}
+.colbtns button{background:var(--card2);border-radius:10px;padding:8px 0;font-size:16px}
+.letter{font-size:92px;font-weight:900;text-align:center;line-height:1;background:linear-gradient(135deg,var(--ac),var(--ac2));-webkit-background-clip:text;background-clip:text;color:transparent;margin:8px 0}
+.used{display:flex;flex-wrap:wrap;gap:6px;justify-content:center}
+.used span{background:var(--card2);border-radius:99px;padding:5px 12px;font-size:13px}
+#chat{position:fixed;inset:0;z-index:20;display:none;flex-direction:column;background:rgba(5,6,12,.72);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+#chat.open{display:flex}
+#chat .sheet{margin-top:auto;height:72%;background:var(--card);border-radius:26px 26px 0 0;border:1px solid var(--bd);display:flex;flex-direction:column;overflow:hidden}
+#chat .hd{display:flex;align-items:center;padding:14px 16px 8px;font-weight:800;font-size:16px}
+#chat .hd button{margin-left:auto;font-size:20px;padding:4px 8px}
+#msgs{flex:1;overflow-y:auto;padding:4px 14px;display:flex;flex-direction:column;gap:6px}
+.m{max-width:84%;padding:8px 12px;border-radius:16px;background:var(--card2);align-self:flex-start;word-break:break-word}
+.m.me{align-self:flex-end;background:linear-gradient(135deg,var(--ac),#9b4dff)}
+.m b{display:block;font-size:11.5px;opacity:.8;margin-bottom:1px}
+.m.sys{align-self:center;background:none;color:var(--mu);font-size:12.5px;text-align:center}
+.m.pv{border:1px dashed var(--ac2)}
+.cin{display:flex;gap:8px;padding:10px 12px calc(env(safe-area-inset-bottom,0px) + 10px)}
+.cin button{flex:none;width:48px;border-radius:14px;background:linear-gradient(135deg,var(--ac),var(--ac2));font-size:18px}
+#toast{position:fixed;left:50%;top:calc(env(safe-area-inset-top,0px) + 70px);transform:translateX(-50%) translateY(-20px);background:#262d4a;border:1px solid var(--bd);padding:10px 16px;border-radius:14px;font-weight:600;opacity:0;pointer-events:none;transition:.25s;z-index:50;max-width:90%;text-align:center}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.sheetbg{position:fixed;inset:0;z-index:15;background:rgba(5,6,12,.7);display:flex;align-items:flex-end}
+.sheetbg .sh{width:100%;background:var(--card);border-radius:26px 26px 0 0;padding:20px 16px calc(env(safe-area-inset-bottom,0px) + 18px);border:1px solid var(--bd)}
+.hint{font-size:12.5px;color:var(--mu);text-align:center;margin:6px 0}
+.muted-bar{background:rgba(255,184,77,.15);border:1px solid rgba(255,184,77,.4);color:var(--warn);border-radius:12px;padding:8px 12px;font-size:13px;margin:8px 0;text-align:center}
+.pulse{animation:pl 1.4s infinite}@keyframes pl{50%{opacity:.5}}
+.pop{animation:pop .35s}@keyframes pop{from{transform:scale(.85);opacity:0}}
+</style></head>
+<body>
+<div id="app">
+  <div class="top" id="top"></div>
+  <div id="main"></div>
+  <div class="dock" id="dock" style="display:none"></div>
+</div>
+<div id="chat"><div class="sheet"><div class="hd">💬 Chat <button id="chatx">✕</button></div><div id="msgs"></div>
+<div class="cin"><input id="cin" placeholder="Xabar yozing..." maxlength="300" autocomplete="off"><button id="csend">➤</button></div></div></div>
+<div id="toast"></div>
+<script>
+(function () {
+"use strict";
+var tg = window.Telegram && Telegram.WebApp;
+if (tg) { try { tg.ready(); tg.expand(); tg.disableVerticalSwipes && tg.disableVerticalSwipes(); tg.setHeaderColor && tg.setHeaderColor("#0a0c16"); tg.setBackgroundColor && tg.setBackgroundColor("#0a0c16"); } catch (e) {} }
+var QS = new URLSearchParams(location.search);
+var BID = QS.get("b") || "";
+var INIT = (tg && tg.initData) || QS.get("tinit") || "";
+var $ = function (s) { return document.querySelector(s); };
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return {"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]; }); }
+var COLORS = ["#7c5cff", "#ff5c9a", "#38d6a0", "#ffb84d", "#4da3ff", "#ff7a4d", "#b86bff", "#2ec4b6", "#e84a5f", "#8bc34a"];
+function colorOf(u) { return COLORS[Math.abs(u) % COLORS.length]; }
+
+var S = {ws: null, me: 0, name: "", bot: "", room: null, view: {}, games: [], chat: [], unread: 0, skew: 0, ok: false, rtc: {}, local: null, micOn: false,
+         tried: 0, joinCode: (QS.get("room") || "").toUpperCase(), sid: -1, sheet: null, inChat: false};
+function gameInfo(k) { for (var i = 0; i < S.games.length; i++) if (S.games[i].k === k) return S.games[i]; return {n: k, e: "🎮", d: "", min: 2, max: 10}; }
+function pl(u) { var ps = S.room ? S.room.players : []; for (var i = 0; i < ps.length; i++) if (ps[i].u === u) return ps[i]; return null; }
+function pname(u) { var p = pl(u); return p ? p.n : "?"; }
+function av(u, off) { var p = pl(u), n = p ? p.n : "?"; return '<div class="av' + (off ? " off" : "") + '" style="background:' + colorOf(u) + '">' + esc(n.charAt(0).toUpperCase()) + (p && p.m ? '<span class="mic">🎙</span>' : "") + "</div>"; }
+function toast(t) { var e = $("#toast"); e.textContent = t; e.classList.add("show"); clearTimeout(toast.t); toast.t = setTimeout(function () { e.classList.remove("show"); }, 2600); }
+function buzz() { try { tg && tg.HapticFeedback && tg.HapticFeedback.impactOccurred("light"); } catch (e) {} }
+
+// ---------------- ulanish ----------------
+function send(o) { if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify(o)); }
+function connect() {
+  var proto = location.protocol === "https:" ? "wss:" : "ws:";
+  var ws = new WebSocket(proto + "//" + location.host + "/ws/hub?b=" + encodeURIComponent(BID));
+  S.ws = ws;
+  ws.onopen = function () { S.tried = 0; send({t: "hello", init: INIT, room: S.room ? S.room.code : S.joinCode}); };
+  ws.onmessage = function (e) { var m; try { m = JSON.parse(e.data); } catch (x) { return; } onMsg(m); };
+  ws.onclose = function () { S.ok = false; if (S.fatal) return; S.tried++; setTimeout(connect, Math.min(4000, 400 * S.tried)); if (S.tried === 2) toast("Ulanish uzildi, qayta ulanmoqda..."); };
+}
+document.addEventListener("visibilitychange", function () { if (!document.hidden && S.ws && S.ws.readyState > 1) connect(); });
+
+function onMsg(m) {
+  var t = m.t;
+  if (t === "hello") { S.ok = true; S.me = m.you; S.name = m.name; S.bot = m.bot || ""; S.games = m.games || []; S.joinCode = ""; render(); }
+  else if (t === "s") {
+    S.skew = m.now - Date.now(); var was = S.room; S.room = m.room; S.view = m.view || {};
+    if (!was) { S.chat = S.chat.slice(-40); }
+    rtcSync(); applyTalk(); render();
+  }
+  else if (t === "chat") { addChat(m.m); }
+  else if (t === "chatlog") { S.chat = m.list || []; S.unread = 0; renderChat(); }
+  else if (t === "toast") { toast(m.m); }
+  else if (t === "err") { toast(m.m); if (m.code === "noroom" || m.code === "started" || m.code === "full") { S.joinCode = ""; } if (m.code === "dup") { S.fatal = true; document.body.innerHTML = '<div style="padding:40px;text-align:center">Boshqa qurilmadan kirdingiz.<br>Bu oynani yopishingiz mumkin.</div>'; } }
+  else if (t === "home" || t === "kicked") { leaveLocal(); if (t === "kicked") toast("Xonadan chiqarildingiz"); render(); }
+  else if (t === "left") { closePeer(m.u); }
+  else if (t === "rtc") { onRtc(m); }
+  else if (t === "strokes") { cvLoad(m.list || [], m.sid); }
+  else if (t === "stroke") { cvStroke(m.s, m.sid); }
+  else if (t === "clear") { cvReset(); }
+  else if (t === "undo") { cvUndo(); }
+}
+function leaveLocal() { S.room = null; S.view = {}; S.chat = []; S.unread = 0; S.sid = -1; Object.keys(S.rtc).forEach(function (k) { closePeer(+k); }); micOff(); closeChat(); }
+
+// ---------------- chat ----------------
+function addChat(m) {
+  S.chat.push(m); if (S.chat.length > 80) S.chat.shift();
+  if (!S.inChat && m.u !== S.me && m.u !== 0) { S.unread++; updBadge(); }
+  if (S.inChat) appendMsg(m);
+}
+function msgHtml(m) {
+  if (m.u === 0) return '<div class="m sys">' + esc(m.x) + "</div>";
+  return '<div class="m' + (m.u === S.me ? " me" : "") + (m.p ? " pv" : "") + '">' + (m.u === S.me ? "" : "<b>" + esc(m.n) + (m.p ? " 🔒" : "") + "</b>") + esc(m.x) + "</div>";
+}
+function appendMsg(m) { var b = $("#msgs"); b.insertAdjacentHTML("beforeend", msgHtml(m)); b.scrollTop = b.scrollHeight; }
+function renderChat() { var b = $("#msgs"); b.innerHTML = S.chat.map(msgHtml).join(""); b.scrollTop = b.scrollHeight; }
+function openChat() { S.inChat = true; S.unread = 0; $("#chat").classList.add("open"); renderChat(); updBadge(); setTimeout(function () { $("#cin").focus(); }, 150); }
+function closeChat() { S.inChat = false; $("#chat").classList.remove("open"); }
+function updBadge() { var b = $("#chbd"); if (b) { b.textContent = S.unread; b.style.display = S.unread ? "flex" : "none"; } }
+function sendChat() { var i = $("#cin"), x = i.value.trim(); if (!x) return; send({t: "chat", x: x}); i.value = ""; }
+$("#csend").onclick = sendChat; $("#cin").onkeydown = function (e) { if (e.key === "Enter") sendChat(); }; $("#chatx").onclick = closeChat;
+
+// ---------------- mikrofon (WebRTC) ----------------
+var ICE = {iceServers: [{urls: "stun:stun.l.google.com:19302"}, {urls: "stun:stun1.l.google.com:19302"}]};
+function rtcSync() {
+  if (!S.room || !window.RTCPeerConnection) return;
+  var ids = S.room.players.map(function (p) { return p.u; }).filter(function (u) { return u !== S.me; });
+  ids.forEach(function (u) { if (!S.rtc[u]) mkPeer(u, S.me < u); });
+  Object.keys(S.rtc).forEach(function (k) { if (ids.indexOf(+k) < 0) closePeer(+k); });
+}
+function mkPeer(u, init) {
+  var pc = new RTCPeerConnection(ICE), o = {pc: pc, audio: null, pend: []};
+  S.rtc[u] = o;
+  var tr = pc.addTransceiver("audio", {direction: "sendrecv"}); o.sender = tr.sender;
+  if (S.local) { try { tr.sender.replaceTrack(S.local.getAudioTracks()[0]); } catch (e) {} }
+  pc.onicecandidate = function (e) { if (e.candidate) send({t: "rtc", to: u, d: {c: e.candidate}}); };
+  pc.ontrack = function (e) {
+    if (!o.audio) { o.audio = new Audio(); o.audio.autoplay = true; o.audio.playsInline = true; document.body.appendChild(o.audio); }
+    o.audio.srcObject = (e.streams && e.streams[0]) || new MediaStream([e.track]); var p = o.audio.play(); if (p && p.catch) p.catch(function () {});
+  };
+  if (init) { pc.createOffer().then(function (of) { return pc.setLocalDescription(of); }).then(function () { send({t: "rtc", to: u, d: {s: pc.localDescription}}); }).catch(function () {}); }
+}
+function closePeer(u) { var o = S.rtc[u]; if (!o) return; try { o.pc.close(); } catch (e) {} if (o.audio) { try { o.audio.srcObject = null; o.audio.remove(); } catch (e) {} } delete S.rtc[u]; }
+function onRtc(m) {
+  var u = m.from, d = m.d || {}; if (!window.RTCPeerConnection) return;
+  var o = S.rtc[u]; if (!o) { mkPeer(u, false); o = S.rtc[u]; }
+  var pc = o.pc;
+  if (d.s) {
+    if (d.s.type === "offer" && pc.signalingState !== "stable") { closePeer(u); mkPeer(u, false); o = S.rtc[u]; pc = o.pc; }
+    pc.setRemoteDescription(d.s).then(function () {
+      o.pend.splice(0).forEach(function (c) { pc.addIceCandidate(c).catch(function () {}); });
+      if (d.s.type === "offer") return pc.createAnswer().then(function (a) { return pc.setLocalDescription(a); }).then(function () { send({t: "rtc", to: u, d: {s: pc.localDescription}}); });
+    }).catch(function () {});
+  } else if (d.c) { if (pc.remoteDescription) pc.addIceCandidate(d.c).catch(function () {}); else o.pend.push(d.c); }
+}
+function micOn() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { toast("Bu qurilmada mikrofon ishlamaydi"); return; }
+  navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true, autoGainControl: true}}).then(function (st) {
+    S.local = st; S.micOn = true; var tk = st.getAudioTracks()[0];
+    Object.keys(S.rtc).forEach(function (k) { try { S.rtc[k].sender.replaceTrack(tk); } catch (e) {} });
+    applyTalk(); send({t: "mic", on: true}); render();
+  }).catch(function () { toast("Mikrofonga ruxsat berilmadi. Telefon sozlamalaridan ruxsat bering."); });
+}
+function micOff() {
+  if (S.local) { S.local.getTracks().forEach(function (t) { t.stop(); }); }
+  Object.keys(S.rtc).forEach(function (k) { try { S.rtc[k].sender.replaceTrack(null); } catch (e) {} });
+  S.local = null; var was = S.micOn; S.micOn = false; if (was) send({t: "mic", on: false});
+}
+function talkAllowed() { return !S.room || S.room.phase !== "play" || S.view.talk !== false; }
+function applyTalk() { if (S.local) S.local.getAudioTracks().forEach(function (t) { t.enabled = talkAllowed(); }); }
+
+// ---------------- vaqt ----------------
+function leftSec(dl) { return Math.max(0, Math.ceil((dl - (Date.now() + S.skew)) / 1000)); }
+function timerHtml(dl) { if (!dl) return ""; var s = leftSec(dl); return '<span class="timer' + (s <= 8 ? " low" : "") + '" data-dl="' + dl + '">⏱ ' + s + "</span>"; }
+setInterval(function () { document.querySelectorAll("[data-dl]").forEach(function (e) { var s = leftSec(+e.getAttribute("data-dl")); e.textContent = "⏱ " + s; e.classList.toggle("low", s <= 8); }); }, 400);
+
+// ---------------- umumiy render ----------------
+function render() {
+  if (!S.ok) { $("#top").innerHTML = '<h1>🎮 O\'yinlar markazi</h1>'; $("#main").innerHTML = '<div class="c mu pulse" style="padding:60px 0">Ulanmoqda...</div>'; $("#dock").style.display = "none"; return; }
+  var fid = document.activeElement && document.activeElement.id, fval = fid ? document.activeElement.value : null, fsel = fid ? document.activeElement.selectionStart : 0;
+  if (!S.room) renderHome(); else if (S.room.phase === "lobby") renderLobby(); else renderGame();
+  if (fid && fid !== "cin") { var el = document.getElementById(fid); if (el && fval != null) { el.value = fval; try { el.focus(); el.setSelectionRange(fsel, fsel); } catch (e) {} } }
+  updBadge();
+}
+function topBar(title, back) {
+  var t = '<button class="ib" data-a="' + (back ? "leave" : "none") + '" style="' + (back ? "" : "visibility:hidden") + '">←</button><h1>' + title + "</h1>";
+  if (S.room) {
+    t += '<button class="ib' + (S.micOn ? " on" : "") + '" data-a="mic">' + (S.micOn ? "🎙" : "🔇") + '</button>';
+    t += '<button class="ib" data-a="chat">💬<span class="bd" id="chbd" style="display:none">0</span></button>';
+  }
+  $("#top").innerHTML = t;
+}
+
+// ---------------- bosh sahifa ----------------
+function renderHome() {
+  topBar("🎮 O'yinlar markazi", false); $("#dock").style.display = "none";
+  var h = '<div class="card" style="background:linear-gradient(135deg,rgba(124,92,255,.25),rgba(255,92,154,.18))"><b>Salom, ' + esc(S.name) + '! 👋</b><div class="mu sm">O\'yin tanlang — xona oching va do\'stlaringizni chaqiring. Gaplashish uchun 🎙 mikrofonni yoqing.</div></div>';
+  h += '<h2>Kod bilan kirish</h2><div class="codebox"><input id="jc" maxlength="4" placeholder="ABCD" autocomplete="off"><button class="btn" data-a="join">Kirish</button></div>';
+  h += "<h2>O'yinlar</h2><div class=\"games\">";
+  S.games.forEach(function (g) { h += '<button class="gc g-' + g.k + '" data-a="new" data-g="' + g.k + '"><div class="em">' + g.e + "</div><b>" + esc(g.n) + "</b><span>" + esc(g.d) + '</span><div class="pl">👥 ' + (g.min === g.max ? g.min : g.min + "–" + g.max) + " kishi</div></button>"; });
+  h += "</div>";
+  $("#main").innerHTML = h;
+}
+
+// ---------------- lobbi ----------------
+function renderLobby() {
+  var R = S.room, g = gameInfo(R.game), host = R.host === S.me;
+  topBar(g.e + " " + esc(g.n), true);
+  var h = '<div class="card c"><div class="mu sm">Xona kodi</div><div class="code">' + esc(R.code) + '</div><div class="row" style="display:flex;gap:8px;margin-top:10px"><button class="btn sec" data-a="invite">📨 Taklif qilish</button><button class="btn sec" data-a="copy">📋 Nusxa</button></div></div>';
+  if (host) {
+    h += '<div class="chips">' + S.games.map(function (x) { return '<button class="chip' + (x.k === R.game ? " on" : "") + '" data-a="game" data-g="' + x.k + '">' + x.e + " " + esc(x.n) + "</button>"; }).join("") + "</div>";
+  }
+  h += '<div class="card"><b>' + g.e + " " + esc(g.n) + '</b><div class="mu sm">' + esc(g.d) + '</div><div class="sm" style="margin-top:6px">👥 Kerak: <b>' + (g.min === g.max ? g.min : g.min + "–" + g.max) + "</b> kishi</div></div>";
+  h += "<h2>O'yinchilar (" + R.players.length + ")</h2><div class=\"card\" style=\"padding:6px 14px\">";
+  R.players.forEach(function (p) {
+    h += '<div class="pl-row">' + av(p.u, !p.o) + '<div style="flex:1"><b>' + esc(p.n) + (p.u === S.me ? " (siz)" : "") + "</b>" + (p.u === R.host ? ' <span title="Xona egasi">👑</span>' : "") + '<div class="mu sm">' + (p.o ? (p.m ? "🎙 gapirishi mumkin" : "online") : "uzilgan") + (p.w ? " · 🏆 " + p.w : "") + "</div></div>" +
+         (host && p.u !== S.me ? '<button class="ib" data-a="kick" data-u="' + p.u + '">✕</button>' : "") + "</div>";
+  });
+  h += "</div>";
+  $("#main").innerHTML = h;
+  var d = $("#dock"); d.style.display = "flex";
+  var n = R.players.length, ok = n >= g.min && n <= g.max;
+  d.innerHTML = host ? '<button class="btn" data-a="start"' + (ok ? "" : " disabled") + ">" + (ok ? "▶️ O'yinni boshlash" : "Yana " + Math.max(0, g.min - n) + " kishi kerak") + "</button>" : '<button class="btn sec" disabled>⏳ Xona egasi boshlashini kuting...</button>';
+}
+
+// ---------------- o'yin ekrani ----------------
+function renderGame() {
+  var R = S.room, v = S.view, g = gameInfo(R.game);
+  topBar(g.e + " " + esc(g.n), true);
+  $("#dock").style.display = "none";
+  var fn = {mafia: rMafia, spy: rSpy, draw: rDraw, story: rStory, funny: rFunny, c4: rC4, chain: rChain}[R.game];
+  var h = "";
+  if (S.micOn && v.talk === false) h += '<div class="muted-bar">🔇 Hozir gaplashish mumkin emas</div>';
+  var body = fn ? fn(v) : "";
+  if (R.game === "draw" && $("#dw")) { return; }
+  $("#main").innerHTML = h + body;
+}
+function endBar(extra) {
+  var R = S.room, host = R.host === S.me;
+  var rank = R.players.slice().sort(function (a, b) { return b.w - a.w; });
+  var h = '<div class="card"><b>🏆 Xona reytingi</b>' + rank.map(function (p) { return '<div class="pl-row">' + av(p.u) + "<b style=\"flex:1\">" + esc(p.n) + "</b><b>🏆 " + p.w + "</b></div>"; }).join("") + "</div>";
+  h += host ? '<button class="btn" data-a="again">🔁 Lobbiga qaytish</button>' : '<div class="hint">Xona egasi lobbiga qaytarishini kuting...</div>';
+  return h;
+}
+function pickGrid(list, mine, opts) {
+  opts = opts || {};
+  return '<div class="pgrid">' + list.map(function (u) {
+    var dead = opts.dead && opts.dead.indexOf(u) >= 0, cnt = opts.cnt && opts.cnt[u];
+    return '<button class="pc' + (mine === u ? " sel" : "") + (dead ? " dead" : "") + '" data-a="' + opts.act + '" data-u="' + u + '"' + (opts.off && opts.off(u) ? " disabled" : "") + ">" + av(u) + "<b>" + esc(pname(u)) + "</b>" + (cnt ? '<span class="cnt">' + cnt + "</span>" : "") + "</button>";
+  }).join("") + "</div>";
+}
+
+// ---------- Mafia ----------
+var ROLE = {mafia: ["🔪", "Mafia", "Tunda birovni o'ldirasiz. Kunduzi o'zingizni oddiy fuqarodek ko'rsating!", "linear-gradient(150deg,#5a1020,#1c0910)"],
+  doctor: ["💉", "Shifokor", "Har tun bitta odamni saqlab qolasiz (o'zingizni ham).", "linear-gradient(150deg,#0b4a3a,#08201b)"],
+  detective: ["🕵️", "Komissar", "Har tun bitta odamni tekshirib, mafiya yoki yo'qligini bilasiz.", "linear-gradient(150deg,#0f3a55,#0a1626)"],
+  civil: ["👤", "Tinch aholi", "Kunduzi gaplashib, mafiyani toping va ovoz bering!", "linear-gradient(150deg,#2f2b66,#12122b)"]};
+function rMafia(v) {
+  var r = ROLE[v.role] || ROLE.civil, alive = v.alive || [], dead = (v.dead || []);
+  var h = '<div class="c">' + timerHtml(v.deadline) + (v.day ? ' <span class="mu sm">· ' + v.day + "-kun</span>" : "") + "</div>";
+  if (v.phase === "reveal") {
+    h += '<div class="role pop" style="background:' + r[3] + '"><div class="big">' + r[0] + "</div><h3>" + r[1] + "</h3><div>" + r[2] + "</div></div>";
+    if (v.mates && v.mates.length > 1) h += '<div class="banner">🔪 Hamkorlaringiz: <b>' + v.mates.filter(function (u) { return u !== S.me; }).map(pname).map(esc).join(", ") + "</b></div>";
+    return h + '<div class="hint">Birozdan so\'ng tun boshlanadi...</div>';
+  }
+  if (v.phase === "over") {
+    var civ = v.winner === "civil";
+    h += '<div class="role win pop"><div class="big">' + (civ ? "🎉" : "🔪") + "</div><h3>" + (civ ? "Tinch aholi yutdi!" : "Mafia yutdi!") + "</h3></div>";
+    h += '<div class="card">' + Object.keys(v.roles || {}).map(function (k) { var rr = ROLE[v.roles[k]]; return '<div class="pl-row">' + av(+k) + '<b style="flex:1">' + esc(pname(+k)) + "</b><span>" + rr[0] + " " + rr[1] + "</span></div>"; }).join("") + "</div>";
+    return h + endBar();
+  }
+  h += '<div class="banner' + (v.phase === "night" ? " night" : "") + '">' + (v.phase === "night" ? "🌙 <b>Tun.</b> Shahar uxlaydi..." : v.news || "") + "</div>";
+  if (v.news && v.phase !== "night") { /* yangilik yuqorida */ }
+  if (v.role === "detective" && v.det) h += '<div class="banner">🔎 Tekshiruv: <b>' + esc(pname(v.det.u)) + "</b> — " + (v.det.mafia ? "🔪 MAFIA!" : "mafia emas") + "</div>";
+  if (!v.me) h += '<div class="banner">☠️ Siz o\'yindan chiqdingiz. Kuzatib turing (faqat o\'liklar bilan gaplashasiz).</div>';
+  if (v.phase === "night" && v.me) {
+    var act = {mafia: ["kill", "🔪 Kimni o'ldiramiz?"], doctor: ["save", "💉 Kimni saqlaymiz?"], detective: ["check", "🕵️ Kimni tekshiramiz?"]}[v.role];
+    if (act) {
+      var cnt = {}; if (v.mafiaVotes) Object.keys(v.mafiaVotes).forEach(function (k) { var t = v.mafiaVotes[k]; cnt[t] = (cnt[t] || 0) + 1; });
+      h += "<h2>" + act[1] + "</h2>" + pickGrid(alive, v.mine, {act: "m_" + act[0], cnt: cnt, off: function (u) { return (v.role === "mafia" && v.mates && v.mates.indexOf(u) >= 0) || (v.role === "detective" && u === S.me); }});
+      if (v.mine != null) h += '<div class="hint">Tanlovingiz qabul qilindi: ' + esc(pname(v.mine)) + "</div>";
+      if (v.role === "mafia") h += '<div class="hint">💬 Chatda faqat mafiya gaplashadi.</div>';
+    } else h += '<div class="role night c"><div class="big">😴</div><div>Uxlayapsiz... Tong otishini kuting.</div></div>';
+  }
+  if (v.phase === "day") {
+    h += "<h2>☀️ Muhokama</h2>" + pickGrid(alive, null, {act: "none"}) + (v.me ? '<button class="btn sec" style="margin-top:12px" data-a="m_ready">🗳 Ovozga o\'tish (' + (v.ready || 0) + ")</button>" : "");
+    h += '<div class="hint">Gaplashing, shubhalaning — keyin ovoz bering.</div>';
+  }
+  if (v.phase === "vote") {
+    h += "<h2>⚖️ Kimni chiqaramiz?</h2>" + pickGrid(alive, v.mine, {act: "m_vote", cnt: v.tally, off: function (u) { return !v.me || u === S.me; }});
+    if (v.me) h += '<button class="btn sec" style="margin-top:10px" data-a="m_vote" data-u="0">⏭ O\'tkazib yuborish' + (v.tally && v.tally["0"] ? " (" + v.tally["0"] + ")" : "") + "</button>";
+  }
+  if (dead.length) h += '<h2>☠️ Chiqqanlar</h2><div class="card">' + dead.map(function (d) { return '<div class="pl-row">' + av(d.u, true) + '<b style="flex:1">' + esc(pname(d.u)) + '</b><span class="mu sm">' + (ROLE[d.r] || ROLE.civil)[0] + " " + (ROLE[d.r] || ROLE.civil)[1] + " · " + esc(d.w) + "</span></div>"; }).join("") + "</div>";
+  return h;
+}
+
+// ---------- Josus ----------
+function rSpy(v) {
+  var h = '<div class="c">' + timerHtml(v.deadline) + "</div>", R = S.room;
+  if (v.phase === "over") {
+    h += '<div class="role win pop"><div class="big">' + (v.spyWon ? "🕵️" : "🎉") + "</div><h3>" + (v.spyWon ? "Josus yutdi!" : "Josus fosh bo'ldi!") + "</h3><div>" + esc(v.result || "") + '</div></div><div class="card">🕵️ Josus: <b>' + esc(pname(v.spyUid)) + "</b><br>📍 Joy: <b>" + esc(v.loc) + "</b></div>";
+    return h + endBar();
+  }
+  if (v.spy) h += '<div class="role pop" style="background:linear-gradient(150deg,#5a1020,#1c0910)"><div class="big">🕵️</div><h3>Siz — JOSUSSIZ!</h3><div>Joyni bilmaysiz. Savollarga ehtiyot bo\'lib javob bering va joyni toping.</div></div>';
+  else h += '<div class="role pop" style="background:linear-gradient(150deg,#0f3a55,#0a1626)"><div class="mu sm">Sizning joyingiz</div><h3 style="font-size:30px">📍 ' + esc(v.loc) + '</h3><div>Josus kimligini savol-javob bilan toping. Joyni oshkor qilmang!</div></div>';
+  if (v.phase === "talk") {
+    h += '<div class="hint">Navbat bilan bir-biringizga savol bering (chat yoki ovoz bilan).</div>';
+    h += '<button class="btn sec" data-a="s_call"' + (v.called ? " disabled" : "") + ">🗳 Ovoz berishni boshlash</button>";
+    h += "<h2>" + (v.spy ? "📍 Joyni toping — bossangiz taxmin qilasiz" : "📍 Mumkin bo'lgan joylar") + '</h2><div class="locs">' + v.locs.map(function (l) { return '<button class="loc' + (l === v.loc ? " mine" : "") + '" data-a="' + (v.spy ? "s_guess" : "none") + '" data-l="' + esc(l) + '">' + esc(l) + "</button>"; }).join("") + "</div>";
+  }
+  if (v.phase === "vote") h += "<h2>🗳 Josus kim?</h2>" + pickGrid(R.players.map(function (p) { return p.u; }), v.myVote, {act: "s_vote", off: function (u) { return u === S.me; }}) + '<div class="hint">Ovoz bergan: ' + (v.voted || []).length + "/" + R.players.length + "</div>";
+  if (v.phase === "guess") {
+    if (v.spy) h += "<h2>😈 Fosh bo'ldingiz! Joyni topsangiz yutasiz</h2><div class=\"locs\">" + v.locs.map(function (l) { return '<button class="loc" data-a="s_guess" data-l="' + esc(l) + '">' + esc(l) + "</button>"; }).join("") + "</div>";
+    else h += '<div class="banner c">🕵️ Josus fosh bo\'ldi! U joyni topishga urinmoqda...</div>';
+  }
+  return h;
+}
+
+// ---------- Chizib top ----------
+var CV = {strokes: [], cur: null, color: "#111111", w: 5, sid: -1, drawing: false, lastSent: 0, buf: [], id: 0, eraser: false};
+var PAL = ["#111111", "#e53935", "#fb8c00", "#fdd835", "#43a047", "#1e88e5", "#8e24aa", "#6d4c41", "#ffffff"];
+function rDraw(v) {
+  var me = v.drawer === S.me;
+  if (!$("#dw")) {
+    $("#main").innerHTML = '<div id="dw"><div class="c" id="dh"></div><div class="mask" id="dm"></div><div class="cv-wrap"><canvas id="cv"></canvas></div><div id="dt"></div><div id="dg"></div><div class="score" id="ds"></div></div>';
+    cvInit(); S.sid = -1;
+  }
+  if (S.sid !== v.sid) { S.sid = v.sid; cvReset(); send({t: "sync"}); }
+  var P = S.room.players;
+  $("#dh").innerHTML = timerHtml(v.deadline) + ' <span class="mu sm">· ' + v.n + "/" + v.of + " · ✏️ " + esc(pname(v.drawer)) + "</span>";
+  var mk = v.word ? v.word.toUpperCase() : v.mask;
+  $("#dm").innerHTML = v.phase === "choose" ? '<span class="mu sm" style="letter-spacing:0">' + (me ? "So'z tanlang 👇" : esc(pname(v.drawer)) + " so'z tanlayapti...") + "</span>" : (v.phase === "reveal" || v.phase === "over" ? "So'z: " + esc(mk) : esc(mk));
+  var tools = "";
+  if (me && v.phase === "draw") tools = '<div class="tools">' + PAL.map(function (c) { return '<button class="sw' + (!CV.eraser && CV.color === c ? " on" : "") + '" data-a="d_col" data-c="' + c + '" style="background:' + c + (c === "#ffffff" ? ";border-color:#ccc" : "") + '"></button>'; }).join("") +
+    '<button class="chip' + (CV.eraser ? " on" : "") + '" data-a="d_er">🧽</button><button class="chip" data-a="d_w" data-w="' + (CV.w === 5 ? 12 : CV.w === 12 ? 2 : 5) + '">● ' + CV.w + '</button><button class="chip" data-a="d_undo">↩️</button><button class="chip" data-a="d_clear">🗑</button></div>';
+  if (me && v.phase === "choose") tools = '<div class="pgrid">' + (v.choices || []).map(function (w) { return '<button class="btn sec" data-a="d_pick" data-w="' + esc(w) + '">' + esc(w) + "</button>"; }).join("") + "</div>";
+  var tl = $("#dt"); if (tl.getAttribute("data-k") !== tools) { tl.innerHTML = tools; tl.setAttribute("data-k", tools); }
+  var gd = "";
+  if (!me && v.phase === "draw") gd = (v.guessed || []).indexOf(S.me) >= 0 ? '<div class="banner win c">✅ Siz topdingiz! Boshqalarni kuting...</div>' : '<div class="cin" style="padding:10px 0 0"><input id="gs" placeholder="So\'zni toping..." autocomplete="off"><button data-a="d_guess">➤</button></div>';
+  var gdEl = $("#dg"); if (gdEl.getAttribute("data-k") !== gd) { gdEl.innerHTML = gd; gdEl.setAttribute("data-k", gd); var gs = $("#gs"); if (gs) gs.onkeydown = function (e) { if (e.key === "Enter") dGuess(); }; }
+  $("#ds").innerHTML = P.slice().sort(function (a, b) { return (v.pts[b.u] || 0) - (v.pts[a.u] || 0); }).map(function (p) { return '<div class="sc' + (p.u === S.me ? " me" : "") + (p.u === v.drawer ? " cur" : "") + '">' + (p.u === v.drawer ? "✏️" : (v.guessed || []).indexOf(p.u) >= 0 ? "✅" : "") + esc(p.n) + " <b>" + (v.pts[p.u] || 0) + "</b></div>"; }).join("");
+  if (v.phase === "over" && !$("#dend")) $("#dw").insertAdjacentHTML("beforeend", '<div id="dend">' + endBar() + "</div>");
+}
+function dGuess() { var i = $("#gs"); if (!i) return; var x = i.value.trim(); if (x) { send({t: "chat", x: x}); i.value = ""; } }
+function cvInit() {
+  var c = $("#cv"), box = c.parentNode, dpr = Math.min(2, window.devicePixelRatio || 1);
+  function size() { var r = box.getBoundingClientRect(); c.width = Math.round(r.width * dpr); c.height = Math.round(r.height * dpr); cvRedraw(); }
+  size(); window.addEventListener("resize", size);
+  function pt(e) { var r = c.getBoundingClientRect(); return [Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))]; }
+  function canDraw() { return S.view && S.view.phase === "draw" && S.view.drawer === S.me; }
+  c.onpointerdown = function (e) { if (!canDraw()) return; e.preventDefault(); c.setPointerCapture(e.pointerId); CV.drawing = true; CV.id = (Date.now() % 1e9); var p = pt(e); CV.buf = [p]; CV.last = p; CV.curCol = CV.eraser ? "#ffffff" : CV.color; CV.curW = CV.eraser ? 18 : CV.w; seg(CV.curCol, CV.curW, [p, [p[0] + 0.0005, p[1]]]); CV.strokes.push({c: CV.curCol, w: CV.curW, id: CV.id, p: [p, [p[0] + 0.0005, p[1]]]}); };
+  c.onpointermove = function (e) { if (!CV.drawing) return; e.preventDefault(); var p = pt(e); var s = {c: CV.curCol, w: CV.curW, id: CV.id, p: [CV.last, p]}; seg(s.c, s.w, s.p); CV.strokes.push(s); CV.last = p; CV.buf.push(p); if (CV.buf.length >= 6 || Date.now() - CV.lastSent > 90) flush(); };
+  function end() { if (!CV.drawing) return; CV.drawing = false; flush(); }
+  c.onpointerup = end; c.onpointercancel = end;
+  function flush() { if (CV.buf.length < 2) { if (CV.buf.length === 1) { send({t: "stroke", s: {c: CV.curCol, w: CV.curW, id: CV.id, p: [CV.buf[0], [CV.buf[0][0] + 0.0005, CV.buf[0][1]]]}}); CV.buf = [CV.last]; } return; } send({t: "stroke", s: {c: CV.curCol, w: CV.curW, id: CV.id, p: CV.buf.slice()}}); CV.buf = [CV.last]; CV.lastSent = Date.now(); }
+}
+function seg(col, w, pts) {
+  var c = $("#cv"); if (!c) return; var x = c.getContext("2d"), W = c.width, H = c.height, k = W / 700;
+  x.strokeStyle = col; x.lineWidth = Math.max(1, w * k * 1.6); x.lineCap = "round"; x.lineJoin = "round"; x.beginPath(); x.moveTo(pts[0][0] * W, pts[0][1] * H);
+  for (var i = 1; i < pts.length; i++) x.lineTo(pts[i][0] * W, pts[i][1] * H); x.stroke();
+}
+function cvRedraw() { var c = $("#cv"); if (!c) return; var x = c.getContext("2d"); x.fillStyle = "#fff"; x.fillRect(0, 0, c.width, c.height); CV.strokes.forEach(function (s) { seg(s.c, s.w, s.p); }); }
+function cvReset() { CV.strokes = []; cvRedraw(); }
+function cvLoad(list, sid) { if (sid !== undefined && sid !== S.sid) return; CV.strokes = list.slice(); cvRedraw(); }
+function cvStroke(s, sid) { if (!s || (sid !== undefined && sid !== S.sid)) return; CV.strokes.push(s); seg(s.c, s.w, s.p); }
+function cvUndo() { if (!CV.strokes.length) return; var id = CV.strokes[CV.strokes.length - 1].id; CV.strokes.pop(); while (id != null && CV.strokes.length && CV.strokes[CV.strokes.length - 1].id === id) CV.strokes.pop(); cvRedraw(); }
+
+// ---------- Hikoya ----------
+function rStory(v) {
+  var h = "";
+  if (v.phase === "write") {
+    var me = v.writer === S.me;
+    h += '<div class="c">' + timerHtml(v.deadline) + ' <span class="mu sm">· ' + v.n + "/" + v.of + " gap</span></div>";
+    h += '<div class="banner"><div class="mu sm">Oldingi gap:</div><div style="font-size:18px;font-weight:600;margin-top:4px">' + esc(v.prev) + "</div></div>";
+    if (me) h += '<h2>✍️ Navbat sizda! Hikoyani davom ettiring</h2><textarea id="sw" rows="3" maxlength="160" placeholder="Keyingi gapni yozing..."></textarea><button class="btn" style="margin-top:10px" data-a="st_send">Yuborish ➤</button>';
+    else h += '<div class="c pulse" style="padding:30px 0"><div style="font-size:40px">✍️</div><b>' + esc(pname(v.writer)) + "</b> yozmoqda...</div>";
+    return h;
+  }
+  h += '<div class="role win c pop"><div class="big">📖</div><h3>Hikoya tayyor!</h3><div class="sm">Yoqqan gaplarga ❤️ bosing</div></div><div class="story">';
+  (v.story || []).forEach(function (e, i) { h += "<p><span>" + esc(e.x) + (e.u ? '<br><small class="mu">— ' + esc(pname(e.u)) + "</small>" : "") + "</span>" + (i > 0 ? '<button class="like' + (e.me ? " on" : "") + '" data-a="st_like" data-i="' + i + '">❤️ ' + e.l + "</button>" : "") + "</p>"; });
+  h += "</div>";
+  return h + (S.room.host === S.me ? '<button class="btn" style="margin-top:12px" data-a="st_fin">🏁 Yakunlash</button>' : '<div class="hint">Xona egasi yakunlashini kuting...</div>');
+}
+
+// ---------- Kulgili javob ----------
+function rFunny(v) {
+  var h = '<div class="c">' + timerHtml(v.deadline) + ' <span class="mu sm">· ' + v.round + "/" + v.of + "-raund</span></div>";
+  if (v.phase === "over") {
+    var rank = S.room.players.slice().sort(function (a, b) { return (v.pts[b.u] || 0) - (v.pts[a.u] || 0); });
+    h += '<div class="role win c pop"><div class="big">🏆</div><h3>' + esc(rank[0].n) + " g'olib!</h3></div><div class=\"card\">" + rank.map(function (p, i) { return '<div class="pl-row"><b>' + (i + 1) + "</b>" + av(p.u) + '<b style="flex:1">' + esc(p.n) + "</b><b>" + (v.pts[p.u] || 0) + "</b></div>"; }).join("") + "</div>";
+    return h + endBar();
+  }
+  h += '<div class="prompt">' + esc(v.prompt) + "</div>";
+  if (v.phase === "write") {
+    h += '<textarea id="fa" rows="2" maxlength="90" placeholder="Eng kulgili javobingiz...">' + esc(v.mine || "") + '</textarea><button class="btn" style="margin-top:10px" data-a="f_ans">' + (v.mine ? "✏️ O'zgartirish" : "Yuborish ➤") + "</button>";
+    h += '<div class="hint">' + (v.done || []).length + "/" + S.room.players.length + " kishi javob berdi" + (v.mine ? " · ✅ siz yubordingiz" : "") + "</div>";
+  } else if (v.phase === "vote") {
+    h += '<div class="hint">Eng kulgilisiga ovoz bering (o\'zingizniki emas)</div>' + v.cards.map(function (c) { return '<button class="ans' + (v.myVote === c.u ? " sel" : "") + '" data-a="f_vote" data-u="' + c.u + '"' + (c.own ? " disabled" : "") + "><span>" + esc(c.x) + "</span>" + (c.own ? '<span class="by">sizniki</span>' : "") + "</button>"; }).join("") + '<div class="hint">Ovoz bergan: ' + (v.voted || []).length + "/" + S.room.players.length + "</div>";
+  } else if (v.phase === "show") {
+    h += v.cards.slice().sort(function (a, b) { return b.c - a.c; }).map(function (c) { return '<div class="ans pop"><span>' + esc(c.x) + '</span><span class="by">' + esc(pname(c.u)) + " · " + c.c + " ovoz (+" + c.c * 100 + ")</span></div>"; }).join("");
+  }
+  return h;
+}
+
+// ---------- 4 ketma-ket ----------
+function rC4(v) {
+  var h = '<div class="c">' + (v.phase === "play" ? timerHtml(v.deadline) : "") + "</div>", R = S.room;
+  var col = function (u) { return v.p[0] === u ? "r" : "y"; };
+  h += '<div class="score" style="justify-content:center">' + v.p.map(function (u) { return '<div class="sc' + (v.turn === u && v.phase === "play" ? " cur" : "") + (u === S.me ? " me" : "") + '"><span style="font-size:16px">' + (col(u) === "r" ? "🔴" : "🟡") + "</span>" + esc(pname(u)) + "</div>"; }).join("") + "</div>";
+  if (v.phase === "play") h += '<div class="hint">' + (v.turn === S.me ? "👉 Sizning navbatingiz" : "⏳ " + esc(pname(v.turn)) + " o'ylayapti") + "</div>";
+  var win = {}; (v.line || []).forEach(function (c) { win[c[0] + "," + c[1]] = 1; });
+  h += '<div class="colbtns">' + [0, 1, 2, 3, 4, 5, 6].map(function (c) { return '<button data-a="c4" data-c="' + c + '"' + (v.phase !== "play" || v.turn !== S.me || v.b[0][c] ? " disabled" : "") + ">⬇️</button>"; }).join("") + "</div>";
+  h += '<div class="board">';
+  for (var r = 0; r < 6; r++) for (var c = 0; c < 7; c++) { var x = v.b[r][c]; h += '<div class="cell' + (x === 1 ? " r" : x === 2 ? " y" : "") + (win[r + "," + c] ? " w" : "") + (v.last && v.last[0] === r && v.last[1] === c ? " l" : "") + '"></div>'; }
+  h += "</div>";
+  if (v.phase === "over") h += '<div class="role win c pop" style="margin-top:14px"><div class="big">' + (v.winner ? "🏆" : "🤝") + "</div><h3>" + (v.winner ? esc(pname(v.winner)) + " yutdi!" : "Durang!") + "</h3></div>" + endBar();
+  return h;
+}
+
+// ---------- So'z zanjiri ----------
+function rChain(v) {
+  var h = '<div class="c">' + (v.phase === "play" ? timerHtml(v.deadline) : "") + "</div>";
+  h += '<div class="score" style="flex-wrap:wrap;justify-content:center">' + v.order.map(function (u) { var l = v.lives[u] || 0; return '<div class="sc' + (v.turn === u ? " cur" : "") + (u === S.me ? " me" : "") + '" style="' + (l ? "" : "opacity:.35") + '">' + esc(pname(u)) + " " + (l ? "❤️".repeat(l) : "☠️") + "</div>"; }).join("") + "</div>";
+  if (v.phase === "over") return h + '<div class="role win c pop"><div class="big">🏆</div><h3>' + (v.winner ? esc(pname(v.winner)) + " g'olib!" : "Durang!") + "</h3></div>" + (v.used.length ? '<div class="used">' + v.used.map(function (w) { return "<span>" + esc(w) + "</span>"; }).join("") + "</div>" : "") + endBar();
+  h += '<div class="c mu sm">Quyidagi harfdan boshlanadigan so\'z ayting</div><div class="letter">' + esc((v.letter || "").toUpperCase()) + "</div>";
+  if (v.msg) h += '<div class="banner c" style="color:var(--bad)">' + esc(v.msg) + "</div>";
+  if (v.turn === S.me) h += '<div class="cin" style="padding:0"><input id="cw" placeholder="' + esc((v.letter || "").toUpperCase()) + '... so\'z" autocomplete="off" maxlength="30"><button data-a="ch_send">➤</button></div>';
+  else h += '<div class="c pulse" style="padding:16px 0"><b>' + esc(pname(v.turn)) + "</b> o'ylayapti...</div>";
+  if (v.used.length) h += '<div class="used" style="margin-top:14px">' + v.used.slice().reverse().map(function (w) { return "<span>" + esc(w) + "</span>"; }).join("") + "</div>";
+  return h;
+}
+
+// ---------------- hodisalar ----------------
+function act(o) { o.t = "act"; send(o); buzz(); }
+document.addEventListener("click", function (e) {
+  var b = e.target.closest("[data-a]"); if (!b || b.disabled) return;
+  var a = b.getAttribute("data-a"), d = function (k) { return b.getAttribute("data-" + k); };
+  switch (a) {
+    case "new": S.sheet = d("g"); showSheet(d("g")); break;
+    case "create": closeSheet(); send({t: "create", g: d("g")}); break;
+    case "join": var c = ($("#jc").value || "").trim().toUpperCase(); if (c.length < 4) { toast("4 harfli kodni kiriting"); break; } send({t: "join", room: c}); break;
+    case "leave": if (S.room && S.room.phase === "play" && !confirm("O'yindan chiqasizmi?")) break; send({t: "leave"}); break;
+    case "mic": S.micOn ? (micOff(), render()) : micOn(); break;
+    case "chat": openChat(); break;
+    case "invite": invite(); break;
+    case "copy": try { navigator.clipboard.writeText(S.room.code); toast("Kod nusxalandi: " + S.room.code); } catch (x) { toast("Kod: " + S.room.code); } break;
+    case "game": send({t: "game", g: d("g")}); break;
+    case "kick": send({t: "kick", u: +d("u")}); break;
+    case "start": send({t: "start"}); break;
+    case "again": send({t: "again"}); break;
+    case "m_kill": case "m_save": case "m_check": act({a: a.slice(2), u: +d("u")}); break;
+    case "m_ready": act({a: "ready"}); break;
+    case "m_vote": act({a: "vote", u: +d("u")}); break;
+    case "s_call": act({a: "call"}); break;
+    case "s_vote": act({a: "vote", u: +d("u")}); break;
+    case "s_guess": if (confirm("Joy: " + d("l") + " — to'g'rimi?")) act({a: "guess", loc: d("l")}); break;
+    case "d_pick": act({a: "pick", w: d("w")}); break;
+    case "d_col": CV.color = d("c"); CV.eraser = false; render(); break;
+    case "d_er": CV.eraser = !CV.eraser; render(); break;
+    case "d_w": CV.w = +d("w"); render(); break;
+    case "d_undo": cvUndo(); send({t: "undo"}); break;
+    case "d_clear": cvReset(); send({t: "clear"}); break;
+    case "d_guess": dGuess(); break;
+    case "st_send": var t1 = $("#sw"); if (t1 && t1.value.trim().length >= 2) { act({a: "write", x: t1.value}); t1.value = ""; } else toast("Kamida 2 belgi yozing"); break;
+    case "st_like": act({a: "like", i: +d("i")}); break;
+    case "st_fin": act({a: "finish"}); break;
+    case "f_ans": var t2 = $("#fa"); if (t2 && t2.value.trim()) act({a: "ans", x: t2.value}); break;
+    case "f_vote": act({a: "vote", u: +d("u")}); break;
+    case "c4": act({a: "drop", c: +d("c")}); break;
+    case "ch_send": var t3 = $("#cw"); if (t3 && t3.value.trim()) { act({a: "word", x: t3.value}); t3.value = ""; } break;
+  }
+});
+document.addEventListener("keydown", function (e) { if (e.key === "Enter" && e.target.id === "cw") { var t3 = e.target; if (t3.value.trim()) { act({a: "word", x: t3.value}); t3.value = ""; } } });
+function showSheet(k) {
+  var g = gameInfo(k), el = document.createElement("div"); el.className = "sheetbg"; el.id = "sheet";
+  el.innerHTML = '<div class="sh"><div class="c" style="font-size:54px">' + g.e + '</div><h2 class="c" style="margin:6px 0">' + esc(g.n) + '</h2><div class="mu c sm">' + esc(g.d) + '</div><div class="c" style="margin:10px 0">👥 ' + (g.min === g.max ? g.min : g.min + "–" + g.max) + ' kishi</div><button class="btn" data-a="create" data-g="' + k + '">🚪 Xona yaratish</button><button class="btn sec" style="margin-top:8px" data-a="closesheet">Bekor qilish</button></div>';
+  el.onclick = function (e) { if (e.target === el || e.target.getAttribute("data-a") === "closesheet") closeSheet(); };
+  document.body.appendChild(el);
+}
+function closeSheet() { var s = $("#sheet"); if (s) s.remove(); }
+function invite() {
+  var code = S.room.code, link = S.bot ? "https://t.me/" + S.bot + "?start=room_" + code : "";
+  var text = "🎮 Birga o'ynaymiz! Xona kodi: " + code;
+  if (link) { var u = "https://t.me/share/url?url=" + encodeURIComponent(link) + "&text=" + encodeURIComponent(text); if (tg && tg.openTelegramLink) tg.openTelegramLink(u); else window.open(u, "_blank"); }
+  else { try { navigator.clipboard.writeText(text); } catch (e) {} toast(text); }
+}
+window.__hub = {S: S, CV: CV};
+connect(); render();
+})();
+</script></body></html>
+"""
+
+# ===================== 🎮 O'YINLAR MARKAZI — bot va veb =====================
+def get_hubapp_url(bot_id, room: str = "") -> str:
+    """O'yinlar markazi mini app URL'i: https://<domen>/hub?b=<bot_id>[&room=KOD]"""
+    purl = get_kinopanel_url(bot_id)
+    if not purl:
+        return ""
+    u = purl.replace("/kinopanel?", "/hub?")
+    return u + (f"&room={room}" if room else "")
+
+
+def hub_find_bot(bot_id):
+    try:
+        bid = int(bot_id)
+    except Exception:
+        return None, None
+    for token, info in data["bots"].items():
+        if info.get("id") == bid and info.get("type") == "hub":
+            return token, info
+    return None, None
+
+
+async def hub_page(request):
+    return web.Response(
+        text=HUB_HTML,
+        content_type="text/html",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache"},
+    )
+
+
+async def hub_ws(request):
+    token, info = hub_find_bot(request.query.get("b"))
+    ws = web.WebSocketResponse(heartbeat=25, max_msg_size=96 * 1024)
+    await ws.prepare(request)
+    if not info:
+        await ws.send_str(json.dumps({"t": "err", "m": "Bot topilmadi", "code": "nobot"}))
+        await ws.close()
+        return ws
+    conn = HubConn(ws)
+    bucket = [30.0, hub_now()]          # token bucket: sekundiga ~25 xabar
+    try:
+        async for msg in ws:
+            if msg.type != web.WSMsgType.TEXT:
+                if msg.type in (web.WSMsgType.ERROR, web.WSMsgType.CLOSE):
+                    break
+                continue
+            now = hub_now()
+            bucket[0] = min(30.0, bucket[0] + (now - bucket[1]) * 25)
+            bucket[1] = now
+            if bucket[0] < 1:
+                continue
+            bucket[0] -= 1
+            try:
+                m = json.loads(msg.data)
+            except Exception:
+                continue
+            if not isinstance(m, dict):
+                continue
+            if m.get("t") == "hello":
+                uid, name = city_auth(token, str(m.get("init", "")))
+                if not uid:
+                    await conn.send({"t": "err", "m": "Telegram orqali oching", "code": "auth"})
+                    continue
+                if uid in info.get("blocked_users", []):
+                    await conn.send({"t": "err", "m": "Siz bloklangansiz.", "code": "blocked"})
+                    continue
+                if not is_active(info) and not is_admin(info, uid):
+                    await conn.send({"t": "err", "m": "Bot vaqtincha ishlamayapti.", "code": "inactive"})
+                    continue
+                conn.uid, conn.name, conn.bid = uid, name, info["id"]
+                uname = info.get("username") or info.get("bot_username") or ""
+                if not uname:
+                    try:
+                        b = _new_bot(token)
+                        try:
+                            uname = (await b.get_me()).username or ""
+                        finally:
+                            await _close_bot(b)
+                        info["bot_username"] = uname
+                    except Exception:
+                        uname = ""
+                await conn.send({"t": "hello", "you": uid, "name": name, "bot": str(uname).lstrip("@"), "games": hub_games_info()})
+                if m.get("room"):
+                    await hub_handle(conn, {"t": "join", "room": str(m.get("room"))[:8]})
+                continue
+            if conn.uid is None:
+                continue
+            was = conn.room.phase if conn.room else None
+            await hub_handle(conn, m)
+            if m.get("t") == "start" and conn.room and conn.room.phase == "play" and was != "play":
+                st = info.setdefault("hub", {}).setdefault("games", {})
+                st[conn.room.gkey] = st.get(conn.room.gkey, 0) + 1
+                info["hub"]["plays"] = info["hub"].get("plays", 0) + 1
+                save_data()
+    except Exception as ex:
+        logging.info(f"hub_ws: {ex}")
+    finally:
+        try:
+            await hub_leave(conn, False)
+        except Exception:
+            pass
+    return ws
+
+
+def setup_hub_bot(dp: Dispatcher, token: str):
+    info = data["bots"][token]
+    admin_id = info["admin_id"]
+    info.setdefault("hub", {"games": {}, "plays": 0})
+    setup_subscription_handlers(dp, token, admin_id)
+    setup_admin_management(dp, token)
+    setup_global_buttons_handler(dp, lambda m, s: hstart(m))
+
+    def play_kb(room: str = ""):
+        url = get_hubapp_url(info.get("id"), room)
+        if not url:
+            return None
+        return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
+            text=("🚪 Xonaga kirish" if room else "🎮 O'ynash"), web_app=WebAppInfo(url=url))]])
+
+    def user_kb():
+        return ReplyKeyboardMarkup(keyboard=[
+            [KeyboardButton(text="🎮 O'ynash"), KeyboardButton(text="🎲 O'yinlar haqida")],
+            [KeyboardButton(text="👥 Do'st taklif qilish"), KeyboardButton(text="ℹ️ Yordam")],
+        ] + get_global_button_rows(), resize_keyboard=True)
+
+    def admin_kb():
+        return ReplyKeyboardMarkup(keyboard=[
+            [KeyboardButton(text="🎮 O'ynash"), KeyboardButton(text="🎲 O'yinlar haqida")],
+            [KeyboardButton(text="📊 Statistika"), KeyboardButton(text="📢 Xabar yuborish")],
+            [KeyboardButton(text="📡 Majburiy obuna"), KeyboardButton(text="👤 Adminlar")],
+        ] + get_global_button_rows(), resize_keyboard=True)
+
+    async def send_play(message: Message, room: str = ""):
+        kb = play_kb(room)
+        if not kb:
+            await message.answer("⚠️ O'yin manzili sozlanmagan (Railway'da domen yoki MINIAPP_URL kerak).")
+            return
+        if room:
+            await message.answer(f"🚪 Xona <b>{html_escape(room)}</b> ga taklif qilindingiz!\nTugmani bosing va o'yinga qo'shiling 👇", reply_markup=kb)
+        else:
+            await message.answer(
+                "🎮 <b>O'yinlar markazi</b>\n\n2–10 kishilik kreativ o'yinlar: 🔪 Mafia, 🕵️ Josus, 🎨 Chizib top, 📖 Hikoya zanjiri, "
+                "😂 Kulgili javob, 🔴 4 ketma-ket, 🔤 So'z zanjiri.\n\n🎙 Xohlasangiz mikrofon orqali gaplashib o'ynang!", reply_markup=kb)
+
+    @dp.message(Command("start"))
+    async def hstart(message: Message):
+        uid = message.from_user.id
+        if uid in info.get("blocked_users", []):
+            return
+        if uid not in info["users"]:
+            info["users"].append(uid)
+            save_data()
+        if not await check_active(message, info, admin_id):
+            return
+        parts = (message.text or "").split(maxsplit=1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        room = arg[5:].upper()[:6] if arg.startswith("room_") else ""
+        if not is_admin(info, uid) and not await require_subscription(message, info, admin_id):
+            return
+        if is_admin(info, uid):
+            await message.answer("🎮 <b>O'yinlar markazi — boshqaruv</b>", reply_markup=admin_kb())
+        else:
+            await message.answer("👋 Xush kelibsiz! Do'stlar bilan o'ynaymiz.", reply_markup=user_kb())
+        await send_play(message, room)
+
+    @dp.message(F.text == "🎮 O'ynash")
+    async def h_play(message: Message):
+        if message.from_user.id in info.get("blocked_users", []):
+            return
+        if not await check_active(message, info, admin_id):
+            return
+        if not is_admin(info, message.from_user.id) and not await require_subscription(message, info, admin_id):
+            return
+        await send_play(message)
+
+    @dp.message(F.text == "🎲 O'yinlar haqida")
+    async def h_games(message: Message):
+        lines = [f"{g['e']} <b>{html_escape(g['n'])}</b> ({g['min']}{'' if g['min'] == g['max'] else '–' + str(g['max'])} kishi)\n<i>{html_escape(g['d'])}</i>"
+                 for g in hub_games_info()]
+        await message.answer("🎲 <b>O'yinlar</b>\n\n" + "\n\n".join(lines))
+
+    @dp.message(F.text == "👥 Do'st taklif qilish")
+    async def h_ref(message: Message):
+        uname = info.get("username") or info.get("bot_username")
+        if not uname:
+            try:
+                uname = (await message.bot.get_me()).username
+            except Exception:
+                uname = ""
+        if not uname:
+            await message.answer("⚠️ Bot manzilini aniqlab bo'lmadi.")
+            return
+        await message.answer(
+            "👥 <b>Do'stlaringizni taklif qiling</b>\n\nBotga havola:\n"
+            f"<code>https://t.me/{str(uname).lstrip('@')}</code>\n\n"
+            "💡 Xona ochgach, mini app ichidagi «📨 Taklif qilish» tugmasi do'stlaringizni to'g'ridan-to'g'ri xonaga chaqiradi.")
+
+    @dp.message(F.text == "ℹ️ Yordam")
+    async def h_help(message: Message):
+        await message.answer(
+            "ℹ️ <b>Yordam</b>\n\n"
+            "1️⃣ «🎮 O'ynash» ni bosing va o'yin tanlang.\n"
+            "2️⃣ «Xona yaratish» — sizga 4 harfli kod beriladi.\n"
+            "3️⃣ «📨 Taklif qilish» orqali do'stlaringizni chaqiring yoki ular kodni «Kod bilan kirish»ga yozadi.\n"
+            "4️⃣ Hamma yig'ilgach, xona egasi «Boshlash» ni bosadi.\n\n"
+            "💬 Chat — hamma o'yinda ishlaydi.\n"
+            "🎙 Mikrofon — yuqoridagi tugma bilan xohlagan payt yoqasiz/o'chirasiz. Ruxsat so'ralsa, «Ruxsat berish» ni bosing.\n"
+            "🔇 Ba'zi o'yinlarda (masalan Mafia tunida) gaplashish vaqtincha yopiladi — bu qoidaning bir qismi.")
+
+    @dp.message(F.text == "📊 Statistika")
+    async def h_stats(message: Message):
+        if not is_admin(info, message.from_user.id):
+            return
+        h = info.get("hub", {})
+        bid = info.get("id")
+        rooms = [r for (b, _), r in HUB_ROOMS.items() if b == bid]
+        online = sum(1 for r in rooms for p in r.players.values() if p.conn)
+        names = {g["k"]: g["e"] + " " + g["n"] for g in hub_games_info()}
+        top = sorted((h.get("games") or {}).items(), key=lambda kv: -kv[1])
+        tl = "\n".join(f"  {names.get(k, k)} — {v} marta" for k, v in top) or "  —"
+        await message.answer(
+            "📊 <b>Statistika</b>\n\n"
+            f"👥 Botdagilar: {len(info['users'])}\n🏠 Hozir faol xonalar: {len(rooms)}\n🟢 Hozir online o'yinchilar: {online}\n"
+            f"🎲 Jami boshlangan o'yinlar: {h.get('plays', 0)}\n\n🔥 Mashhur o'yinlar:\n{tl}")
+
+    @dp.message(F.text == "📢 Xabar yuborish")
+    async def h_newpost(message: Message, state: FSMContext):
+        if not is_admin(info, message.from_user.id):
+            return
+        await message.answer("E'lon matnini yuboring:")
+        await state.set_state(PostFlow.waiting_text)
+
+    @dp.message(PostFlow.waiting_text)
+    async def h_post_text(message: Message, state: FSMContext):
+        if not is_admin(info, message.from_user.id):
+            return
+        await state.update_data(text=message.text or "")
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Yuborish", callback_data="h_post_ok")],
+            [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="h_post_no")]])
+        await message.answer(f"{len(info['users'])} kishiga yuborilsinmi?\n\n{message.text}", reply_markup=kb)
+        await state.set_state(PostFlow.waiting_confirm)
+
+    @dp.callback_query(F.data == "h_post_ok", PostFlow.waiting_confirm)
+    async def h_post_ok(callback: CallbackQuery, state: FSMContext):
+        if not is_admin(info, callback.from_user.id):
+            await callback.answer()
+            return
+        text = (await state.get_data()).get("text", "")
+        await state.clear()
+        await callback.message.edit_text("⏳ Yuborilmoqda...")
+        n = 0
+        for u in list(info["users"]):
+            try:
+                await callback.bot.send_message(u, text)
+                n += 1
+            except Exception:
+                pass
+            await asyncio.sleep(0.04)
+        await callback.message.edit_text(f"✅ {n} kishiga yuborildi.")
+        await callback.answer()
+
+    @dp.callback_query(F.data == "h_post_no", PostFlow.waiting_confirm)
+    async def h_post_no(callback: CallbackQuery, state: FSMContext):
+        await state.clear()
+        await callback.message.edit_text("❌ Bekor qilindi.")
+        await callback.answer()
+
+
+async def hub_gc_loop():
+    while True:
+        await asyncio.sleep(120)
+        try:
+            hub_gc()
+        except Exception as ex:
+            logging.info(f"hub_gc: {ex}")
+
+
+# ===================== /O'YINLAR MARKAZI — bot va veb =====================
+
+
+
 SETUP_FUNCTIONS = {
     "city": setup_city_bot,
+    "hub": setup_hub_bot,
     "download": setup_download_bot,
     "subs": setup_subs_bot,
     "nakrutka": setup_nakrutka_bot,
@@ -23483,6 +25667,18 @@ async def start_child_bot(token: str, bot_type: str):
                     )
                 except Exception as e:
                     logging.info(f"Kino panel menyu tugmasi ({token[-6:]}, admin {_aid}): {e}")
+    if bot_type == "hub":
+        _hinfo = data["bots"].get(token, {})
+        _hurl = get_hubapp_url(_hinfo.get("id"))
+        if _hurl:
+            try:
+                await child_bot.set_chat_menu_button(
+                    menu_button=MenuButtonWebApp(text="🎮 O'ynash", web_app=WebAppInfo(url=_hurl)),
+                )
+            except Exception as e:
+                logging.info(f"O'yinlar markazi menyu tugmasi ({token[-6:]}): {e}")
+        if not HUB_GC_TASK.get("t"):
+            HUB_GC_TASK["t"] = asyncio.create_task(hub_gc_loop())
     if bot_type == "city":
         # Shahar o'yini: klaviatura yonidagi Menu tugmasi hamma uchun — «O'ynash» mini app
         _cinfo = data["bots"].get(token, {})
@@ -26428,6 +28624,8 @@ async def start_web_server():
     app.router.add_post("/api/pub/ob/toggle", pub_ob_toggle)
     app.router.add_get("/api/pub/ob/photo", pub_ob_photo)
     app.router.add_get("/city", city_page)
+    app.router.add_get("/hub", hub_page)
+    app.router.add_get("/ws/hub", hub_ws)
     app.router.add_post("/api/city/act", city_api)
     app.router.add_get("/shop", shop_page)
     app.router.add_get("/api/shop/list", shop_api_list)
@@ -28368,7 +30566,7 @@ class BotMetricsMiddleware(BaseMiddleware):
         return result
 
 
-_BOT_EMOJI = {"city": "🏙", "subs": "💳", "download": "📥", "openbudget": "🗳", "kino_pro": "🎬", "shop": "🛍", "ai": "🤖", "taxi": "🚕", "nakrutka": "🚀"}
+_BOT_EMOJI = {"hub": "🎮", "city": "🏙", "subs": "💳", "download": "📥", "openbudget": "🗳", "kino_pro": "🎬", "shop": "🛍", "ai": "🤖", "taxi": "🚕", "nakrutka": "🚀"}
 _creator_username_cache = {"v": ""}
 
 
