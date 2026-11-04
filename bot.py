@@ -23668,6 +23668,15 @@ class DrawGame(HubGame):
     # chizma
     def stroke(self, uid, s):
         if self.phase == "draw" and uid == self.drawer and len(self.strokes) < 900 and isinstance(s, dict):
+            if s.get("k") == "fill":          # paqir (to'ldirish)
+                try:
+                    s = {"k": "fill", "c": str(s.get("c", "#000"))[:9], "id": int(s.get("id", 0)),
+                         "x": round(min(1.0, max(0.0, float(s.get("x")))), 4), "y": round(min(1.0, max(0.0, float(s.get("y")))), 4)}
+                except Exception:
+                    return False
+                self.strokes.append(s)
+                self.last_stroke = s
+                return True
             p = s.get("p")
             if not isinstance(p, list) or not p or len(p) > 60:
                 return False
@@ -24800,9 +24809,10 @@ h2{font-size:17px;margin:18px 0 8px}
 .loc.x{opacity:.35;text-decoration:line-through}
 .cv-wrap{background:#fff;border-radius:20px;overflow:hidden;touch-action:none;position:relative;aspect-ratio:4/3;width:100%;box-shadow:0 8px 30px rgba(0,0,0,.4)}
 canvas{width:100%;height:100%;display:block;touch-action:none}
-.tools{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:10px 0}
+.tools{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:8px 0}
 .sw{width:30px;height:30px;border-radius:50%;border:3px solid transparent;flex:none}
 .sw.on{border-color:#fff;box-shadow:0 0 0 2px var(--ac)}
+.sw.rb{position:relative;overflow:hidden;background:conic-gradient(red,yellow,lime,aqua,blue,magenta,red);cursor:pointer}.sw.rb input{position:absolute;inset:-10px;opacity:0;width:60px;height:60px;cursor:pointer;padding:0;border:0}
 .mask{font-size:26px;font-weight:900;letter-spacing:5px;text-align:center;margin:8px 0}
 .score{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;margin:6px 0}
 .sc{flex:none;background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:6px 10px;font-size:12px;font-weight:700;display:flex;gap:6px;align-items:center}
@@ -25129,8 +25139,8 @@ function rSpy(v) {
 }
 
 // ---------- Chizib top ----------
-var CV = {strokes: [], cur: null, color: "#111111", w: 5, sid: -1, drawing: false, lastSent: 0, buf: [], id: 0, eraser: false};
-var PAL = ["#111111", "#e53935", "#fb8c00", "#fdd835", "#43a047", "#1e88e5", "#8e24aa", "#6d4c41", "#ffffff"];
+var CV = {strokes: [], cur: null, color: "#111111", w: 5, sid: -1, drawing: false, lastSent: 0, buf: [], id: 0, tool: "brush"};
+var PAL = ["#111111", "#555555", "#9e9e9e", "#ffffff", "#e53935", "#b71c1c", "#ff7043", "#fb8c00", "#fdd835", "#c0ca33", "#7cb342", "#2e7d32", "#00897b", "#00acc1", "#29b6f6", "#1e88e5", "#283593", "#5e35b1", "#8e24aa", "#d81b60", "#f48fb1", "#8d6e63", "#5d4037", "#f1c27d"];
 function rDraw(v) {
   var me = v.drawer === S.me;
   if (!$("#dw")) {
@@ -25143,8 +25153,10 @@ function rDraw(v) {
   var mk = v.word ? v.word.toUpperCase() : v.mask;
   $("#dm").innerHTML = v.phase === "choose" ? '<span class="mu sm" style="letter-spacing:0">' + (me ? "So'z tanlang 👇" : esc(pname(v.drawer)) + " so'z tanlayapti...") + "</span>" : (v.phase === "reveal" || v.phase === "over" ? "So'z: " + esc(mk) : esc(mk));
   var tools = "";
-  if (me && v.phase === "draw") tools = '<div class="tools">' + PAL.map(function (c) { return '<button class="sw' + (!CV.eraser && CV.color === c ? " on" : "") + '" data-a="d_col" data-c="' + c + '" style="background:' + c + (c === "#ffffff" ? ";border-color:#ccc" : "") + '"></button>'; }).join("") +
-    '<button class="chip' + (CV.eraser ? " on" : "") + '" data-a="d_er">🧽</button><button class="chip" data-a="d_w" data-w="' + (CV.w === 5 ? 12 : CV.w === 12 ? 2 : 5) + '">● ' + CV.w + '</button><button class="chip" data-a="d_undo">↩️</button><button class="chip" data-a="d_clear">🗑</button></div>';
+  if (me && v.phase === "draw") tools = '<div class="tools"><button class="chip' + (CV.tool === "brush" ? " on" : "") + '" data-a="d_tool" data-t="brush">🖌 Qalam</button><button class="chip' + (CV.tool === "fill" ? " on" : "") + '" data-a="d_tool" data-t="fill">🪣 Paqir</button><button class="chip' + (CV.tool === "eraser" ? " on" : "") + '" data-a="d_tool" data-t="eraser">🧽 O\'chirg\'ich</button></div>' +
+    '<div class="tools">' + PAL.map(function (c) { return '<button class="sw' + (CV.tool !== "eraser" && CV.color === c ? " on" : "") + '" data-a="d_col" data-c="' + c + '" style="background:' + c + (c === "#ffffff" ? ";border-color:#ccc" : "") + '"></button>'; }).join("") +
+    '<label class="sw rb' + (PAL.indexOf(CV.color) < 0 ? " on" : "") + '" style="' + (PAL.indexOf(CV.color) < 0 ? "background:" + CV.color : "") + '"><input type="color" id="pc" value="' + (/^#[0-9a-f]{6}$/i.test(CV.color) ? CV.color : "#000000") + '"></label></div>' +
+    '<div class="tools"><button class="chip" data-a="d_w" data-w="' + (CV.w === 5 ? 12 : CV.w === 12 ? 2 : 5) + '">● Yo\'g\'onlik ' + CV.w + '</button><button class="chip" data-a="d_undo">↩️ Orqaga</button><button class="chip" data-a="d_clear">🗑 Tozalash</button></div>';
   if (me && v.phase === "choose") tools = '<div class="pgrid">' + (v.choices || []).map(function (w) { return '<button class="btn sec" data-a="d_pick" data-w="' + esc(w) + '">' + esc(w) + "</button>"; }).join("") + "</div>";
   var tl = $("#dt"); if (tl.getAttribute("data-k") !== tools) { tl.innerHTML = tools; tl.setAttribute("data-k", tools); }
   var gd = "";
@@ -25155,12 +25167,13 @@ function rDraw(v) {
 }
 function dGuess() { var i = $("#gs"); if (!i) return; var x = i.value.trim(); if (x) { send({t: "chat", x: x}); i.value = ""; } }
 function cvInit() {
-  var c = $("#cv"), box = c.parentNode, dpr = Math.min(2, window.devicePixelRatio || 1);
-  function size() { var r = box.getBoundingClientRect(); c.width = Math.round(r.width * dpr); c.height = Math.round(r.height * dpr); cvRedraw(); }
-  size(); window.addEventListener("resize", size);
+  var c = $("#cv");
+  c.width = 800; c.height = 600; cvRedraw();
   function pt(e) { var r = c.getBoundingClientRect(); return [Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))]; }
   function canDraw() { return S.view && S.view.phase === "draw" && S.view.drawer === S.me; }
-  c.onpointerdown = function (e) { if (!canDraw()) return; e.preventDefault(); c.setPointerCapture(e.pointerId); CV.drawing = true; CV.id = (Date.now() % 1e9); var p = pt(e); CV.buf = [p]; CV.last = p; CV.curCol = CV.eraser ? "#ffffff" : CV.color; CV.curW = CV.eraser ? 18 : CV.w; seg(CV.curCol, CV.curW, [p, [p[0] + 0.0005, p[1]]]); CV.strokes.push({c: CV.curCol, w: CV.curW, id: CV.id, p: [p, [p[0] + 0.0005, p[1]]]}); };
+  c.onpointerdown = function (e) { if (!canDraw()) return; e.preventDefault(); CV.id = Math.floor(Math.random() * 1e9) + 1; var p = pt(e);
+    if (CV.tool === "fill") { var f = {k: "fill", c: CV.color, id: CV.id, x: p[0], y: p[1]}; floodFill(f); CV.strokes.push(f); send({t: "stroke", s: f}); buzz(); return; }
+    c.setPointerCapture(e.pointerId); CV.drawing = true; CV.buf = [p]; CV.last = p; CV.curCol = CV.tool === "eraser" ? "#ffffff" : CV.color; CV.curW = CV.tool === "eraser" ? 18 : CV.w; seg(CV.curCol, CV.curW, [p, [p[0] + 0.0005, p[1]]]); CV.strokes.push({c: CV.curCol, w: CV.curW, id: CV.id, p: [p, [p[0] + 0.0005, p[1]]]}); };
   c.onpointermove = function (e) { if (!CV.drawing) return; e.preventDefault(); var p = pt(e); var s = {c: CV.curCol, w: CV.curW, id: CV.id, p: [CV.last, p]}; seg(s.c, s.w, s.p); CV.strokes.push(s); CV.last = p; CV.buf.push(p); if (CV.buf.length >= 6 || Date.now() - CV.lastSent > 90) flush(); };
   function end() { if (!CV.drawing) return; CV.drawing = false; flush(); }
   c.onpointerup = end; c.onpointercancel = end;
@@ -25171,10 +25184,40 @@ function seg(col, w, pts) {
   x.strokeStyle = col; x.lineWidth = Math.max(1, w * k * 1.6); x.lineCap = "round"; x.lineJoin = "round"; x.beginPath(); x.moveTo(pts[0][0] * W, pts[0][1] * H);
   for (var i = 1; i < pts.length; i++) x.lineTo(pts[i][0] * W, pts[i][1] * H); x.stroke();
 }
-function cvRedraw() { var c = $("#cv"); if (!c) return; var x = c.getContext("2d"); x.fillStyle = "#fff"; x.fillRect(0, 0, c.width, c.height); CV.strokes.forEach(function (s) { seg(s.c, s.w, s.p); }); }
+function cvRedraw() { var c = $("#cv"); if (!c) return; var x = c.getContext("2d"); x.fillStyle = "#fff"; x.fillRect(0, 0, c.width, c.height); CV.strokes.forEach(function (s) { if (s.k === "fill") floodFill(s); else seg(s.c, s.w, s.p); }); }
+function hex2rgb(h) { h = String(h || "#000").replace("#", ""); if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2]; var n = parseInt(h, 16) || 0; return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
+function floodFill(f) {
+  var c = $("#cv"); if (!c) return; var x = c.getContext("2d"), W = c.width, H = c.height;
+  var sx = Math.min(W - 1, Math.max(0, Math.round(f.x * W))), sy = Math.min(H - 1, Math.max(0, Math.round(f.y * H)));
+  var img = x.getImageData(0, 0, W, H), d = img.data, col = hex2rgb(f.c), i0 = (sy * W + sx) * 4, tr = d[i0], tg = d[i0 + 1], tb = d[i0 + 2];
+  if (Math.abs(tr - col[0]) < 3 && Math.abs(tg - col[1]) < 3 && Math.abs(tb - col[2]) < 3) return;
+  var TOL = 60;
+  function match(i) { return Math.abs(d[i] - tr) + Math.abs(d[i + 1] - tg) + Math.abs(d[i + 2] - tb) <= TOL; }
+  var seen = new Uint8Array(W * H), st = [sx, sy], n = 0;
+  while (st.length && n < 1500000) {
+    var y = st.pop(), xx = st.pop(), l = xx, r = xx;
+    if (seen[y * W + xx] || !match((y * W + xx) * 4)) continue;
+    while (l > 0 && !seen[y * W + l - 1] && match((y * W + l - 1) * 4)) l--;
+    while (r < W - 1 && !seen[y * W + r + 1] && match((y * W + r + 1) * 4)) r++;
+    for (var k = l; k <= r; k++) { var p = y * W + k; seen[p] = 1; d[p * 4] = col[0]; d[p * 4 + 1] = col[1]; d[p * 4 + 2] = col[2]; d[p * 4 + 3] = 255; n++; }
+    // chetdagi (anti-alias) piksellarni ham bo'yaymiz: bir piksel kengaytirish
+    for (var k2 = Math.max(0, l - 1); k2 <= Math.min(W - 1, r + 1); k2++) {
+      if (y > 0 && !seen[(y - 1) * W + k2] && match(((y - 1) * W + k2) * 4)) { st.push(k2, y - 1); }
+      if (y < H - 1 && !seen[(y + 1) * W + k2] && match(((y + 1) * W + k2) * 4)) { st.push(k2, y + 1); }
+    }
+  }
+  // chiziq bo'yidagi och rangli qirralarni yopish uchun: bo'yalgan piksellar qo'shnisi (yarim-o'tkazuvchan) ham bo'yaladi
+  for (var yy = 1; yy < H - 1; yy++) for (var xq = 1; xq < W - 1; xq++) {
+    var q = yy * W + xq; if (seen[q]) continue;
+    if (seen[q - 1] || seen[q + 1] || seen[q - W] || seen[q + W]) {
+      var i = q * 4; if (Math.abs(d[i] - tr) + Math.abs(d[i + 1] - tg) + Math.abs(d[i + 2] - tb) <= 220 && (d[i] + d[i + 1] + d[i + 2]) > 90) { d[i] = (d[i] + col[0]) >> 1; d[i + 1] = (d[i + 1] + col[1]) >> 1; d[i + 2] = (d[i + 2] + col[2]) >> 1; }
+    }
+  }
+  x.putImageData(img, 0, 0);
+}
 function cvReset() { CV.strokes = []; cvRedraw(); }
 function cvLoad(list, sid) { if (sid !== undefined && sid !== S.sid) return; CV.strokes = list.slice(); cvRedraw(); }
-function cvStroke(s, sid) { if (!s || (sid !== undefined && sid !== S.sid)) return; CV.strokes.push(s); seg(s.c, s.w, s.p); }
+function cvStroke(s, sid) { if (!s || (sid !== undefined && sid !== S.sid)) return; CV.strokes.push(s); if (s.k === "fill") floodFill(s); else seg(s.c, s.w, s.p); }
 function cvUndo() { if (!CV.strokes.length) return; var id = CV.strokes[CV.strokes.length - 1].id; CV.strokes.pop(); while (id != null && CV.strokes.length && CV.strokes[CV.strokes.length - 1].id === id) CV.strokes.pop(); cvRedraw(); }
 
 // ---------- Hikoya ----------
@@ -25267,8 +25310,8 @@ document.addEventListener("click", function (e) {
     case "s_vote": act({a: "vote", u: +d("u")}); break;
     case "s_guess": if (confirm("Joy: " + d("l") + " — to'g'rimi?")) act({a: "guess", loc: d("l")}); break;
     case "d_pick": act({a: "pick", w: d("w")}); break;
-    case "d_col": CV.color = d("c"); CV.eraser = false; render(); break;
-    case "d_er": CV.eraser = !CV.eraser; render(); break;
+    case "d_col": CV.color = d("c"); if (CV.tool === "eraser") CV.tool = "brush"; render(); break;
+    case "d_tool": CV.tool = d("t"); render(); break;
     case "d_w": CV.w = +d("w"); render(); break;
     case "d_undo": cvUndo(); send({t: "undo"}); break;
     case "d_clear": cvReset(); send({t: "clear"}); break;
@@ -25282,6 +25325,7 @@ document.addEventListener("click", function (e) {
     case "ch_send": var t3 = $("#cw"); if (t3 && t3.value.trim()) { act({a: "word", x: t3.value}); t3.value = ""; } break;
   }
 });
+document.addEventListener("change", function (e) { if (e.target && e.target.id === "pc") { CV.color = e.target.value; if (CV.tool === "eraser") CV.tool = "brush"; render(); } });
 document.addEventListener("keydown", function (e) { if (e.key === "Enter" && e.target.id === "cw") { var t3 = e.target; if (t3.value.trim()) { act({a: "word", x: t3.value}); t3.value = ""; } } });
 function showSheet(k) {
   var g = gameInfo(k), el = document.createElement("div"); el.className = "sheetbg"; el.id = "sheet";
