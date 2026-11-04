@@ -1505,7 +1505,7 @@ def tariff_card_text(tid: str, t: dict) -> str:
 BOT_DESCRIPTIONS = {
     "hub": (
         "<i>Do'stlar bilan 2–10 kishilik kreativ o'yinlar: xona oching, kod yoki havola bilan chaqiring va birga o'ynang.</i>\n\n"
-        "🔪 Mafia, 🕵️ Josus, 🎨 Chizib top, 📖 Hikoya zanjiri, 😂 Kulgili javob, 🔴 4 ketma-ket, 🔤 So'z zanjiri.\n"
+        "🃏 Durak (karta), 🔪 Mafia, 🕵️ Josus, 🎨 Chizib top, 📖 Hikoya zanjiri, 😂 Kulgili javob, 🔴 4 ketma-ket, 🔤 So'z zanjiri.\n"
         "💬 Chat va 🎙 mikrofon (xohlasa yoqadi, xohlasa o'chiradi) — hammasi o'yin ichida.\n\n"
         "📊 Admin panelda: statistika, ommaviy xabar, majburiy obuna, adminlar."
     ),
@@ -23531,15 +23531,16 @@ class HubGame:
 
 
 # ---------------------------------------------------------------- 🎨 Chizib top
-HUB_WORDS = ["olma", "mashina", "uy", "quyosh", "baliq", "samolyot", "kitob", "tog'", "daryo", "telefon", "qalam", "soat",
-             "gul", "it", "mushuk", "ot", "tovuq", "velosiped", "ko'prik", "bulut", "yomg'ir", "qor", "stol", "stul",
-             "eshik", "deraza", "kalit", "qaychi", "tarvuz", "uzum", "non", "choynak", "piyola", "poyabzal", "ko'zoynak",
-             "gitara", "do'ppi", "tuya", "arslon", "fil", "ilon", "kapalak", "o'rgimchak", "chiroq", "televizor",
-             "kompyuter", "raketa", "kema", "poyezd", "avtobus", "traktor", "olov", "oy", "yulduz", "kamalak", "o'rmon",
-             "soyabon", "sumka", "pichoq", "qoshiq", "oyna", "karavot", "yostiq", "ko'ylak", "paypoq", "qo'lqop",
-             "bolta", "narvon", "minora", "chelak", "shar", "tort", "muzqaymoq", "pitsa", "banan", "limon", "sabzi",
-             "pomidor", "kartoshka", "qurbaqa", "toshbaqa", "delfin", "burgut", "maymun", "ayiq", "bo'ri", "tulki",
-             "quyon", "echki", "sigir", "eshak", "tuxum", "paxta", "chakmon", "dutor", "somsa", "palov", "samovar"]
+HUB_WORDS = ["olma", "mashina", "uy", "quyosh", "baliq", "samolyot", "kitob", "tog'", "telefon", "qalam", "soat", "gul",
+             "it", "mushuk", "ot", "tovuq", "velosiped", "ko'prik", "bulut", "yomg'ir", "qor", "stol", "stul", "eshik",
+             "deraza", "kalit", "qaychi", "tarvuz", "uzum", "non", "choynak", "piyola", "poyabzal", "ko'zoynak", "gitara",
+             "do'ppi", "tuya", "arslon", "fil", "ilon", "kapalak", "chiroq", "televizor", "kompyuter", "raketa", "kema",
+             "poyezd", "avtobus", "olov", "oy", "yulduz", "daraxt", "soyabon", "sumka", "pichoq", "qoshiq", "karavot",
+             "bolta", "narvon", "chelak", "shar", "tort", "muzqaymoq", "pitsa", "banan", "limon", "sabzi", "pomidor",
+             "qurbaqa", "toshbaqa", "delfin", "burgut", "maymun", "ayiq", "tulki", "quyon", "echki", "sigir", "tuxum",
+             "bosh", "ko'z", "qo'l", "burun", "tish", "yurak", "kaktus", "qo'ng'iroq", "shapka", "krossovka", "futbol to'pi",
+             "kamera", "mikrofon", "naushnik", "velosiped g'ildiragi", "qasr", "chodir", "qayiq", "vertolyot", "robot",
+             "qor odam", "pingvin", "sher", "zebra", "jirafa", "toj", "qilich", "qalqon"]
 
 
 class DrawGame(HubGame):
@@ -23567,6 +23568,7 @@ class DrawGame(HubGame):
         self.sid += 1
         self.phase = "choose"
         self.choices = random.sample(HUB_WORDS, 3)
+        self.rerolls = 3
         self.word = None
         self.guessed = []
         self.strokes = []
@@ -23613,6 +23615,12 @@ class DrawGame(HubGame):
 
     def act(self, uid, m):
         a = m.get("a")
+        if a == "reroll" and self.phase == "choose" and uid == self.drawer and self.rerolls > 0:
+            self.rerolls -= 1
+            self.choices = random.sample([w for w in HUB_WORDS if w not in self.choices], 3)
+            self.deadline = hub_ms(15)
+            self.after("t", 15, self.auto_pick)
+            return
         if a == "pick" and self.phase == "choose" and uid == self.drawer:
             w = str(m.get("w", ""))
             if w in self.choices:
@@ -23661,6 +23669,7 @@ class DrawGame(HubGame):
              "pts": self.pts, "mask": self.mask()}
         if self.phase == "choose" and uid == self.drawer:
             v["choices"] = self.choices
+            v["rerolls"] = self.rerolls
         if self.word and (uid == self.drawer or uid in self.guessed or self.phase in ("reveal", "over")):
             v["word"] = self.word
         return v
@@ -24393,7 +24402,256 @@ class ChainGame(HubGame):
                 "winner": self.winner, "deadline": getattr(self, "deadline", 0), "order": self.order}
 
 
-HUB_GAMES = {g.key: g for g in (MafiaGame, SpyGame, DrawGame, StoryGame, FunnyGame, C4Game, ChainGame)}
+# ---------------------------------------------------------------- 🃏 Durak
+HUB_SUITS = "♠♥♦♣"
+HUB_RANKS = ["6", "7", "8", "9", "10", "J", "Q", "K", "A"]
+
+
+class DurakGame(HubGame):
+    key, name, emoji = "durak", "Durak (karta)", "🃏"
+    desc = "Mashhur karta o'yini: 36 ta karta hammaga teng 6 tadan. Hech kim boshqaning kartasini ko'ra olmaydi — hammasi halol!"
+    min, max = 2, 4
+
+    # --- yordamchilar ---
+    def alive(self):
+        return [u for u in self.seats if u not in self.out and u in self.hands]
+
+    def next_alive(self, u):
+        n = len(self.seats)
+        i = self.seats.index(u) if u in self.seats else -1
+        for k in range(1, n + 1):
+            c = self.seats[(i + k) % n]
+            if c not in self.out and c in self.hands:
+                return c
+        return None
+
+    def attackers(self):
+        return [u for u in self.alive() if u != self.dfn]
+
+    def ranks_on_table(self):
+        return {c % 9 for p in self.table for c in p if c is not None}
+
+    def beats(self, att, d):
+        if att // 9 == d // 9:
+            return d % 9 > att % 9
+        return d // 9 == self.trump and att // 9 != self.trump
+
+    def can_add(self, uid, c):
+        if uid == self.dfn or uid not in self.alive() or c not in self.hands.get(uid, []):
+            return False
+        if self.phase == "attack":
+            return uid == self.att
+        if self.phase not in ("defend", "throw", "take"):
+            return False
+        unbeaten = sum(1 for p in self.table if p[1] is None)
+        if len(self.table) >= self.limit or unbeaten >= len(self.hands[self.dfn]):
+            return False
+        return (c % 9) in self.ranks_on_table()
+
+    def any_addable(self):
+        return any(self.can_add(u, c) for u in self.attackers() for c in self.hands[u])
+
+    # --- boshlash ---
+    def start(self):
+        rng = random.SystemRandom()
+        us = self.uids()
+        rng.shuffle(us)
+        self.seats = us
+        deck = list(range(36))
+        rng.shuffle(deck)
+        self.hands = {u: [deck.pop() for _ in range(6)] for u in us}
+        self.deck = deck
+        self.trump_card = deck[0]
+        self.trump = deck[0] // 9
+        self.out = []
+        self.loser = None
+        self.drawn = False
+        self.gid = rng.randint(1, 10 ** 9)
+        self.discard = 0
+        self.msg = None
+        best = None
+        for u in us:
+            for c in self.hands[u]:
+                if c // 9 == self.trump and (best is None or c % 9 < best[0]):
+                    best = (c % 9, u)
+        self.begin_bout(best[1] if best else us[0])
+
+    def begin_bout(self, att):
+        self.att = att
+        self.dfn = self.next_alive(att)
+        self.table = []
+        self.limit = min(6, len(self.hands[self.dfn]))
+        self.phase = "attack"
+        self.passed = set()
+        self.deadline = hub_ms(45)
+        self.after("t", 45, self.auto_attack)
+
+    def auto_attack(self):
+        if self.phase != "attack":
+            return
+        h = self.hands[self.att]
+        c = min(h, key=lambda x: (x // 9 == self.trump, x % 9))
+        self.act(self.att, {"a": "atk", "c": c})
+
+    def auto_take(self):
+        if self.phase == "defend":
+            self.start_take()
+
+    # --- harakatlar ---
+    def act(self, uid, m):
+        a = m.get("a")
+        if self.phase == "over":
+            return
+        try:
+            c = int(m.get("c")) if m.get("c") is not None else None
+        except Exception:
+            return
+        if a == "atk" and c is not None:
+            if not self.can_add(uid, c):
+                return self.room.toast(uid, "Bu kartani hozir tashlab bo'lmaydi")
+            self.hands[uid].remove(c)
+            self.table.append([c, None])
+            self.passed = set()
+            if self.phase == "attack":
+                self.phase = "defend"
+                self.deadline = hub_ms(50)
+                self.after("t", 50, self.auto_take)
+            elif self.phase == "throw":
+                self.phase = "defend"
+                self.deadline = hub_ms(50)
+                self.after("t", 50, self.auto_take)
+            elif self.phase == "take":
+                if not self.any_addable():
+                    self.do_take()
+        elif a == "def" and c is not None:
+            if uid != self.dfn or self.phase != "defend" or c not in self.hands[uid]:
+                return
+            idx = None
+            try:
+                i = int(m.get("i"))
+                if 0 <= i < len(self.table) and self.table[i][1] is None and self.beats(self.table[i][0], c):
+                    idx = i
+            except Exception:
+                pass
+            if idx is None:
+                for i, p in enumerate(self.table):
+                    if p[1] is None and self.beats(p[0], c):
+                        idx = i
+                        break
+            if idx is None:
+                return self.room.toast(uid, "Bu karta bilan yopib bo'lmaydi")
+            self.hands[uid].remove(c)
+            self.table[idx][1] = c
+            if all(p[1] is not None for p in self.table):
+                if not self.hands[uid] or len(self.table) >= self.limit or not self.any_addable():
+                    self.end_bout(True)
+                else:
+                    self.phase = "throw"
+                    self.passed = set()
+                    self.deadline = hub_ms(8)
+                    self.after("t", 8, lambda: self.end_bout(True))
+        elif a == "take" and uid == self.dfn and self.phase == "defend":
+            self.start_take()
+        elif a == "pass" and uid in self.attackers() and self.phase in ("throw", "take"):
+            self.passed.add(uid)
+            if self.passed >= set(self.attackers()):
+                self.end_bout(True) if self.phase == "throw" else self.do_take()
+
+    def start_take(self):
+        if not self.any_addable():
+            return self.do_take()
+        self.phase = "take"
+        self.passed = set()
+        self.deadline = hub_ms(7)
+        self.after("t", 7, self.do_take)
+
+    def do_take(self):
+        if self.phase not in ("take", "defend"):
+            return
+        self.end_bout(False)
+
+    def end_bout(self, defended):
+        if self.phase == "over":
+            return
+        self.cancel("t")
+        cards = [x for p in self.table for x in p if x is not None]
+        dfn, att = self.dfn, self.att
+        if defended:
+            self.discard += len(cards)
+            self.msg = f"🛡 {self.name_of(dfn)} hammasini yopdi"
+        else:
+            self.hands[dfn] += cards
+            self.msg = f"📥 {self.name_of(dfn)} kartalarni oldi ({len(cards)} ta)"
+        self.room.sys(self.msg)
+        # to'ldirish: hujumchi birinchi, himoyachi oxirgi
+        ring = []
+        i = self.seats.index(att)
+        for k in range(len(self.seats)):
+            u = self.seats[(i + k) % len(self.seats)]
+            if u in self.hands and u not in self.out and u != dfn:
+                ring.append(u)
+        if dfn in self.hands and dfn not in self.out:
+            ring.append(dfn)
+        for u in ring:
+            while len(self.hands[u]) < 6 and self.deck:
+                self.hands[u].append(self.deck.pop())
+        if not self.deck:
+            self.drawn = True
+        for u in list(self.alive()):
+            if not self.hands[u] and not self.deck:
+                self.out.append(u)
+        alive = self.alive()
+        if len(alive) <= 1:
+            return self.finish(alive[0] if alive else None)
+        nxt = dfn if defended else self.next_alive(dfn)
+        if nxt in self.out or nxt not in self.hands:
+            nxt = self.next_alive(nxt)
+        self.begin_bout(nxt)
+
+    def finish(self, loser):
+        self.phase = "over"
+        self.over = True
+        self.cancel()
+        self.loser = loser
+        self.table = getattr(self, "table", [])
+        if loser:
+            self.room.win([u for u in self.seats if u != loser and u in self.room.players])
+        self.room.after_game()
+
+    def on_leave(self, uid):
+        if self.phase == "over" or uid not in self.hands:
+            return
+        self.hands.pop(uid, None)
+        if uid not in self.out:
+            self.out.append(uid)
+        alive = self.alive()
+        if len(alive) <= 1:
+            return self.finish(None)
+        # joriy raundni yangidan boshlaymiz
+        self.cancel("t")
+        nxt = self.next_alive(uid)
+        self.begin_bout(nxt)
+
+    def view(self, uid):
+        hand = sorted(self.hands.get(uid, []), key=lambda c: (c // 9, c % 9))
+        v = {"phase": self.phase, "gid": self.gid, "trump": self.trump, "deckN": len(self.deck),
+             "tcard": None if self.drawn or not self.deck else self.trump_card,
+             "disc": self.discard, "att": getattr(self, "att", None), "dfn": getattr(self, "dfn", None),
+             "table": getattr(self, "table", []), "hand": hand, "limit": getattr(self, "limit", 6),
+             "deadline": getattr(self, "deadline", 0), "msg": self.msg, "loser": self.loser,
+             "seats": [{"u": u, "cnt": len(self.hands.get(u, [])), "out": u in self.out} for u in self.seats],
+             "passed": list(getattr(self, "passed", ())), "out": list(self.out)}
+        if self.phase in ("attack", "defend", "throw", "take"):
+            if uid == self.dfn:
+                if self.phase == "defend":
+                    v["legalDef"] = {str(c): [i for i, p in enumerate(self.table) if p[1] is None and self.beats(p[0], c)] for c in hand}
+                    v["legalDef"] = {k: x for k, x in v["legalDef"].items() if x}
+            else:
+                v["legalAtk"] = [c for c in hand if self.can_add(uid, c)]
+        return v
+
+
+HUB_GAMES = {g.key: g for g in (DurakGame, MafiaGame, SpyGame, DrawGame, StoryGame, FunnyGame, C4Game, ChainGame)}
 
 
 def hub_games_info():
@@ -24856,6 +25114,53 @@ canvas{width:100%;height:100%;display:block;touch-action:none}
 .sheetbg .sh{width:100%;background:var(--card);border-radius:26px 26px 0 0;padding:20px 16px calc(env(safe-area-inset-bottom,0px) + 18px);border:1px solid var(--bd)}
 .hint{font-size:12.5px;color:var(--mu);text-align:center;margin:6px 0}
 .muted-bar{background:rgba(255,184,77,.15);border:1px solid rgba(255,184,77,.4);color:var(--warn);border-radius:12px;padding:8px 12px;font-size:13px;margin:8px 0;text-align:center}
+
+.g-durak{background:linear-gradient(150deg,#0b4a2a,#08170f)}
+.opps{display:flex;justify-content:space-around;gap:6px;margin:2px 0 4px}
+.opp{text-align:center;min-width:90px}
+.opp .fan{position:relative;height:62px;margin:0 auto;width:110px}
+.opp .fan .cd{position:absolute;top:0;width:34px;height:50px;border-radius:5px;transform-origin:50% 120%}
+.opp b{font-size:13px;display:block}
+.opp .cnt{display:inline-block;background:var(--card2);border:1px solid var(--bd);border-radius:99px;padding:0 8px;font-size:12px;font-weight:800;margin-left:4px}
+.opp.turn b{color:var(--ok)}.opp.turn .fan{filter:drop-shadow(0 0 8px var(--ok))}
+.opp.out{opacity:.4}
+.stage{perspective:850px;height:226px;margin:4px -6px 0;overflow:visible}
+.felt{position:relative;width:100%;height:262px;border-radius:40px;background:radial-gradient(ellipse at 50% 38%,#2f9360,#16603a 62%,#0b3a21);border:7px solid #5b3a1e;box-shadow:inset 0 0 50px rgba(0,0,0,.6),0 26px 40px rgba(0,0,0,.55),0 0 0 2px #8a5a2b;transform:rotateX(34deg);transform-origin:50% 70%;transform-style:preserve-3d}
+.cd{position:relative;width:58px;height:84px;border-radius:9px;background:linear-gradient(160deg,#fff,#eceff6);box-shadow:0 3px 8px rgba(0,0,0,.45),inset 0 0 0 1px rgba(0,0,0,.12);font-weight:800;flex:none;user-select:none;color:#1b1f2a}
+.cd.rd{color:#d32f2f}
+.cd .cn{position:absolute;left:5px;top:3px;font-size:15px;line-height:1;text-align:center}
+.cd .cn b{display:block;font-size:14px;margin-top:1px}
+.cd .cn.bt{left:auto;right:5px;top:auto;bottom:3px;transform:rotate(180deg)}
+.cd .big{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:30px}
+.cd .face{width:30px;height:30px;border-radius:50%;background:radial-gradient(circle at 35% 30%,#ffe9a8,#e0a93a);color:#6b3d00;display:flex;align-items:center;justify-content:center;font-size:17px;box-shadow:inset 0 0 0 2px rgba(120,70,0,.4)}
+.cd.back{background:repeating-linear-gradient(45deg,#3b2f8f 0 5px,#4a3cb5 5px 10px);border:3px solid #fff}
+.cd.back::after{content:"";position:absolute;inset:6px;border:2px solid rgba(255,255,255,.55);border-radius:5px}
+.cd.tb{width:48px;height:70px}.cd.tb .cn{font-size:12px}.cd.tb .cn b{font-size:11px}.cd.tb .big{font-size:22px}.cd.tb .face{width:24px;height:24px;font-size:14px}
+.deckbox{position:absolute;left:14px;top:50%;margin-top:-40px;width:70px;height:84px;transform-style:preserve-3d}
+.deckbox .cd{position:absolute;left:0;top:0;width:48px;height:70px}
+.deckbox .tc{left:34px;top:2px;transform:rotate(90deg);z-index:0}
+.deckbox .n{position:absolute;left:4px;bottom:-14px;background:rgba(0,0,0,.5);color:#fff;font-size:12px;padding:0 7px;border-radius:99px;font-weight:800}
+.tsuit{position:absolute;left:0;top:-30px;font-size:22px;background:rgba(0,0,0,.35);border-radius:99px;padding:0 7px}
+.tbl{position:absolute;left:96px;right:8px;top:6px;bottom:6px;display:flex;flex-wrap:wrap;justify-content:center;align-content:center;gap:12px 12px}
+.pair{position:relative;width:48px;height:70px;transform:translateZ(2px)}
+.pair .dc{position:absolute;left:13px;top:11px;transform:rotate(13deg)}
+.pair.tg .cd:first-child{box-shadow:0 0 0 3px var(--warn),0 0 18px var(--warn)}
+.pair.un .cd:first-child{box-shadow:0 0 0 2px rgba(255,93,108,.9),0 3px 8px rgba(0,0,0,.45)}
+.dinfo{text-align:center;font-weight:700;margin:30px 0 2px;min-height:22px;position:relative;z-index:3}
+.dact{display:flex;gap:10px;margin:6px 0}
+.dact .btn{padding:11px 14px}
+.hand{display:flex;justify-content:center;padding:26px 6px 4px;min-height:130px}
+.hand .cd{margin-left:-20px;width:62px;height:90px;transform-origin:50% 130%;transition:transform .18s,box-shadow .18s}
+.hand .cd:first-child{margin-left:0}
+.hand .cd .cn{font-size:16px}.hand .cd .big{font-size:32px}
+.hand .cd.dim{filter:brightness(.72)}
+.hand .cd.ok{box-shadow:0 0 0 2px var(--ok),0 8px 18px rgba(56,214,160,.45);transform:translateY(-18px) rotate(var(--r,0deg)) !important}
+.cd.new{animation:land .5s cubic-bezier(.2,.8,.3,1)}
+.hand .cd.new{animation:dealin .6s cubic-bezier(.2,.8,.3,1)}
+@keyframes land{from{transform:translateY(-90px) scale(1.35) rotate(-22deg);opacity:0}}
+@keyframes dealin{from{transform:translateY(-300px) translateX(-120px) rotate(-40deg);opacity:0}}
+.suit-r{color:#d32f2f}
+
 .pulse{animation:pl 1.4s infinite}@keyframes pl{50%{opacity:.5}}
 .pop{animation:pop .35s}@keyframes pop{from{transform:scale(.85);opacity:0}}
 </style></head>
@@ -25050,7 +25355,7 @@ function renderGame() {
   var R = S.room, v = S.view, g = gameInfo(R.game);
   topBar(g.e + " " + esc(g.n), true);
   $("#dock").style.display = "none";
-  var fn = {mafia: rMafia, spy: rSpy, draw: rDraw, story: rStory, funny: rFunny, c4: rC4, chain: rChain}[R.game];
+  var fn = {durak: rDurak, mafia: rMafia, spy: rSpy, draw: rDraw, story: rStory, funny: rFunny, c4: rC4, chain: rChain}[R.game];
   var h = "";
   if (S.micOn && v.talk === false) h += '<div class="muted-bar">🔇 Hozir gaplashish mumkin emas</div>';
   var body = fn ? fn(v) : "";
@@ -25157,7 +25462,7 @@ function rDraw(v) {
     '<div class="tools">' + PAL.map(function (c) { return '<button class="sw' + (CV.tool !== "eraser" && CV.color === c ? " on" : "") + '" data-a="d_col" data-c="' + c + '" style="background:' + c + (c === "#ffffff" ? ";border-color:#ccc" : "") + '"></button>'; }).join("") +
     '<label class="sw rb' + (PAL.indexOf(CV.color) < 0 ? " on" : "") + '" style="' + (PAL.indexOf(CV.color) < 0 ? "background:" + CV.color : "") + '"><input type="color" id="pc" value="' + (/^#[0-9a-f]{6}$/i.test(CV.color) ? CV.color : "#000000") + '"></label></div>' +
     '<div class="tools"><button class="chip" data-a="d_w" data-w="' + (CV.w === 5 ? 12 : CV.w === 12 ? 2 : 5) + '">● Yo\'g\'onlik ' + CV.w + '</button><button class="chip" data-a="d_undo">↩️ Orqaga</button><button class="chip" data-a="d_clear">🗑 Tozalash</button></div>';
-  if (me && v.phase === "choose") tools = '<div class="pgrid">' + (v.choices || []).map(function (w) { return '<button class="btn sec" data-a="d_pick" data-w="' + esc(w) + '">' + esc(w) + "</button>"; }).join("") + "</div>";
+  if (me && v.phase === "choose") tools = '<div class="pgrid">' + (v.choices || []).map(function (w) { return '<button class="btn sec" data-a="d_pick" data-w="' + esc(w) + '">' + esc(w) + "</button>"; }).join("") + '</div><button class="btn sec" style="margin-top:10px" data-a="d_reroll"' + (v.rerolls > 0 ? "" : " disabled") + ">🔄 Boshqa so'zlar (" + (v.rerolls || 0) + ")</button>";
   var tl = $("#dt"); if (tl.getAttribute("data-k") !== tools) { tl.innerHTML = tools; tl.setAttribute("data-k", tools); }
   var gd = "";
   if (!me && v.phase === "draw") gd = (v.guessed || []).indexOf(S.me) >= 0 ? '<div class="banner win c">✅ Siz topdingiz! Boshqalarni kuting...</div>' : '<div class="cin" style="padding:10px 0 0"><input id="gs" placeholder="So\'zni toping..." autocomplete="off"><button data-a="d_guess">➤</button></div>';
@@ -25219,6 +25524,61 @@ function cvReset() { CV.strokes = []; cvRedraw(); }
 function cvLoad(list, sid) { if (sid !== undefined && sid !== S.sid) return; CV.strokes = list.slice(); cvRedraw(); }
 function cvStroke(s, sid) { if (!s || (sid !== undefined && sid !== S.sid)) return; CV.strokes.push(s); if (s.k === "fill") floodFill(s); else seg(s.c, s.w, s.p); }
 function cvUndo() { if (!CV.strokes.length) return; var id = CV.strokes[CV.strokes.length - 1].id; CV.strokes.pop(); while (id != null && CV.strokes.length && CV.strokes[CV.strokes.length - 1].id === id) CV.strokes.pop(); cvRedraw(); }
+
+
+// ---------- Durak (karta) ----------
+var DR = ["6", "7", "8", "9", "10", "J", "Q", "K", "A"], DS = ["♠", "♥", "♦", "♣"];
+function cardH(c, cls, attr) {
+  var s = (c / 9) | 0, r = c % 9, red = s === 1 || s === 2, R = DR[r], mid = r >= 5 && r <= 7 ? '<span class="face">' + R + "</span>" : DS[s];
+  return '<div class="cd ' + (red ? "rd" : "bk") + (cls ? " " + cls : "") + '" ' + (attr || "") + '><span class="cn">' + R + "<b>" + DS[s] + '</b></span><span class="big">' + mid + '</span><span class="cn bt">' + R + "<b>" + DS[s] + "</b></span></div>";
+}
+function rDurak(v) {
+  var me = S.me, seen = S.seen = (S.dgid === v.gid && S.seen) || {}; if (S.dgid !== v.gid) { S.dgid = v.gid; S.dt = null; seen = S.seen = {}; }
+  var h = "", over = v.phase === "over", isD = v.dfn === me, att = v.att;
+  var others = v.seats.filter(function (s) { return s.u !== me; });
+  h += '<div class="opps">' + others.map(function (s) {
+    var n = Math.min(s.cnt, 9), mid = (n - 1) / 2, fan = "";
+    for (var i = 0; i < n; i++) fan += '<div class="cd back" style="left:' + (38 + (i - mid) * 7) + "px;transform:rotate(" + ((i - mid) * 7) + 'deg)"></div>';
+    var turn = !over && ((v.phase === "attack" && s.u === att) || ((v.phase === "defend" || v.phase === "take") && s.u === v.dfn) || ((v.phase === "throw") && s.u !== v.dfn));
+    return '<div class="opp' + (turn ? " turn" : "") + (s.out ? " out" : "") + '">' + '<div class="fan">' + fan + "</div><b>" + (s.u === att && !over ? "⚔️ " : s.u === v.dfn && !over ? "🛡 " : "") + esc(pname(s.u)) + '<span class="cnt">' + (s.out ? "✓" : s.cnt) + "</span></b></div>";
+  }).join("") + "</div>";
+  // stol
+  var tcs = DS[v.trump], tr = v.trump === 1 || v.trump === 2;
+  var deck = '<div class="deckbox"><span class="tsuit' + (tr ? " suit-r" : "") + '" title="Kozir">' + tcs + "</span>";
+  if (v.tcard != null) deck += cardH(v.tcard, "tc tb");
+  if (v.deckN > 1) deck += '<div class="cd back"></div><div class="cd back" style="left:3px;top:2px"></div>';
+  else if (v.deckN === 1) deck += "";
+  deck += '<span class="n">' + v.deckN + "</span></div>";
+  var tbl = '<div class="tbl">' + v.table.map(function (p, i) {
+    var an = !seen["t" + p[0]], dn = p[1] != null && !seen["t" + p[1]];
+    return '<div class="pair' + (S.dt === i && p[1] == null ? " tg" : "") + (p[1] == null ? " un" : "") + '" data-a="du_tg" data-i="' + i + '">' + cardH(p[0], "tb" + (an ? " new" : "")) + (p[1] != null ? '<div class="dc">' + cardH(p[1], "tb" + (dn ? " new" : "")) + "</div>" : "") + "</div>";
+  }).join("") + "</div>";
+  h += '<div class="stage"><div class="felt">' + deck + tbl + "</div></div>";
+  // holat
+  var st = "";
+  if (over) st = v.loser ? "🃏 Durak: <b>" + esc(pname(v.loser)) + "</b>" : "🤝 O'yin tugadi";
+  else if (v.phase === "attack") st = att === me ? "⚔️ Hujum qiling — kartani tanlang" : "⏳ " + esc(pname(att)) + " hujum qilmoqda";
+  else if (v.phase === "defend") st = isD ? "🛡 Hamma kartani yoping yoki «Olish» ni bosing" : "🛡 " + esc(pname(v.dfn)) + " himoya qilmoqda" + (v.legalAtk && v.legalAtk.length ? " · siz ham karta qo'shishingiz mumkin" : "");
+  else if (v.phase === "throw") st = isD ? "✅ Yopdingiz! Hujumchilar qo'shishi mumkin..." : (v.legalAtk && v.legalAtk.length ? "➕ Karta qo'shing yoki «Bito»" : "⏳ Bito kutilmoqda");
+  else if (v.phase === "take") st = isD ? "📥 Olmoqdasiz — hujumchilar qo'shishi mumkin" : (v.legalAtk && v.legalAtk.length ? "➕ Oxirgi kartalarni qo'shing yoki «Tayyor»" : "📥 " + esc(pname(v.dfn)) + " oladi");
+  h += '<div class="dinfo">' + st + (v.deadline && !over ? " " + timerHtml(v.deadline) : "") + "</div>";
+  var btns = "";
+  if (!over && isD && v.phase === "defend") btns += '<button class="btn bad" data-a="du_take">📥 Olish</button>';
+  if (!over && !isD && (v.phase === "throw" || v.phase === "take") && v.passed.indexOf(me) < 0 && v.seats.some(function (s) { return s.u === me && !s.out; })) btns += '<button class="btn sec" data-a="du_pass">' + (v.phase === "throw" ? "✅ Bito" : "✅ Tayyor") + "</button>";
+  h += '<div class="dact">' + btns + "</div>";
+  // qo'lim
+  var hand = v.hand, n = hand.length, mid = (n - 1) / 2, mine = v.seats.some(function (s) { return s.u === me && !s.out; });
+  if (over) h += endBar();
+  else if (mine || n) {
+    h += '<div class="hand">' + hand.map(function (c, i) {
+      var ok = isD ? !!(v.legalDef && v.legalDef[c]) : !!(v.legalAtk && v.legalAtk.indexOf(c) >= 0), nw = !seen["h" + c];
+      var rot = (i - mid) * Math.min(5, 36 / Math.max(n, 1));
+      return cardH(c, (ok ? "ok" : (v.legalAtk || v.legalDef ? "dim" : "")) + (nw ? " new" : ""), 'data-a="du_card" data-c="' + c + '" style="--r:' + rot.toFixed(1) + "deg;transform:rotate(" + rot.toFixed(1) + 'deg) translateY(' + (Math.abs(i - mid) * Math.abs(i - mid) * 0.9).toFixed(1) + 'px)"');
+    }).join("") + "</div>";
+  } else h += '<div class="banner c">🎉 Siz kartalarni tugatdingiz! Qolganlarni kuzating.</div>';
+  v.hand.forEach(function (c) { seen["h" + c] = 1; }); v.table.forEach(function (p) { seen["t" + p[0]] = 1; if (p[1] != null) seen["t" + p[1]] = 1; });
+  return h;
+}
 
 // ---------- Hikoya ----------
 function rStory(v) {
@@ -25309,6 +25669,13 @@ document.addEventListener("click", function (e) {
     case "s_call": act({a: "call"}); break;
     case "s_vote": act({a: "vote", u: +d("u")}); break;
     case "s_guess": if (confirm("Joy: " + d("l") + " — to'g'rimi?")) act({a: "guess", loc: d("l")}); break;
+    case "du_card": var cc = +d("c"), vv = S.view, isDf = vv.dfn === S.me;
+      if (isDf) { var lg = vv.legalDef && vv.legalDef[cc]; if (!lg) { toast("Bu karta bilan yopib bo'lmaydi"); break; } var ti = (S.dt != null && lg.indexOf(S.dt) >= 0) ? S.dt : lg[0]; S.dt = null; act({a: "def", c: cc, i: ti}); }
+      else { if (vv.legalAtk && vv.legalAtk.indexOf(cc) >= 0) act({a: "atk", c: cc}); else toast("Hozir bu kartani tashlab bo'lmaydi"); } break;
+    case "du_tg": if (S.view.dfn === S.me && S.view.phase === "defend") { var ii = +d("i"); S.dt = (S.dt === ii ? null : ii); render(); } break;
+    case "du_take": act({a: "take"}); break;
+    case "du_pass": act({a: "pass"}); break;
+    case "d_reroll": act({a: "reroll"}); break;
     case "d_pick": act({a: "pick", w: d("w")}); break;
     case "d_col": CV.color = d("c"); if (CV.tool === "eraser") CV.tool = "brush"; render(); break;
     case "d_tool": CV.tool = d("t"); render(); break;
@@ -25486,7 +25853,7 @@ def setup_hub_bot(dp: Dispatcher, token: str):
             await message.answer(f"🚪 Xona <b>{html_escape(room)}</b> ga taklif qilindingiz!\nTugmani bosing va o'yinga qo'shiling 👇", reply_markup=kb)
         else:
             await message.answer(
-                "🎮 <b>O'yinlar markazi</b>\n\n2–10 kishilik kreativ o'yinlar: 🔪 Mafia, 🕵️ Josus, 🎨 Chizib top, 📖 Hikoya zanjiri, "
+                "🎮 <b>O'yinlar markazi</b>\n\n2–10 kishilik kreativ o'yinlar: 🃏 Durak (karta), 🔪 Mafia, 🕵️ Josus, 🎨 Chizib top, 📖 Hikoya zanjiri, "
                 "😂 Kulgili javob, 🔴 4 ketma-ket, 🔤 So'z zanjiri.\n\n🎙 Xohlasangiz mikrofon orqali gaplashib o'ynang!", reply_markup=kb)
 
     @dp.message(Command("start"))
