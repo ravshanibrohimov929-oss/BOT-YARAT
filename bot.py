@@ -1505,7 +1505,7 @@ def tariff_card_text(tid: str, t: dict) -> str:
 BOT_DESCRIPTIONS = {
     "hub": (
         "<i>Do'stlar bilan 2–10 kishilik kreativ o'yinlar: xona oching, kod yoki havola bilan chaqiring va birga o'ynang.</i>\n\n"
-        "🃏 Durak (karta), 🔪 Mafia, 🕵️ Josus, 🎨 Chizib top, 📖 Hikoya zanjiri, 😂 Kulgili javob, 🔴 4 ketma-ket, 🔤 So'z zanjiri.\n"
+        "🃏 Durak (karta), ♟ Shashka, ♚ Shaxmat, 🔪 Mafia, 🕵️ Josus, 🎨 Chizib top, 📖 Hikoya zanjiri, 😂 Kulgili javob, 🔴 4 ketma-ket, 🔤 So'z zanjiri.\n"
         "💬 Chat va 🎙 mikrofon (xohlasa yoqadi, xohlasa o'chiradi) — hammasi o'yin ichida.\n\n"
         "📊 Admin panelda: statistika, ommaviy xabar, majburiy obuna, adminlar."
     ),
@@ -24651,7 +24651,523 @@ class DurakGame(HubGame):
         return v
 
 
-HUB_GAMES = {g.key: g for g in (DurakGame, MafiaGame, SpyGame, DrawGame, StoryGame, FunnyGame, C4Game, ChainGame)}
+# ---------------------------------------------------------------- ♟ Shashka (rus shashkasi)
+SH_DIRS = ((-1, -1), (-1, 1), (1, -1), (1, 1))
+
+
+def sh_in(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+
+def sh_start_board():
+    b = [[0] * 8 for _ in range(8)]
+    for r in range(3):
+        for c in range(8):
+            if (r + c) % 2 == 1:
+                b[r][c] = -1            # qora (tepada)
+    for r in range(5, 8):
+        for c in range(8):
+            if (r + c) % 2 == 1:
+                b[r][c] = 1             # oq (pastda)
+    return b
+
+
+def sh_captures(b, r0, c0, side):
+    """(r0,c0) dagi dona uchun barcha to'liq urish yo'llari: [(yo'l, urilganlar)]."""
+    piece = b[r0][c0]
+    res = []
+    promo_row = 0 if side == 1 else 7
+
+    def enemy(v):
+        return v != 0 and (v > 0) != (side == 1)
+
+    def dfs(r, c, king, caps, path):
+        found = False
+        for dr, dc in SH_DIRS:
+            if not king:
+                mr, mc, lr, lc = r + dr, c + dc, r + 2 * dr, c + 2 * dc
+                if sh_in(lr, lc) and (mr, mc) not in caps and enemy(b[mr][mc]) and (b[lr][lc] == 0 or (lr, lc) == (r0, c0)):
+                    found = True
+                    nk = (lr == promo_row)
+                    dfs(lr, lc, nk, caps | {(mr, mc)}, path + [(lr, lc)])
+            else:
+                rr, cc = r + dr, c + dc
+                while sh_in(rr, cc) and (b[rr][cc] == 0 or (rr, cc) == (r0, c0)):
+                    rr += dr
+                    cc += dc
+                if not sh_in(rr, cc) or (rr, cc) in caps or not enemy(b[rr][cc]):
+                    continue
+                er, ec = rr, cc
+                lands = []
+                lr, lc = er + dr, ec + dc
+                while sh_in(lr, lc) and (b[lr][lc] == 0 or (lr, lc) == (r0, c0)):
+                    lands.append((lr, lc))
+                    lr += dr
+                    lc += dc
+                if not lands:
+                    continue
+                found = True
+                ncaps = caps | {(er, ec)}
+                cont = [L for L in lands if sh_has_more(b, L[0], L[1], True, ncaps, r0, c0, side)]
+                for L in (cont or lands):
+                    dfs(L[0], L[1], True, ncaps, path + [L])
+        if not found and caps:
+            res.append((path, caps))
+
+    dfs(r0, c0, abs(piece) == 2, frozenset(), [(r0, c0)])
+    return res
+
+
+def sh_has_more(b, r, c, king, caps, r0, c0, side):
+    def enemy(v):
+        return v != 0 and (v > 0) != (side == 1)
+    for dr, dc in SH_DIRS:
+        rr, cc = r + dr, c + dc
+        while sh_in(rr, cc) and (b[rr][cc] == 0 or (rr, cc) == (r0, c0)):
+            rr += dr
+            cc += dc
+        if not sh_in(rr, cc) or (rr, cc) in caps or not enemy(b[rr][cc]):
+            continue
+        lr, lc = rr + dr, cc + dc
+        if sh_in(lr, lc) and (b[lr][lc] == 0 or (lr, lc) == (r0, c0)):
+            return True
+    return False
+
+
+def sh_moves(b, side):
+    """side: 1 (oq) yoki -1 (qora). [{p: yo'l, c: urilganlar}] — urish bo'lsa faqat urishlar."""
+    caps, quiet = [], []
+    for r in range(8):
+        for c in range(8):
+            v = b[r][c]
+            if v == 0 or (v > 0) != (side == 1):
+                continue
+            for path, cp in sh_captures(b, r, c, side):
+                caps.append({"p": [list(x) for x in path], "c": [list(x) for x in sorted(cp)]})
+            if abs(v) == 1:
+                fr = -1 if side == 1 else 1
+                for dc in (-1, 1):
+                    nr, nc = r + fr, c + dc
+                    if sh_in(nr, nc) and b[nr][nc] == 0:
+                        quiet.append({"p": [[r, c], [nr, nc]], "c": []})
+            else:
+                for dr, dc in SH_DIRS:
+                    nr, nc = r + dr, c + dc
+                    while sh_in(nr, nc) and b[nr][nc] == 0:
+                        quiet.append({"p": [[r, c], [nr, nc]], "c": []})
+                        nr += dr
+                        nc += dc
+    return caps if caps else quiet
+
+
+class ShashkaGame(HubGame):
+    key, name, emoji = "shashka", "Shashka", "♟"
+    desc = "Ikki kishilik klassik shashka: majburiy urish, ketma-ket urish va damka (uchib yuradigan)."
+    min, max = 2, 2
+
+    def start(self):
+        us = self.uids()
+        random.shuffle(us)
+        self.white, self.black = us[0], us[1]
+        self.b = sh_start_board()
+        self.turn = self.white
+        self.quiet_plies = 0
+        self.winner = None
+        self.reason = None
+        self.last = None
+        self.phase = "play"
+        self.moves = sh_moves(self.b, 1)
+        self.deadline = hub_ms(120)
+        self.after("t", 120, self.timeout)
+
+    def side_of(self, uid):
+        return 1 if uid == self.white else -1
+
+    def timeout(self):
+        if self.phase == "play":
+            self.end(self.black if self.turn == self.white else self.white, "vaqt tugadi")
+
+    def end(self, winner, reason):
+        self.phase = "over"
+        self.over = True
+        self.cancel()
+        self.winner = winner
+        self.reason = reason
+        if winner:
+            self.room.win([winner])
+        self.room.after_game()
+
+    def act(self, uid, m):
+        if self.phase != "play":
+            return
+        a = m.get("a")
+        if a == "resign" and uid in (self.white, self.black):
+            return self.end(self.black if uid == self.white else self.white, "taslim bo'ldi")
+        if a != "mv" or uid != self.turn:
+            return
+        p = m.get("p")
+        try:
+            p = [[int(x[0]), int(x[1])] for x in p]
+        except Exception:
+            return
+        mv = next((x for x in self.moves if x["p"] == p), None)
+        if not mv:
+            return self.room.toast(uid, "Bunday yurish mumkin emas")
+        side = self.side_of(uid)
+        (r0, c0), (r1, c1) = p[0], p[-1]
+        piece = self.b[r0][c0]
+        self.b[r0][c0] = 0
+        for r, c in mv["c"]:
+            self.b[r][c] = 0
+        if abs(piece) == 1 and r1 == (0 if side == 1 else 7):
+            piece = 2 * side
+        self.b[r1][c1] = piece
+        self.last = p
+        self.quiet_plies = 0 if (mv["c"] or abs(self.b[r1][c1]) == 1) else self.quiet_plies + 1
+        opp = self.black if uid == self.white else self.white
+        self.turn = opp
+        self.moves = sh_moves(self.b, -side)
+        if not self.moves:
+            return self.end(uid, "raqibning yurishi qolmadi")
+        if self.quiet_plies >= 30:
+            return self.end(None, "durang (30 yurish davomida urish bo'lmadi)")
+        self.deadline = hub_ms(120)
+        self.after("t", 120, self.timeout)
+
+    def on_leave(self, uid):
+        if self.phase == "play" and uid in (self.white, self.black):
+            self.end(self.black if uid == self.white else self.white, "raqib chiqib ketdi")
+
+    def view(self, uid):
+        w = sum(1 for r in self.b for v in r if v > 0)
+        k = sum(1 for r in self.b for v in r if v < 0)
+        return {"phase": self.phase, "b": self.b, "white": self.white, "black": self.black, "turn": self.turn,
+                "moves": self.moves if (self.phase == "play" and uid == self.turn) else [], "last": self.last,
+                "deadline": getattr(self, "deadline", 0), "winner": self.winner, "reason": self.reason,
+                "nw": w, "nb": k, "mustCap": bool(self.moves and self.moves[0]["c"])}
+
+
+
+# ---------------------------------------------------------------- ♚ Shaxmat
+CH_KN = ((-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1))
+CH_DG = ((-1, -1), (-1, 1), (1, -1), (1, 1))
+CH_ST = ((-1, 0), (1, 0), (0, -1), (0, 1))
+CH_START = ["rnbqkbnr", "pppppppp", "........", "........", "........", "........", "PPPPPPPP", "RNBQKBNR"]
+
+
+def ch_white(p):
+    return p.isupper()
+
+
+def ch_attacked(b, r, c, by):
+    """(r,c) katagini `by` ('w'/'b') tomoni uryaptimi."""
+    pr = r + 1 if by == "w" else r - 1
+    pawn = "P" if by == "w" else "p"
+    if 0 <= pr < 8:
+        for dc in (-1, 1):
+            if 0 <= c + dc < 8 and b[pr][c + dc] == pawn:
+                return True
+    kn = "N" if by == "w" else "n"
+    for dr, dc in CH_KN:
+        rr, cc = r + dr, c + dc
+        if 0 <= rr < 8 and 0 <= cc < 8 and b[rr][cc] == kn:
+            return True
+    kg = "K" if by == "w" else "k"
+    for dr in (-1, 0, 1):
+        for dc in (-1, 0, 1):
+            if (dr or dc) and 0 <= r + dr < 8 and 0 <= c + dc < 8 and b[r + dr][c + dc] == kg:
+                return True
+    q, rk, bs = ("Q", "R", "B") if by == "w" else ("q", "r", "b")
+    for dirs, pcs in ((CH_ST, (rk, q)), (CH_DG, (bs, q))):
+        for dr, dc in dirs:
+            rr, cc = r + dr, c + dc
+            while 0 <= rr < 8 and 0 <= cc < 8:
+                x = b[rr][cc]
+                if x != ".":
+                    if x in pcs:
+                        return True
+                    break
+                rr += dr
+                cc += dc
+    return False
+
+
+def ch_king(b, side):
+    k = "K" if side == "w" else "k"
+    for r in range(8):
+        for c in range(8):
+            if b[r][c] == k:
+                return r, c
+    return None
+
+
+def ch_pseudo(b, side, castle, ep):
+    mv = []
+    own = (lambda p: p != "." and ch_white(p) == (side == "w"))
+    en = (lambda p: p != "." and ch_white(p) != (side == "w"))
+    for r in range(8):
+        for c in range(8):
+            p = b[r][c]
+            if p == "." or not own(p):
+                continue
+            t = p.lower()
+            if t == "p":
+                d = -1 if side == "w" else 1
+                start = 6 if side == "w" else 1
+                last = 0 if side == "w" else 7
+                nr = r + d
+                if 0 <= nr < 8 and b[nr][c] == ".":
+                    if nr == last:
+                        for pr in "qrbn":
+                            mv.append((r, c, nr, c, pr))
+                    else:
+                        mv.append((r, c, nr, c, ""))
+                        if r == start and b[r + 2 * d][c] == ".":
+                            mv.append((r, c, r + 2 * d, c, ""))
+                for dc in (-1, 1):
+                    nc = c + dc
+                    if 0 <= nr < 8 and 0 <= nc < 8:
+                        if en(b[nr][nc]):
+                            if nr == last:
+                                for pr in "qrbn":
+                                    mv.append((r, c, nr, nc, pr))
+                            else:
+                                mv.append((r, c, nr, nc, ""))
+                        elif ep and (nr, nc) == ep:
+                            mv.append((r, c, nr, nc, ""))
+            elif t == "n":
+                for dr, dc in CH_KN:
+                    rr, cc = r + dr, c + dc
+                    if 0 <= rr < 8 and 0 <= cc < 8 and not own(b[rr][cc]):
+                        mv.append((r, c, rr, cc, ""))
+            elif t == "k":
+                for dr in (-1, 0, 1):
+                    for dc in (-1, 0, 1):
+                        rr, cc = r + dr, c + dc
+                        if (dr or dc) and 0 <= rr < 8 and 0 <= cc < 8 and not own(b[rr][cc]):
+                            mv.append((r, c, rr, cc, ""))
+                row = 7 if side == "w" else 0
+                if r == row and c == 4:
+                    opp = "b" if side == "w" else "w"
+                    if not ch_attacked(b, row, 4, opp):
+                        ks, qs = ("K", "Q") if side == "w" else ("k", "q")
+                        if ks in castle and b[row][5] == "." and b[row][6] == "." and b[row][7] == ("R" if side == "w" else "r") \
+                                and not ch_attacked(b, row, 5, opp) and not ch_attacked(b, row, 6, opp):
+                            mv.append((r, c, row, 6, ""))
+                        if qs in castle and b[row][3] == "." and b[row][2] == "." and b[row][1] == "." and b[row][0] == ("R" if side == "w" else "r") \
+                                and not ch_attacked(b, row, 3, opp) and not ch_attacked(b, row, 2, opp):
+                            mv.append((r, c, row, 2, ""))
+            else:
+                dirs = CH_ST if t == "r" else CH_DG if t == "b" else CH_ST + CH_DG
+                for dr, dc in dirs:
+                    rr, cc = r + dr, c + dc
+                    while 0 <= rr < 8 and 0 <= cc < 8:
+                        if own(b[rr][cc]):
+                            break
+                        mv.append((r, c, rr, cc, ""))
+                        if en(b[rr][cc]):
+                            break
+                        rr += dr
+                        cc += dc
+    return mv
+
+
+def ch_apply(st, m):
+    """st=(board, side, castle, ep, half, full). Yangi holatni qaytaradi."""
+    b, side, castle, ep, half, full = st
+    nb = [row[:] for row in b]
+    fr, fc, tr, tc, pr = m
+    p = nb[fr][fc]
+    cap = nb[tr][tc] != "."
+    nb[fr][fc] = "."
+    if p.lower() == "p" and ep and (tr, tc) == ep and fc != tc and not cap:
+        nb[fr][tc] = "."
+        cap = True
+    nb[tr][tc] = (pr.upper() if side == "w" else pr) if pr else p
+    if p.lower() == "k" and abs(tc - fc) == 2:
+        if tc == 6:
+            nb[tr][5] = nb[tr][7]; nb[tr][7] = "."
+        else:
+            nb[tr][3] = nb[tr][0]; nb[tr][0] = "."
+    nc = set(castle)
+    if p == "K": nc -= {"K", "Q"}
+    if p == "k": nc -= {"k", "q"}
+    for (rr, cc, ch) in ((7, 0, "Q"), (7, 7, "K"), (0, 0, "q"), (0, 7, "k")):
+        if (fr, fc) == (rr, cc) or (tr, tc) == (rr, cc):
+            nc.discard(ch)
+    nep = None
+    if p.lower() == "p" and abs(tr - fr) == 2:
+        nep = ((fr + tr) // 2, fc)
+    nh = 0 if (cap or p.lower() == "p") else half + 1
+    return (nb, "b" if side == "w" else "w", "".join(x for x in "KQkq" if x in nc), nep, nh, full + (1 if side == "b" else 0))
+
+
+def ch_legal(st):
+    b, side, castle, ep, half, full = st
+    opp = "b" if side == "w" else "w"
+    res = []
+    for m in ch_pseudo(b, side, castle, ep):
+        ns = ch_apply(st, m)
+        k = ch_king(ns[0], side)
+        if k and not ch_attacked(ns[0], k[0], k[1], opp):
+            res.append(m)
+    return res
+
+
+def ch_in_check(st):
+    b, side = st[0], st[1]
+    k = ch_king(b, side)
+    return bool(k) and ch_attacked(b, k[0], k[1], "b" if side == "w" else "w")
+
+
+def ch_key(st):
+    return ("".join("".join(r) for r in st[0]), st[1], st[2], st[3])
+
+
+def ch_insufficient(b):
+    ps = [x for r in b for x in r if x not in ".kK"]
+    if not ps:
+        return True
+    if len(ps) == 1 and ps[0].lower() in "bn":
+        return True
+    if all(x.lower() == "b" for x in ps):
+        sq = {(r + c) % 2 for r in range(8) for c in range(8) if b[r][c].lower() == "b"}
+        return len(sq) == 1
+    return False
+
+
+def ch_fen(fen):
+    parts = fen.split()
+    rows = []
+    for rk in parts[0].split("/"):
+        row = ""
+        for ch in rk:
+            row += "." * int(ch) if ch.isdigit() else ch
+        rows.append(list(row))
+    ep = None
+    if parts[3] != "-":
+        ep = (8 - int(parts[3][1]), "abcdefgh".index(parts[3][0]))
+    return (rows, parts[1], "" if parts[2] == "-" else parts[2], ep, int(parts[4]) if len(parts) > 4 else 0, int(parts[5]) if len(parts) > 5 else 1)
+
+
+class ChessGame(HubGame):
+    key, name, emoji = "chess", "Shaxmat", "♚"
+    desc = "Ikki kishilik klassik shaxmat: rokirovka, «o'tishda olish», piyoda almashishi, shoh va mat. Har kimga 10 daqiqa."
+    min, max = 2, 2
+    CLOCK = 600000
+    INC = 3000
+
+    def start(self):
+        us = self.uids()
+        random.shuffle(us)
+        self.white, self.black = us[0], us[1]
+        self.st = ([list(r) for r in CH_START], "w", "KQkq", None, 0, 1)
+        self.hist = [ch_key(self.st)]
+        self.clock = {"w": self.CLOCK, "b": self.CLOCK}
+        self.winner = None
+        self.reason = None
+        self.last = None
+        self.offer = None
+        self.phase = "play"
+        self.cap = {"w": [], "b": []}
+        self.legal = ch_legal(self.st)
+        self.tstart = hub_now()
+        self.after("t", self.CLOCK / 1000.0, self.flag)
+
+    def uid_of(self, side):
+        return self.white if side == "w" else self.black
+
+    def side_of(self, uid):
+        return "w" if uid == self.white else "b"
+
+    def flag(self):
+        if self.phase != "play":
+            return
+        s = self.st[1]
+        self.end(self.uid_of("b" if s == "w" else "w"), "vaqt tugadi")
+
+    def end(self, winner, reason):
+        self.phase = "over"
+        self.over = True
+        self.cancel()
+        self.winner = winner
+        self.reason = reason
+        if winner:
+            self.room.win([winner])
+        self.room.after_game()
+
+    def act(self, uid, m):
+        if self.phase != "play" or uid not in (self.white, self.black):
+            return
+        a = m.get("a")
+        side = self.side_of(uid)
+        if a == "resign":
+            return self.end(self.uid_of("b" if side == "w" else "w"), "taslim bo'ldi")
+        if a == "draw":
+            self.offer = uid
+            self.room.sys(f"🤝 {self.name_of(uid)} durang taklif qildi")
+            return
+        if a == "draw_yes" and self.offer and self.offer != uid:
+            return self.end(None, "kelishuv bo'yicha durang")
+        if a == "draw_no" and self.offer and self.offer != uid:
+            self.offer = None
+            return
+        if a != "mv" or side != self.st[1]:
+            return
+        try:
+            mv = (int(m["fr"][0]), int(m["fr"][1]), int(m["to"][0]), int(m["to"][1]), str(m.get("p") or "")[:1])
+        except Exception:
+            return
+        if mv not in self.legal:
+            if mv[4] == "" and (mv[:4] + ("q",)) in self.legal:
+                mv = mv[:4] + ("q",)
+            else:
+                return self.room.toast(uid, "Bunday yurish mumkin emas")
+        now = hub_now()
+        self.clock[side] = self.clock[side] - int((now - self.tstart) * 1000) + self.INC
+        self.tstart = now
+        b = self.st[0]
+        target = b[mv[2]][mv[3]]
+        if target != "." or (b[mv[0]][mv[1]].lower() == "p" and mv[1] != mv[3]):
+            self.cap[side].append(target if target != "." else ("p" if side == "w" else "P"))
+        self.last = [list(mv[:2]), list(mv[2:4])]
+        self.st = ch_apply(self.st, mv)
+        self.offer = None
+        self.hist.append(ch_key(self.st))
+        self.legal = ch_legal(self.st)
+        nxt = self.st[1]
+        chk = ch_in_check(self.st)
+        if not self.legal:
+            if chk:
+                return self.end(uid, "shoh va mat")
+            return self.end(None, "pat (durang)")
+        if ch_insufficient(self.st[0]):
+            return self.end(None, "material yetarli emas (durang)")
+        if self.st[4] >= 100:
+            return self.end(None, "50 yurish qoidasi (durang)")
+        if self.hist.count(self.hist[-1]) >= 3:
+            return self.end(None, "uch marta takrorlanish (durang)")
+        self.after("t", max(0.2, self.clock[nxt] / 1000.0), self.flag)
+
+    def on_leave(self, uid):
+        if self.phase == "play" and uid in (self.white, self.black):
+            self.end(self.black if uid == self.white else self.white, "raqib chiqib ketdi")
+
+    def view(self, uid):
+        b, side = self.st[0], self.st[1]
+        chk = None
+        if ch_in_check(self.st):
+            k = ch_king(b, side)
+            chk = list(k) if k else None
+        mover_left = self.clock[side] - int((hub_now() - self.tstart) * 1000) if self.phase == "play" else self.clock[side]
+        return {"phase": self.phase, "b": ["".join(r) for r in b], "white": self.white, "black": self.black,
+                "turn": self.uid_of(side), "last": self.last, "check": chk,
+                "legal": [list(m) for m in self.legal] if (self.phase == "play" and uid == self.uid_of(side)) else [],
+                "clock": self.clock, "tms": int(self.tstart * 1000), "winner": self.winner, "reason": self.reason,
+                "cap": self.cap, "offer": self.offer, "inc": self.INC}
+
+
+HUB_GAMES = {g.key: g for g in (DurakGame, ShashkaGame, ChessGame, MafiaGame, SpyGame, DrawGame, StoryGame, FunnyGame, C4Game, ChainGame)}
 
 
 def hub_games_info():
@@ -24995,6 +25511,9 @@ async def hub_handle(conn: HubConn, m: dict):
 # ===================== /O'YINLAR MARKAZI =====================
 
 
+# ===================== /O'YINLAR MARKAZI =====================
+
+
 HUB_HTML = r"""<!DOCTYPE html>
 <html lang="uz"><head>
 <meta charset="utf-8">
@@ -25160,6 +25679,48 @@ canvas{width:100%;height:100%;display:block;touch-action:none}
 @keyframes land{from{transform:translateY(-90px) scale(1.35) rotate(-22deg);opacity:0}}
 @keyframes dealin{from{transform:translateY(-300px) translateX(-120px) rotate(-40deg);opacity:0}}
 .suit-r{color:#d32f2f}
+
+
+
+.g-chess{background:linear-gradient(150deg,#2b3a4f,#0b1018)}
+.ch-board{border-color:#3a2a1a;transform:rotateX(30deg) scale(.96)}
+.sq.cl{background:linear-gradient(135deg,#ecdcc0,#d9c298)}
+.sq.cd2{background:linear-gradient(135deg,#7b9a6a,#5d7c4f)}
+.sq.ck{box-shadow:inset 0 0 0 100px rgba(255,60,60,.5)}
+.sq.cs{box-shadow:inset 0 0 0 3px #ffd24d,inset 0 0 0 100px rgba(255,214,70,.3)}
+.sq.cm::after{content:"";position:absolute;width:30%;height:30%;border-radius:50%;background:rgba(20,20,20,.45);z-index:3}
+.sq.cm.cx::after{width:86%;height:86%;background:none;border:4px solid rgba(255,70,70,.8)}
+.cp{font-size:min(10.5vw,52px);line-height:1;z-index:2;font-family:"Segoe UI Symbol","Noto Sans Symbols 2","DejaVu Sans",serif;transition:transform .15s}
+.cp.w{color:#fff;text-shadow:0 0 2px #000,0 0 2px #000,0 0 3px #000,0 4px 5px rgba(0,0,0,.6)}
+.cp.k{color:#151515;text-shadow:0 0 1px #fff,0 0 2px rgba(255,255,255,.7),0 4px 5px rgba(0,0,0,.6)}
+.ckl{display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--card);border:1px solid var(--bd);border-radius:16px;margin:6px 0}
+.ckl.turn{border-color:var(--ok);box-shadow:0 0 0 1px var(--ok),0 0 18px rgba(56,214,160,.25)}
+.ckl b{flex:none}.ckl .cpt{flex:1;font-size:15px;opacity:.85;letter-spacing:1px;white-space:nowrap;overflow:hidden}
+.ckl .clk{font:700 18px ui-monospace,monospace;padding:3px 9px;border-radius:9px;background:rgba(255,255,255,.08)}
+.ckl .clk.low{color:#ff5d6c}
+.promo{display:flex;gap:10px;justify-content:center;margin:8px 0}.promo button{font-size:38px;width:62px;height:62px;border-radius:14px;border:1px solid var(--bd);background:var(--card);color:#fff}
+.g-shashka{background:linear-gradient(150deg,#4a3320,#17100a)}
+.shl{display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--card);border:1px solid var(--bd);border-radius:16px;margin:6px 0}
+.shl.turn{border-color:var(--ok);box-shadow:0 0 0 1px var(--ok),0 0 18px rgba(56,214,160,.25)}
+.shl b{flex:1}.shl .pcs{width:22px;height:22px;border-radius:50%;flex:none}
+.sh-stage{perspective:760px;margin:6px -4px 0;padding-bottom:30px}
+.sh-board{display:grid;grid-template-columns:repeat(8,1fr);grid-template-rows:repeat(8,1fr);aspect-ratio:1;width:100%;border:9px solid #5b3a1e;border-radius:10px;box-shadow:0 0 0 2px #8a5a2b,0 30px 40px rgba(0,0,0,.6),inset 0 0 10px rgba(0,0,0,.4);transform:rotateX(36deg) scale(.96);transform-origin:50% 62%;transform-style:preserve-3d;background:#2a1a0e}
+.sq{position:relative;display:flex;align-items:center;justify-content:center}
+.sq.lt{background:linear-gradient(135deg,#f0d9b5,#e2c79a)}
+.sq.dk{background:linear-gradient(135deg,#8a5a34,#6d4223)}
+.sq.lm{box-shadow:inset 0 0 0 100px rgba(255,214,70,.28)}
+.sq.sl{box-shadow:inset 0 0 0 3px #ffd24d,inset 0 0 0 100px rgba(255,214,70,.25)}
+.sq.mv::after{content:"";position:absolute;width:34%;height:34%;border-radius:50%;background:rgba(56,214,160,.9);box-shadow:0 0 12px rgba(56,214,160,.9);z-index:3}
+.sq.mv.cp::after{background:rgba(255,93,108,.95);box-shadow:0 0 12px rgba(255,93,108,.9)}
+.sq.mb{box-shadow:inset 0 0 0 100px rgba(56,214,160,.16)}
+.sp{position:absolute;inset:11%;border-radius:50%;z-index:2;transition:transform .15s}
+.sp.w{background:radial-gradient(circle at 35% 30%,#fff,#e8e0d0 55%,#c9bfa8);box-shadow:0 2px 0 #b9ad94,0 4px 0 #a99d84,0 6px 0 #998d74,0 9px 10px rgba(0,0,0,.65)}
+.sp.k{background:radial-gradient(circle at 35% 30%,#7a7a7a,#2a2a2a 55%,#0d0d0d);box-shadow:0 2px 0 #000,0 4px 0 #111,0 6px 0 #1a1a1a,0 9px 10px rgba(0,0,0,.7)}
+.sp::before{content:"";position:absolute;inset:16%;border-radius:50%;border:2px solid rgba(0,0,0,.18)}
+.sp.k::before{border-color:rgba(255,255,255,.14)}
+.sp.king::after{content:"♛";position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:clamp(14px,5vw,22px);color:#d99a00;text-shadow:0 1px 0 #fff3,0 0 6px rgba(255,200,40,.7)}
+.sp.sel{transform:translateY(-6px) scale(1.05)}
+.sp.mb{animation:pl 1.2s infinite}
 
 .pulse{animation:pl 1.4s infinite}@keyframes pl{50%{opacity:.5}}
 .pop{animation:pop .35s}@keyframes pop{from{transform:scale(.85);opacity:0}}
@@ -25355,7 +25916,7 @@ function renderGame() {
   var R = S.room, v = S.view, g = gameInfo(R.game);
   topBar(g.e + " " + esc(g.n), true);
   $("#dock").style.display = "none";
-  var fn = {durak: rDurak, mafia: rMafia, spy: rSpy, draw: rDraw, story: rStory, funny: rFunny, c4: rC4, chain: rChain}[R.game];
+  var fn = {chess: rChess, shashka: rShashka, durak: rDurak, mafia: rMafia, spy: rSpy, draw: rDraw, story: rStory, funny: rFunny, c4: rC4, chain: rChain}[R.game];
   var h = "";
   if (S.micOn && v.talk === false) h += '<div class="muted-bar">🔇 Hozir gaplashish mumkin emas</div>';
   var body = fn ? fn(v) : "";
@@ -25580,6 +26141,84 @@ function rDurak(v) {
   return h;
 }
 
+
+// ---------- Shashka ----------
+function rShashka(v) {
+  var me = S.me, flip = me === v.black, over = v.phase === "over", mine = v.turn === me && !over, opp = v.white === me ? v.black : v.white;
+  var sel = (S.shSel && S.shGid === v.white + ":" + v.black + ":" + (v.last ? JSON.stringify(v.last) : "")) ? S.shSel : (S.shSel = [], S.shGid = v.white + ":" + v.black + ":" + (v.last ? JSON.stringify(v.last) : ""), S.shSel);
+  var starts = {}, nexts = {}, caps = {};
+  v.moves.forEach(function (m) {
+    starts[m.p[0][0] + "," + m.p[0][1]] = 1;
+    var ok = sel.length <= m.p.length; for (var i = 0; i < sel.length && ok; i++) if (m.p[i][0] !== sel[i][0] || m.p[i][1] !== sel[i][1]) ok = false;
+    if (ok && sel.length && sel.length < m.p.length) { nexts[m.p[sel.length][0] + "," + m.p[sel.length][1]] = 1; if (m.c.length) caps[m.p[sel.length][0] + "," + m.p[sel.length][1]] = 1; }
+  });
+  var last = {}; (v.last || []).forEach(function (q) { last[q[0] + "," + q[1]] = 1; });
+  var cntOf = function (u) { return u === v.white ? v.nw : v.nb; };
+  function lab(u, top) { var white = u === v.white; return '<div class="shl' + (v.turn === u && !over ? " turn" : "") + '"><span class="pcs" style="background:' + (white ? "#f0e8d6" : "#222") + ';border:2px solid #888"></span><b>' + esc(pname(u)) + (u === me ? " (siz)" : "") + "</b><span class=\"mu sm\">" + cntOf(u) + " ta dona</span>" + (v.turn === u && !over && v.deadline ? timerHtml(v.deadline) : "") + "</div>"; }
+  var h = lab(opp, true) + '<div class="sh-stage"><div class="sh-board">';
+  for (var i = 0; i < 8; i++) for (var j = 0; j < 8; j++) {
+    var r = flip ? 7 - i : i, c = flip ? 7 - j : j, key = r + "," + c, val = v.b[r][c], dark = (r + c) % 2 === 1;
+    var cls = "sq " + (dark ? "dk" : "lt") + (last[key] ? " lm" : "") + (nexts[key] ? " mv" + (caps[key] ? " cp" : "") : "");
+    var isSel = sel.length && sel.some(function (q) { return q[0] === r && q[1] === c; });
+    var mb = mine && !sel.length && starts[key];
+    var pc = val ? '<div class="sp ' + (val > 0 ? "w" : "k") + (Math.abs(val) === 2 ? " king" : "") + (isSel ? " sel" : "") + (mb ? " mb" : "") + '"></div>' : "";
+    h += '<div class="' + cls + (isSel ? " sl" : "") + '" data-a="sh_sq" data-r="' + r + '" data-c="' + c + '">' + pc + "</div>";
+  }
+  h += "</div></div>" + lab(me);
+  var st = over ? (v.winner ? (v.winner === me ? "🏆 Siz yutdingiz!" : "😔 " + esc(pname(v.winner)) + " yutdi") : "🤝 Durang") + " <span class=\"mu sm\">· " + esc(v.reason || "") + "</span>" : mine ? (v.mustCap ? "⚔️ Urish majburiy!" : "👉 Sizning navbatingiz") : "⏳ " + esc(pname(v.turn)) + " o'ylayapti";
+  h += '<div class="dinfo" style="margin:4px 0">' + st + "</div>";
+  if (over) h += endBar();
+  else h += '<button class="btn sec" data-a="sh_resign" style="padding:10px">🏳 Taslim bo\'lish</button>';
+  return h;
+}
+
+// ---------- Shaxmat ----------
+var CHG = {k: "♚", q: "♛", r: "♜", b: "♝", n: "♞", p: "♟"};
+function ckMs(v, side) { var m = v.clock[side]; if (v.phase === "play" && ((v.turn === v.white) === (side === "w"))) m -= (Date.now() + S.skew - v.tms); return Math.max(0, m); }
+function ckFmt(ms) { var s = Math.ceil(ms / 1000), m = Math.floor(s / 60); s = s % 60; return m + ":" + (s < 10 ? "0" : "") + s; }
+function rChess(v) {
+  var me = S.me, flip = me === v.black, over = v.phase === "over", mine = v.turn === me && !over, opp = v.white === me ? v.black : v.white;
+  var sig = v.b.join("") + v.turn; if (S.chSig !== sig) { S.chSig = sig; S.chSel = null; S.chPromo = null; }
+  var sel = S.chSel, targets = {}, froms = {};
+  (v.legal || []).forEach(function (m) { froms[m[0] + "," + m[1]] = 1; if (sel && m[0] === sel[0] && m[1] === sel[1]) targets[m[2] + "," + m[3]] = 1; });
+  var last = {}; (v.last || []).forEach(function (q) { last[q[0] + "," + q[1]] = 1; });
+  function lab(u) {
+    var side = u === v.white ? "w" : "b", caps = (v.cap[side] || []).map(function (p) { return CHG[p.toLowerCase()]; }).join("");
+    var low = v.phase === "play" && ckMs(v, side) < 30000;
+    return '<div class="ckl' + (v.turn === u && !over ? " turn" : "") + '"><span style="font-size:20px">' + (side === "w" ? "⚪" : "⚫") + "</span><b>" + esc(pname(u)) + (u === me ? " (siz)" : "") + '</b><span class="cpt">' + caps + '</span><span class="clk' + (low ? " low" : "") + '" data-ck="' + side + '">' + ckFmt(ckMs(v, side)) + "</span></div>";
+  }
+  var h = lab(opp) + '<div class="sh-stage"><div class="sh-board ch-board">';
+  for (var i = 0; i < 8; i++) for (var j = 0; j < 8; j++) {
+    var r = flip ? 7 - i : i, c = flip ? 7 - j : j, key = r + "," + c, val = v.b[r][c], dark = (r + c) % 2 === 1;
+    var cls = "sq " + (dark ? "cd2" : "cl") + (last[key] ? " lm" : "") + (v.check && v.check[0] === r && v.check[1] === c ? " ck" : "") + (sel && sel[0] === r && sel[1] === c ? " cs" : "");
+    if (targets[key]) cls += " cm" + (val !== "." ? " cx" : "");
+    var pc = val !== "." ? '<span class="cp ' + (val === val.toUpperCase() ? "w" : "k") + '">' + CHG[val.toLowerCase()] + "&#xFE0E;</span>" : "";
+    h += '<div class="' + cls + '" data-a="ch_sq" data-r="' + r + '" data-c="' + c + '">' + pc + "</div>";
+  }
+  h += "</div></div>" + lab(me);
+  if (S.chPromo) h += '<div class="promo">' + ["q", "r", "b", "n"].map(function (p) { return '<button data-a="ch_pr" data-p="' + p + '">' + CHG[p] + "&#xFE0E;</button>"; }).join("") + "</div>";
+  var st = over ? (v.winner ? (v.winner === me ? "🏆 Siz yutdingiz!" : "😔 " + esc(pname(v.winner)) + " yutdi") : "🤝 Durang") + ' <span class="mu sm">· ' + esc(v.reason || "") + "</span>" : mine ? (v.check ? "⚠️ Shoh ostida! " : "") + "👉 Sizning navbatingiz" : "⏳ " + esc(pname(v.turn)) + " o'ylayapti";
+  h += '<div class="dinfo" style="margin:4px 0">' + st + "</div>";
+  if (over) h += endBar();
+  else if (v.offer && v.offer !== me) h += '<div class="banner c">🤝 ' + esc(pname(v.offer)) + ' durang taklif qildi</div><div style="display:flex;gap:8px"><button class="btn" data-a="ch_dy">✅ Qabul</button><button class="btn sec" data-a="ch_dn">❌ Rad</button></div>';
+  else h += '<div style="display:flex;gap:8px"><button class="btn sec" data-a="ch_draw" style="padding:10px"' + (v.offer === me ? " disabled" : "") + ">" + (v.offer === me ? "⏳ Taklif yuborildi" : "🤝 Durang") + '</button><button class="btn sec" data-a="ch_resign" style="padding:10px">🏳 Taslim</button></div>';
+  return h;
+}
+function chClick(r, c) {
+  var v = S.view; if (v.turn !== S.me || v.phase !== "play") return;
+  var sel = S.chSel, L = v.legal || [];
+  if (sel) {
+    var ms = L.filter(function (m) { return m[0] === sel[0] && m[1] === sel[1] && m[2] === r && m[3] === c; });
+    if (ms.length) {
+      if (ms.length > 1) { S.chPromo = {f: sel, t: [r, c]}; render(); return; }
+      act({a: "mv", fr: sel, to: [r, c], p: ms[0][4]}); S.chSel = null; return;
+    }
+  }
+  S.chPromo = null;
+  S.chSel = L.some(function (m) { return m[0] === r && m[1] === c; }) ? [r, c] : null; render();
+}
+setInterval(function () { var v = S.view; if (!S.room || S.room.game !== "chess" || !v || !v.clock) return; document.querySelectorAll("[data-ck]").forEach(function (e) { var s = e.getAttribute("data-ck"), ms = ckMs(v, s); e.textContent = ckFmt(ms); e.classList.toggle("low", v.phase === "play" && ms < 30000); }); }, 300);
+
 // ---------- Hikoya ----------
 function rStory(v) {
   var h = "";
@@ -25669,6 +26308,14 @@ document.addEventListener("click", function (e) {
     case "s_call": act({a: "call"}); break;
     case "s_vote": act({a: "vote", u: +d("u")}); break;
     case "s_guess": if (confirm("Joy: " + d("l") + " — to'g'rimi?")) act({a: "guess", loc: d("l")}); break;
+    case "ch_sq": chClick(+d("r"), +d("c")); break;
+    case "ch_pr": if (S.chPromo) { act({a: "mv", fr: S.chPromo.f, to: S.chPromo.t, p: d("p")}); S.chPromo = null; S.chSel = null; } break;
+    case "ch_resign": if (confirm("Taslim bo'lasizmi?")) act({a: "resign"}); break;
+    case "ch_draw": act({a: "draw"}); break;
+    case "ch_dy": act({a: "draw_yes"}); break;
+    case "ch_dn": act({a: "draw_no"}); break;
+    case "sh_sq": shClick(+d("r"), +d("c")); break;
+    case "sh_resign": if (confirm("Taslim bo'lasizmi?")) act({a: "resign"}); break;
     case "du_card": var cc = +d("c"), vv = S.view, isDf = vv.dfn === S.me;
       if (isDf) { var lg = vv.legalDef && vv.legalDef[cc]; if (!lg) { toast("Bu karta bilan yopib bo'lmaydi"); break; } var ti = (S.dt != null && lg.indexOf(S.dt) >= 0) ? S.dt : lg[0]; S.dt = null; act({a: "def", c: cc, i: ti}); }
       else { if (vv.legalAtk && vv.legalAtk.indexOf(cc) >= 0) act({a: "atk", c: cc}); else toast("Hozir bu kartani tashlab bo'lmaydi"); } break;
@@ -25694,6 +26341,17 @@ document.addEventListener("click", function (e) {
 });
 document.addEventListener("change", function (e) { if (e.target && e.target.id === "pc") { CV.color = e.target.value; if (CV.tool === "eraser") CV.tool = "brush"; render(); } });
 document.addEventListener("keydown", function (e) { if (e.key === "Enter" && e.target.id === "cw") { var t3 = e.target; if (t3.value.trim()) { act({a: "word", x: t3.value}); t3.value = ""; } } });
+function shClick(r, c) {
+  var v = S.view; if (!v || v.turn !== S.me || v.phase !== "play") return; var sel = S.shSel || (S.shSel = []);
+  function pref(m) { for (var i = 0; i < sel.length; i++) if (m.p[i][0] !== sel[i][0] || m.p[i][1] !== sel[i][1]) return false; return true; }
+  var startHere = v.moves.some(function (m) { return m.p[0][0] === r && m.p[0][1] === c; });
+  if (!sel.length) { if (startHere) { S.shSel = [[r, c]]; render(); } else toast(v.mustCap ? "Urish majburiy — urishi mumkin bo'lgan donani tanlang" : "Bu dona yura olmaydi"); return; }
+  var cand = v.moves.filter(pref), nxt = cand.filter(function (m) { return m.p.length > sel.length && m.p[sel.length][0] === r && m.p[sel.length][1] === c; });
+  if (nxt.length) { sel.push([r, c]); var full = v.moves.filter(function (m) { return m.p.length === sel.length && pref(m); });
+    if (full.length) { var p = full[0].p; S.shSel = []; act({a: "mv", p: p}); } else render(); return; }
+  if (startHere && sel.length === 1) { S.shSel = [[r, c]]; render(); return; }
+  S.shSel = []; render();
+}
 function showSheet(k) {
   var g = gameInfo(k), el = document.createElement("div"); el.className = "sheetbg"; el.id = "sheet";
   el.innerHTML = '<div class="sh"><div class="c" style="font-size:54px">' + g.e + '</div><h2 class="c" style="margin:6px 0">' + esc(g.n) + '</h2><div class="mu c sm">' + esc(g.d) + '</div><div class="c" style="margin:10px 0">👥 ' + (g.min === g.max ? g.min : g.min + "–" + g.max) + ' kishi</div><button class="btn" data-a="create" data-g="' + k + '">🚪 Xona yaratish</button><button class="btn sec" style="margin-top:8px" data-a="closesheet">Bekor qilish</button></div>';
@@ -25853,7 +26511,7 @@ def setup_hub_bot(dp: Dispatcher, token: str):
             await message.answer(f"🚪 Xona <b>{html_escape(room)}</b> ga taklif qilindingiz!\nTugmani bosing va o'yinga qo'shiling 👇", reply_markup=kb)
         else:
             await message.answer(
-                "🎮 <b>O'yinlar markazi</b>\n\n2–10 kishilik kreativ o'yinlar: 🃏 Durak (karta), 🔪 Mafia, 🕵️ Josus, 🎨 Chizib top, 📖 Hikoya zanjiri, "
+                "🎮 <b>O'yinlar markazi</b>\n\n2–10 kishilik kreativ o'yinlar: 🃏 Durak (karta), ♟ Shashka, ♚ Shaxmat, 🔪 Mafia, 🕵️ Josus, 🎨 Chizib top, 📖 Hikoya zanjiri, "
                 "😂 Kulgili javob, 🔴 4 ketma-ket, 🔤 So'z zanjiri.\n\n🎙 Xohlasangiz mikrofon orqali gaplashib o'ynang!", reply_markup=kb)
 
     @dp.message(Command("start"))
