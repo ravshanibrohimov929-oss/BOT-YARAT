@@ -1505,7 +1505,7 @@ def tariff_card_text(tid: str, t: dict) -> str:
 BOT_DESCRIPTIONS = {
     "hub": (
         "<i>Do'stlar bilan 2–10 kishilik kreativ o'yinlar: xona oching, kod yoki havola bilan chaqiring va birga o'ynang.</i>\n\n"
-        "🃏 Durak (karta), 🐐 Bur-Kozel, 🌈 Uno, ♟ Shashka, ♚ Shaxmat, 🎲 Nard, 🧠 Viktorina, 🚢 Dengiz jangi, 🎭 Kim yolg'onchi, 🔪 Mafia, 🕵️ Josus, 🎨 Chizib top, 📖 Hikoya zanjiri, 😂 Kulgili javob, 🔴 4 ketma-ket, 🔤 So'z zanjiri.\n"
+        "🃏 Durak (karta), 🐐 Bur-Kozel, 🌈 Uno, ♟ Shashka, ♚ Shaxmat, 🎲 Nard, 🧠 Viktorina, 🚢 Dengiz jangi, 🎭 Kim yolg'onchi, 🔪 Mafia, 🕵️ Josus, 🎨 Chizib top, 📖 Hikoya zanjiri, 😂 Kulgili javob, 🔴 4 ketma-ket, 🔤 So'z zanjiri, 🧩 Men kimman?, 🟩 Boshqotirma, 🔀 So'zni tuz, ➕ Tez hisob, 🎴 Xotira kartalari, ✊ Tosh-qaychi-qog'oz, 🎯 Haqiqat yoki jasorat.\n"
         "💬 Chat va 🎙 mikrofon (xohlasa yoqadi, xohlasa o'chiradi) — hammasi o'yin ichida.\n\n"
         "📊 Admin panelda: statistika, ommaviy xabar, majburiy obuna, adminlar."
     ),
@@ -23564,16 +23564,81 @@ class HubGame:
 
 
 # ---------------------------------------------------------------- 🎨 Chizib top
-HUB_WORDS = ["olma", "mashina", "uy", "quyosh", "baliq", "samolyot", "kitob", "tog'", "telefon", "qalam", "soat", "gul",
-             "it", "mushuk", "ot", "tovuq", "velosiped", "ko'prik", "bulut", "yomg'ir", "qor", "stol", "stul", "eshik",
-             "deraza", "kalit", "qaychi", "tarvuz", "uzum", "non", "choynak", "piyola", "poyabzal", "ko'zoynak", "gitara",
-             "do'ppi", "tuya", "arslon", "fil", "ilon", "kapalak", "chiroq", "televizor", "kompyuter", "raketa", "kema",
-             "poyezd", "avtobus", "olov", "oy", "yulduz", "daraxt", "soyabon", "sumka", "pichoq", "qoshiq", "karavot",
-             "bolta", "narvon", "chelak", "shar", "tort", "muzqaymoq", "pitsa", "banan", "limon", "sabzi", "pomidor",
-             "qurbaqa", "toshbaqa", "delfin", "burgut", "maymun", "ayiq", "tulki", "quyon", "echki", "sigir", "tuxum",
-             "bosh", "ko'z", "qo'l", "burun", "tish", "yurak", "kaktus", "qo'ng'iroq", "shapka", "krossovka", "futbol to'pi",
-             "kamera", "mikrofon", "naushnik", "velosiped g'ildiragi", "qasr", "chodir", "qayiq", "vertolyot", "robot",
-             "qor odam", "pingvin", "sher", "zebra", "jirafa", "toj", "qilich", "qalqon"]
+HUB_WORDS = list(dict.fromkeys([
+    # --- hayvonlar
+    "it", "mushuk", "ot", "tuya", "eshak", "echki", "qo'y", "sigir", "buzoq", "xo'roz", "tovuq", "o'rdak", "g'oz", "kurka", "quyon",
+    "tulki", "bo'ri", "ayiq", "arslon", "yo'lbars", "fil", "jirafa", "zebra", "maymun", "gorilla", "kenguru", "koala", "panda",
+    "begemot", "karkidon", "buyvol", "kiyik", "sichqon", "olmaxon", "tipratikan", "qunduz", "cho'chqa", "ilon", "kaltakesak",
+    "timsoh", "toshbaqa", "qurbaqa", "baliq", "akula", "kit", "delfin", "meduza", "ahtapot", "qisqichbaqa", "dengiz oti",
+    "yulduz baliq", "qaldirg'och", "chumchuq", "kaptar", "burgut", "boyo'g'li", "tovus", "flamingo", "pingvin", "to'tiqush",
+    "laylak", "qarg'a", "bulbul", "ari", "kapalak", "chumoli", "pashsha", "chivin", "o'rgimchak", "qo'ng'iz", "ninachi",
+    "chigirtka", "shilliqqurt", "uchar baliq", "qutb ayig'i", "xo'tik", "tuyaqush", "ajdar", "dinozavr", "gepard", "bo'ri bolasi",
+    "mushuk bolasi", "kuchukcha", "jo'ja", "qo'zichoq", "toychoq", "tustovuq", "oq qush", "o'rdak bolasi", "baliqchi qush",
+    # --- mevalar va sabzavotlar
+    "olma", "nok", "behi", "uzum", "anor", "anjir", "gilos", "olcha", "o'rik", "shaftoli", "olxo'ri", "tarvuz", "qovun", "banan",
+    "limon", "apelsin", "mandarin", "ananas", "kivi", "qulupnay", "malina", "xurmo", "yong'oq", "bodom", "sabzi", "piyoz",
+    "sarimsoq", "kartoshka", "pomidor", "bodring", "baqlajon", "qalampir", "karam", "turp", "lavlagi", "makkajo'xori",
+    "qo'ziqorin", "qovoq", "no'xat", "loviya", "bug'doy boshog'i", "paxta", "olma daraxti", "uzum tokchasi",
+    # --- taom va ichimlik
+    "non", "patir", "somsa", "chuchvara", "manti", "lag'mon", "osh", "kabob", "shashlik", "sho'rva", "burger", "pitsa", "sendvich",
+    "sosiska", "tuxum", "pishloq", "qaymoq", "sut", "yog'", "asal", "shakar", "tuz", "murabbo", "tort", "pirojniy", "pechenye",
+    "shokolad", "muzqaymoq", "konfet", "holva", "choy", "qahva", "sharbat", "piyola", "choynak", "stakan", "likop", "qoshiq",
+    "vilka", "pichoq", "kosa", "tovoq", "qozon", "patnis", "dasturxon", "tandir", "samovar", "kulcha", "popkorn", "donut",
+    "mevali tort", "tug'ilgan kun torti", "choy damlash", "dimlama", "norin", "mastava",
+    # --- uy va ro'zg'or
+    "uy", "eshik", "deraza", "tom", "devor", "zina", "lift", "kalit", "qulf", "stol", "stul", "divan", "kreslo", "karavot",
+    "yostiq", "ko'rpa", "gilam", "parda", "oyna", "shkaf", "javon", "soat", "devor soati", "chiroq", "lampochka", "sham",
+    "televizor", "muzlatgich", "gaz plita", "kir yuvish mashinasi", "dazmol", "changyutgich", "supurgi", "chelak", "sovun",
+    "tish cho'tkasi", "tarak", "sochiq", "vanna", "kran", "rakovina", "oshxona", "hovli", "darvoza", "quduq", "supa", "ayvon",
+    "kamin", "pech", "bolish", "so'ri", "ko'rpacha", "xalta", "savat", "chelak va supurgi", "idish yuvish", "fen", "elektr lampa",
+    # --- transport
+    "mashina", "avtobus", "tramvay", "poyezd", "samolyot", "vertolyot", "kema", "qayiq", "yelkanli kema", "suv osti kemasi",
+    "velosiped", "mototsikl", "skuter", "traktor", "yuk mashinasi", "o't o'chirish mashinasi", "tez yordam", "taksi", "raketa",
+    "havo shari", "parashyut", "eshak arava", "ot arava", "g'ildirak", "svetofor", "yo'l belgisi", "ko'prik", "tunnel", "aeroport",
+    "vokzal", "bekat", "ekskavator", "kran mashina", "politsiya mashinasi", "metro", "uchar likopcha", "konki", "arava",
+    # --- kiyim va aksessuar
+    "ko'ylak", "shim", "shortik", "kurtka", "palto", "chopon", "do'ppi", "shapka", "kepka", "soyabon", "ro'mol", "sharf", "qo'lqop",
+    "paypoq", "poyabzal", "krossovka", "etik", "shippak", "kamar", "galstuk", "ko'zoynak", "uzuk", "zirak", "marjon", "sumka",
+    "ryukzak", "chamadon", "kostyum", "libos", "atlas ko'ylak", "bilaguzuk", "toj", "peshonabog'", "bog'ich", "fartuk",
+    # --- tabiat
+    "quyosh", "oy", "yulduz", "bulut", "yomg'ir", "qor", "momaqaldiroq", "chaqmoq", "kamalak", "shamol", "bo'ron", "tuman", "tog'",
+    "vodiy", "daryo", "ko'l", "dengiz", "okean", "sharshara", "vulqon", "g'or", "orol", "cho'l", "o'rmon", "bog'", "daraxt", "gul",
+    "o't", "barg", "ildiz", "tosh", "qum", "muz", "olov", "kaktus", "lola", "atirgul", "archa", "palma", "chinor", "tol", "qor odam",
+    "qor parchasi", "shabnam", "sayyora", "kometa", "yer shari", "oy va yulduzlar", "quyosh nuri", "tog' cho'qqisi", "yo'l",
+    "soy", "ariq", "pichan", "dala", "gulzor", "ko'kat", "qutb chiroqlari", "yulduzli osmon",
+    # --- kasblar va obrazlar
+    "shifokor", "hamshira", "o'qituvchi", "oshpaz", "haydovchi", "uchuvchi", "kosmonavt", "politsiyachi", "o't o'chiruvchi", "askar",
+    "dehqon", "quruvchi", "sartarosh", "tikuvchi", "rassom", "musiqachi", "qo'shiqchi", "raqqosa", "aktyor", "fotograf",
+    "jurnalist", "dasturchi", "sudya", "muhandis", "duradgor", "novvoy", "qassob", "sotuvchi", "sehrgar", "kloun", "qaroqchi",
+    "ritsar", "podshoh", "malika", "farishta", "jin", "devo", "robot", "o'zga sayyoralik", "qor odam", "skelet", "kapitan", "baliqchi",
+    "ovchi", "cho'pon", "dorboz", "futbolchi", "bokschi", "suzuvchi", "yugurish", "shaxmatchi",
+    # --- asboblar va texnika
+    "bolg'a", "bolta", "arra", "randa", "qaychi", "igna", "ip", "mix", "narvon", "belkurak", "ketmon", "o'roq", "shlang", "kamera",
+    "mikrofon", "naushnik", "telefon", "planshet", "noutbuk", "kompyuter", "sichqoncha", "klaviatura", "printer", "kalkulyator",
+    "fonar", "kompas", "durbin", "mikroskop", "teleskop", "lupa", "batareya", "rozetka", "magnit", "o'lchov lentasi", "pichoq",
+    "vint", "gayka kaliti", "zanjir", "bolg'a va mix", "elektr sim", "quvur", "tarozi", "soat mexanizmi", "radio", "videokamera",
+    # --- sport va o'yin
+    "futbol to'pi", "basketbol", "voleybol to'pi", "tennis raketkasi", "shaxmat", "shashka", "nard", "karta", "soqqa", "shar",
+    "qo'g'irchoq", "varrak", "sirpanchiq", "belanchak", "chang'i", "shtanga", "gantel", "boks qo'lqopi", "kubok", "medal",
+    "bayroq", "nishon", "kamon", "o'q-yoy", "stadion", "futbol darvozasi", "sakrash arqoni", "ping-pong", "kurash", "uloq",
+    # --- maktab va musiqa
+    "kitob", "daftar", "qalam", "ruchka", "o'chirg'ich", "chizg'ich", "doska", "globus", "xarita", "gitara", "skripka", "pianino",
+    "nog'ora", "surnay", "doira", "dutor", "rubob", "karnay", "nay", "notalar", "maktab sumkasi", "qo'ng'iroq", "kutubxona",
+    # --- binolar va joylar
+    "masjid", "minora", "qasr", "qal'a", "chodir", "maktab", "kasalxona", "bozor", "sirk", "muzey", "kinoteatr", "bank", "do'kon",
+    "mehmonxona", "fabrika", "zavod", "shahar", "qishloq", "ferma", "favvora", "haykal", "ko'p qavatli uy", "sirk chodiri",
+    "ko'prik ustida mashina", "mayoq", "shamol tegirmoni", "suv tegirmoni", "buzilgan uy", "qum qal'a",
+    # --- tana a'zolari va his-tuyg'u
+    "bosh", "soch", "ko'z", "quloq", "burun", "og'iz", "tish", "til", "qo'l", "barmoq", "oyoq", "yurak", "miya", "soqol", "mo'ylov",
+    "tabassum", "ko'z yoshi", "qo'l siqish", "esnash", "aksirish", "uxlayotgan odam", "yuguruvchi odam", "raqsga tushayotgan odam",
+    # --- turli buyumlar
+    "shar", "sovg'a qutisi", "gul dastasi", "pul", "tanga", "hamyon", "kalit va qulf", "xazina sandig'i", "xarita va xazina",
+    "qilich", "qalqon", "nayza", "bayroqcha", "mash'al", "fonus", "shamdon", "oyna va tarak", "gulxan", "chodir va gulxan",
+    "paypoq va poyabzal", "soyabon va yomg'ir", "bulutdagi yomg'ir", "qo'ng'iroq", "kaktus va cho'l", "uchar gilam",
+    "sehrli chiroq", "sehrli tayoqcha", "robot va odam", "kosmik kema", "tuxumdan chiqayotgan jo'ja",
+    "yomg'irda yurish", "qor to'pi", "qor ko'chasi", "yangi yil archasi", "navro'z sumalagi", "bayram sofasi", "tug'ilgan kun",
+    "shar bilan bola", "baliq ovlash", "chodirda dam olish", "tog'da sayohat", "sohilda dam olish", "choyxona", "somsa tandiri",
+]))
 
 
 class DrawGame(HubGame):
@@ -26613,7 +26678,928 @@ class LiarGame(HubGame):
         return v
 
 
-HUB_GAMES = {g.key: g for g in (DurakGame, BurKozelGame, UnoGame, ShashkaGame, ChessGame, NardGame, QuizGame, BattleshipGame, LiarGame, MafiaGame, SpyGame, DrawGame, StoryGame, FunnyGame, C4Game, ChainGame)}
+# ================================================================= YANGI O'YINLAR
+def hub_units(w: str):
+    """So'zni harf-birliklarga bo'ladi: o', g', sh, ch — bitta harf hisoblanadi."""
+    w = (w or "").lower()
+    for ch in "ʻʼ’‘`´":
+        w = w.replace(ch, "'")
+    w = re.sub(r"\s+", "", w)
+    return re.findall(r"o'|g'|sh|ch|.", w)
+
+
+def hub_is_latin_word(w: str) -> bool:
+    w = (w or "").lower()
+    for ch in "ʻʼ’‘`´":
+        w = w.replace(ch, "'")
+    w = re.sub(r"\s+", "", w)
+    return bool(re.fullmatch(r"(?:o'|g'|sh|ch|[a-z])+", w))
+
+
+# ---------------------------------------------------------------- 🧩 Men kimman?
+HUB_WHO = list(dict.fromkeys([
+    # tarixiy shaxslar va allomalar
+    "Amir Temur|temur|sohibqiron", "Mirzo Ulug'bek|ulugbek", "Alisher Navoiy|navoiy", "Zahiriddin Muhammad Bobur|bobur",
+    "Al-Xorazmiy|xorazmiy|muhammad al xorazmiy", "Abu Ali ibn Sino|ibn sino|ibnsino|abu ali", "Abu Rayhon Beruniy|beruniy",
+    "Imom Buxoriy|buxoriy", "Jaloliddin Manguberdi|manguberdi", "Jaloliddin Rumiy|rumiy", "Ahmad Yassaviy|yassaviy",
+    "Bahouddin Naqshband|naqshband", "Mahmud Qoshg'ariy|qoshgariy", "Hoji Nasriddin|nasriddin afandi|afandi", "Alpomish",
+    "Go'ro'g'li|goroglu|rovshan", "Cho'lpon", "Abdulla Qodiriy|qodiriy", "Abdulla Oripov|oripov", "Erkin Vohidov|vohidov",
+    "Hamza Hakimzoda Niyoziy|hamza", "Muqimiy", "Furqat", "Barchin",
+    # jahon tarixi va fan
+    "Albert Eynshteyn|eynshteyn|einstein", "Isaak Nyuton|nyuton|newton", "Napoleon Bonapart|napoleon", "Iskandar Zulqarnayn|aleksandr makedonskiy|makedonskiy",
+    "Chingizxon|chingiz xon", "Kristofor Kolumb|kolumb", "Leonardo da Vinchi|leonardo|da vinchi", "Pablo Pikasso|pikasso",
+    "Vilyam Shekspir|shekspir", "Lev Tolstoy|tolstoy", "Nikola Tesla|tesla", "Tomas Edison|edison", "Ilon Mask|mask|elon musk",
+    "Stiv Jobs|jobs", "Bill Geyts|geyts", "Yuriy Gagarin|gagarin", "Nil Armstrong|armstrong", "Mari Kyuri|kyuri",
+    "Charlz Darvin|darvin", "Galileo Galiley|galiley", "Kleopatra", "Muhammad Ali|ali", "Mayk Tayson|tayson",
+    # sportchilar
+    "Lionel Messi|messi", "Kristianu Ronaldu|ronaldu|ronaldo|kristiano ronaldo", "Neymar", "Usain Bolt|bolt", "Bahodir Jalolov|jalolov",
+    "Hasanboy Do'smatov|dosmatov", "Eldor Shomurodov|shomurodov", "Rustam Qosimjonov|qosimjonov",
+    # san'atkorlar
+    "Maykl Jekson|jekson|michael jackson", "Yulduz Usmonova|usmonova", "Sherali Jo'rayev|jorayev", "Shahzoda", "Sevara Nazarxon|nazarxon",
+    # ertak va multfilm qahramonlari
+    "Spider-Man|spiderman|o'rgimchak odam", "Betmen|batman", "Supermen|superman", "Shrek", "Mikki Mauz|mikki", "Vinni Pux|vinni",
+    "Pinokkio|buratino", "Karlson", "Aladdin", "Sinbad", "Robinzon Kruzo|robinzon", "Pikachu", "Mario", "Garri Potter|potter",
+    "Sherlok Xolms|sherlok", "Dart Veyder|veyder", "Yoda", "Zolushka|sinderella", "Kapitan Amerika", "Temir odam|ironman|aysman",
+    "Xalk|halk", "Mogli", "Tarzan", "Baron Myunxauzen|myunxauzen", "Jerri", "Tom", "Doraemon", "Naruto", "Sonik", "Elza|qor malikasi",
+    "Olaf", "Simba", "Nemo",
+    # hayvonlar
+    "Arslon|sher", "Fil", "Maymun", "Pingvin", "Delfin", "Burgut", "Tuya", "Zebra", "Jirafa", "Tulki", "Bo'ri|bori", "Quyon", "Ayiq",
+    "Mushuk", "It|kuchuk", "Ot", "Eshak", "Echki", "Ilon", "Timsoh", "Qurbaqa", "Kapalak", "Ari", "Chumoli", "Toshbaqa", "Panda",
+    "Kenguru", "Koala", "Flamingo", "To'tiqush|totiqush", "Tovus", "Boyo'g'li|boyogli", "Akula", "Kit", "Dinozavr", "Ajdar|ajdaho",
+    "Yo'lbars|yolbars", "Begemot", "Gorilla", "Tipratikan", "Xo'roz|xoroz", "O'rdak|ordak", "Qo'y|qoy", "Sigir",
+    # kasblar va obrazlar
+    "Oshpaz", "Shifokor|doktor|vrach", "Politsiyachi|militsioner", "O'qituvchi|oqituvchi|ustoz", "Haydovchi", "Kosmonavt", "Uchuvchi|pilot",
+    "Sartarosh", "Dehqon", "Quruvchi", "Dasturchi|programmist", "Fotograf", "Rassom", "Sehrgar|fokuschi", "Qaroqchi|pirat", "Ritsar",
+    "Samuray", "Robot", "O'g'ri|ogri", "Podshoh|shoh", "Malika", "Farishta", "Jin", "Kloun|masxaraboz", "Futbolchi", "Boksyor",
+]))
+
+
+class WhoAmIGame(HubGame):
+    key, name, emoji = "whoami", "Men kimman?", "🧩"
+    desc = "Peshonangizdagi qahramonni ha/yo'q savollar bilan toping. Boshqalar uni ko'radi, siz esa ko'rmaysiz!"
+    min, max = 2, 10
+
+    def start(self):
+        us = self.uids()
+        random.shuffle(us)
+        self.order = us
+        pool = random.sample(HUB_WHO, len(us))
+        self.chars = {u: pool[i] for i, u in enumerate(us)}
+        self.solved = []
+        self.pts = {u: 0 for u in us}
+        self.qn = {u: 0 for u in us}
+        self.log = []
+        self.q = None
+        self.votes = {}
+        self.verdict = None
+        self.counts = (0, 0, 0)
+        self.streak = 0
+        self.turn_i = -1
+        self.turns = 0
+        self.max_turns = 12 * len(us)
+        self.phase = "ask"
+        self.deadline = 0
+        self.next_turn()
+
+    def title(self, u):
+        return self.chars[u].split("|")[0]
+
+    def cur(self):
+        return self.order[self.turn_i % len(self.order)] if self.turn_i >= 0 else None
+
+    def alive(self):
+        return [u for u in self.order if u in self.room.players and u not in self.solved]
+
+    def next_turn(self):
+        self.streak = 0
+        if self.turns >= self.max_turns or not self.alive():
+            return self.finish()
+        n = 0
+        while True:
+            self.turn_i += 1
+            n += 1
+            u = self.cur()
+            if u in self.room.players and u not in self.solved:
+                break
+            if n > len(self.order) + 1:
+                return self.finish()
+        self.turns += 1
+        self.begin_ask()
+
+    def begin_ask(self):
+        self.phase = "ask"
+        self.q = None
+        self.votes = {}
+        self.deadline = hub_ms(50)
+        self.after("t", 50, self.skip_turn)
+
+    def skip_turn(self):
+        if self.phase == "ask":
+            self.room.sys(f"⏭ {self.name_of(self.cur())} vaqtni o'tkazib yubordi")
+            self.next_turn()
+
+    def resolve(self):
+        if self.phase != "answer":
+            return
+        y = sum(1 for v in self.votes.values() if v == "y")
+        n = sum(1 for v in self.votes.values() if v == "n")
+        m = sum(1 for v in self.votes.values() if v == "m")
+        r = "y" if y > n else ("n" if n > y else "m")
+        self.verdict = r
+        self.counts = (y, n, m)
+        self.log.append({"u": self.cur(), "q": self.q, "r": r, "y": y, "n": n})
+        del self.log[:-30]
+        self.phase = "result"
+        self.deadline = hub_ms(3)
+        self.after("t", 3, self.after_result)
+
+    def after_result(self):
+        if self.phase != "result":
+            return
+        if self.verdict == "y" and self.streak < 2 and self.cur() in self.room.players:
+            self.streak += 1
+            self.begin_ask()
+        else:
+            self.next_turn()
+
+    def solve(self, uid):
+        gain = max(30, 150 - 10 * self.qn.get(uid, 0))
+        self.pts[uid] = self.pts.get(uid, 0) + gain
+        self.solved.append(uid)
+        self.room.sys(f"🎉 {self.name_of(uid)} topdi: {self.title(uid)}! (+{gain})")
+        self.next_turn()
+
+    def finish(self):
+        self.phase = "over"
+        self.over = True
+        self.cancel()
+        top = max(self.pts.values()) if self.pts else 0
+        if top > 0:
+            self.room.win([u for u, v in self.pts.items() if v == top])
+        self.room.after_game()
+
+    def act(self, uid, m):
+        a = m.get("a")
+        if self.phase == "over":
+            return
+        if a == "ask" and self.phase == "ask" and uid == self.cur():
+            x = str(m.get("x", "")).strip()[:90]
+            if len(x) < 3:
+                self.room.toast(uid, "Savolni yozing")
+                return
+            self.q = x
+            self.qn[uid] = self.qn.get(uid, 0) + 1
+            self.votes = {}
+            self.phase = "answer"
+            self.deadline = hub_ms(25)
+            self.after("t", 25, self.resolve)
+            if len(self.room.players) <= 1:
+                self.resolve()
+        elif a == "ans" and self.phase == "answer" and uid != self.cur() and uid in self.room.players:
+            v = m.get("v")
+            if v in ("y", "n", "m"):
+                self.votes[uid] = v
+                if len(self.votes) >= len(self.room.players) - 1:
+                    self.resolve()
+        elif a == "guess" and self.phase == "ask" and uid == self.cur():
+            raw = str(m.get("x", "")).strip()
+            x = hub_norm(raw)
+            if not x:
+                return
+            names = [hub_norm(s) for s in self.chars[uid].split("|")]
+            if x in names:
+                self.solve(uid)
+            else:
+                self.room.sys(f"❌ {self.name_of(uid)}: «{raw[:30]}» emas")
+                self.next_turn()
+        elif a == "pass" and self.phase == "ask" and uid == self.cur():
+            self.next_turn()
+
+    def on_leave(self, uid):
+        if self.phase == "over":
+            return
+        if not self.alive():
+            return self.finish()
+        if self.cur() == uid and self.phase in ("ask", "answer", "result"):
+            return self.next_turn()
+        if self.phase == "answer" and len(self.votes) >= len(self.room.players) - 1:
+            self.resolve()
+
+    def view(self, uid):
+        show_all = self.phase == "over"
+        v = {"phase": self.phase, "cur": self.cur() if self.phase != "over" else None, "deadline": self.deadline, "q": self.q,
+             "pts": self.pts, "qn": self.qn, "solved": list(self.solved), "turn": min(self.turns, self.max_turns), "of": self.max_turns,
+             "log": self.log[-7:], "order": self.order,
+             "chars": {u: self.title(u) for u in self.order if show_all or u != uid or u in self.solved}}
+        if self.phase == "answer":
+            v["done"] = list(self.votes.keys())
+            v["mine"] = self.votes.get(uid)
+        if self.phase == "result":
+            v["verdict"] = self.verdict
+            v["counts"] = list(self.counts)
+        return v
+
+
+# ---------------------------------------------------------------- 🟩 Boshqotirma (Wordle)
+HUB_WORDLE_RAW = [
+    "olmos", "kitob", "daryo", "bahor", "sabzi", "piyoz", "anjir", "shahar", "tuman", "qalam", "qabul", "qiyin", "osmon", "quyosh",
+    "bulut", "shamol", "bo'ron", "sovuq", "issiq", "yaxshi", "yomon", "katta", "kichik", "yaqin", "go'zal", "aqlli", "botir", "sodiq",
+    "halol", "likop", "tovoq", "qozon", "somsa", "manti", "norin", "shurva", "kabob", "palov", "qatiq", "tuxum", "shakar", "limon",
+    "banan", "gilos", "qovun", "karam", "xo'roz", "tovuq", "o'rdak", "tulki", "quyon", "mushuk", "kuchuk", "baliq", "eshak", "buzoq",
+    "sigir", "zebra", "akula", "lochin", "qarg'a", "chivin", "pashsha", "o'rmon", "buloq", "vodiy", "bozor", "devor", "eshik", "hovli",
+    "kalit", "gilam", "parda", "ko'rpa", "chiroq", "radio", "lampa", "ruchka", "sumka", "doska", "parta", "amaki", "kelin", "kuyov",
+    "qayin", "yigit", "erkak", "go'dak", "mehmon", "oshpaz", "hakim", "vazir", "askar", "josus", "yugur", "yig'la", "uyg'on", "ishla",
+    "qidir", "sevgi", "jasur", "yutuq", "sport", "poyga", "marra", "medal", "kubok", "jamoa", "hakam", "oqshom", "bugun", "hafta", "oylik",
+    "qarshi", "nukus", "qo'qon", "kuchli", "aziz", "orzu", "baxt", "mehr", "umid", "tinch", "ozod", "madad", "hurmat", "shafqat", "sabr",
+    "odob", "iymon", "vijdon", "haqiqat", "tarix", "ilmiy", "fanlar", "musiqa", "raqs", "rasm", "she'r", "doston", "afsona", "ertak",
+    "maqol", "topish", "boshqa", "birinchi", "ikkinchi", "uchinchi", "tabiat", "daraxt", "chinor", "terak", "tol", "archa", "olcha",
+    "o'rik", "shaftoli", "uzum", "anor", "behi", "nok", "xurmo", "pista", "bodom", "yong'oq", "mayiz", "turp", "lavlagi", "pomidor",
+    "qalampir", "sarimsoq", "ismaloq", "rayhon", "shuvoq", "yalpiz", "qo'shni", "do'kon", "mahalla", "ko'cha", "maydon", "ko'prik",
+    "minora", "masjid", "madrasa", "qo'rg'on", "chodir", "ko'chat", "bog'bon", "dehqon", "paxta", "bug'doy", "sholi", "arpa", "makkajo'xori",
+    "tarvuz", "bodring", "baqlajon", "piyola", "choynak", "qoshiq", "pichoq", "vilka", "idish", "stakan", "kosa", "patnis", "dasturxon",
+    "ko'rpacha", "yostiq", "karavot", "javon", "stol", "stul", "oyna", "soat", "telefon", "kompyuter", "planshet", "klaviatura", "sichqon",
+    "ekran", "tarmoq", "dastur", "o'yin", "robot", "raketa", "kosmos", "sayyora", "yulduz", "galaktika", "quyosh", "shuur",
+    "ko'rish", "eshitish", "hidlash", "tatish", "sezgi", "ruhiy", "jismoniy", "salomatlik", "tibbiyot", "shifokor", "hamshira", "dori",
+    "shifo", "kasal", "tuzalish", "kasallik", "tish", "ko'z", "quloq", "burun", "og'iz", "til", "yurak", "oyoq", "barmoq", "tirsak", "yelka",
+    "bilak", "bo'yin", "sochlar", "qosh", "kiprik", "yuz", "peshona", "jag'", "lab", "tirnoq", "terlash", "nafas", "qon", "suyak", "mushak",
+    "chechak", "lola", "atirgul", "nargis", "binafsha", "gulxan", "gulzor", "gulchambar", "navro'z", "hayit", "to'y", "bayram", "sovg'a",
+    "tabrik", "qutlov", "yangi", "eski", "yosh", "keksa", "chol", "kampir", "bobo", "buvi", "opa", "singil", "ota", "ona",
+    "farzand", "o'g'il", "nevara", "chevara", "qarindosh", "tanish", "bilim", "ilm", "aql", "zakovat", "fikr", "xayol", "tush",
+    "uyqu", "dam", "mehnat", "ish", "kasb", "hunar", "ustoz", "shogird", "talaba", "maktab", "sinf", "dars", "imtihon", "baho", "daftar",
+    "qog'oz", "qaychi", "yelim", "bo'yoq", "cho'tka", "mo'yqalam", "rassom", "haykal", "naqsh", "kashta", "atlas", "adras", "do'ppi",
+    "chopon", "ro'mol", "ko'ylak", "shalvar", "etik", "kavush", "tufli", "paypoq", "qo'lqop", "kamar", "uzuk", "zirak", "marjon", "bilaguzuk",
+]
+
+
+HUB_WORDLE_RAW += [
+    "yetim", "toqat", "g'urur", "armon", "kamon", "nayza", "g'olib", "chilim", "xamir", "ko'zgu", "mirzo", "mulla", "domla", "tabib", "tilla",
+    "kumush", "temir", "oltin", "yoqut", "ko'mir", "mebel", "zamin", "kanal", "irmoq", "cho'qqi", "xabar", "nuqta", "belgi", "chizma", "doira",
+    "chiziq", "sonlar", "raqam", "hisob", "misol", "javob", "savol", "qoida", "mavzu", "bo'lim", "xodim", "mijoz", "tanga", "savdo", "foyda",
+    "zarar", "sotuv", "xarid", "arzon", "bepul", "sifat", "tovar", "ombor", "idora", "teatr", "sahna", "libos", "qo'shiq", "ohang", "to'g'ri",
+    "dag'al", "sekin", "kulgi", "g'azab", "oppoq", "qizil", "sariq", "yashil", "pushti", "malla", "ho'kiz", "g'unon", "chayon", "burga",
+    "mayna", "zag'cha", "qumri", "oqqush", "xo'tik", "shakal", "ayg'ir", "yilqi", "toqli", "qimiz", "suzma", "qurut", "somon", "halim",
+    "guruch", "lavash", "shirin", "achchiq", "totli", "ukrop", "dovul", "yog'in", "qirov", "shimol", "janub", "to'fon", "dovon", "sahro",
+    "bolta", "bolg'a", "kurak", "randa", "arqon", "fonar", "kenja", "yetti", "o'ttiz", "ellik", "birga", "hamma", "barcha", "qancha", "qayer",
+    "qachon", "kimdir", "faqat", "hozir", "keyin", "oldin", "ichki", "tashqi", "chekka", "boshla", "tugat", "to'xta", "sakra", "kuldi",
+    "yutdi", "ketdi", "keldi", "bordi", "berdi", "sevdi", "yozdi", "o'qidi", "yurdi", "turdi", "bildi", "ko'rdi", "aytdi", "ilova", "tizim",
+    "video", "audio", "pochta", "menyu", "tugma", "narxi", "dehqon", "bahodir", "navbat", "mehnat", "mukofot", "shaxmat", "qalbim",
+]
+
+
+HUB_WORDLE = [w for w in dict.fromkeys(HUB_WORDLE_RAW) if len(hub_units(w)) == 5 and hub_is_latin_word(w)]
+
+
+def hub_wd_score(secret, guess):
+    res = [0] * len(secret)
+    left = {}
+    for i, (s, g) in enumerate(zip(secret, guess)):
+        if s == g:
+            res[i] = 2
+        else:
+            left[s] = left.get(s, 0) + 1
+    for i, g in enumerate(guess):
+        if res[i] == 0 and left.get(g, 0) > 0:
+            res[i] = 1
+            left[g] -= 1
+    return res
+
+
+class WordleGame(HubGame):
+    key, name, emoji = "wordle", "Boshqotirma", "🟩"
+    desc = "Wordle kabi: 5 harfli o'zbekcha so'zni 6 urinishda toping. Ikki kishi poygalashadi — kim tez topsa, o'sha yutadi!"
+    min, max = 2, 2
+    ROUNDS = 3
+    TRIES = 6
+    SECS = 150
+
+    def start(self):
+        us = self.uids()
+        random.shuffle(us)
+        self.p = us
+        self.words = random.sample(HUB_WORDLE, min(self.ROUNDS, len(HUB_WORDLE)))
+        self.wins = {u: 0 for u in us}
+        self.round = 0
+        self.begin_round()
+
+    def begin_round(self):
+        self.word = self.words[self.round]
+        self.wu = hub_units(self.word)
+        self.gs = {u: [] for u in self.p}
+        self.done = {u: False for u in self.p}
+        self.winner = None
+        self.phase = "play"
+        self.deadline = hub_ms(self.SECS)
+        self.after("t", self.SECS, self.end_round)
+
+    def end_round(self):
+        if self.phase != "play":
+            return
+        self.cancel("t")
+        if self.winner:
+            self.wins[self.winner] = self.wins.get(self.winner, 0) + 1
+        self.phase = "show"
+        self.deadline = hub_ms(6)
+        self.after("t", 6, self.next_round)
+
+    def next_round(self):
+        if self.phase != "show":
+            return
+        self.round += 1
+        clinched = any(v > self.ROUNDS // 2 for v in self.wins.values())
+        if self.round >= len(self.words) or clinched:
+            return self.finish()
+        self.begin_round()
+
+    def finish(self):
+        self.phase = "over"
+        self.over = True
+        self.cancel()
+        top = max(self.wins.values()) if self.wins else 0
+        tops = [u for u, v in self.wins.items() if v == top]
+        if top > 0 and len(tops) == 1:
+            self.room.win(tops)
+        self.room.after_game()
+
+    def act(self, uid, m):
+        if m.get("a") != "guess" or self.phase != "play" or uid not in self.p or self.done.get(uid):
+            return
+        raw = str(m.get("x", "")).strip()[:24]
+        if not hub_is_latin_word(raw):
+            self.room.toast(uid, "Faqat lotin harflarida yozing")
+            return
+        gu = hub_units(raw)
+        if len(gu) != len(self.wu):
+            self.room.toast(uid, f"{len(self.wu)} harfli so'z yozing (o', g', sh, ch — bitta harf)")
+            return
+        res = hub_wd_score(self.wu, gu)
+        self.gs[uid].append({"w": gu, "s": res})
+        if all(x == 2 for x in res):
+            self.done[uid] = True
+            self.winner = uid
+            self.room.sys(f"🟩 {self.name_of(uid)} so'zni topdi!")
+            return self.end_round()
+        if len(self.gs[uid]) >= self.TRIES:
+            self.done[uid] = True
+            if all(self.done.values()):
+                self.end_round()
+
+    def on_leave(self, uid):
+        if self.phase == "over":
+            return
+        rest = [u for u in self.p if u != uid and u in self.room.players]
+        self.cancel()
+        self.phase = "over"
+        self.over = True
+        if rest:
+            self.wins[rest[0]] = max(self.wins.values()) + 1
+            self.room.win([rest[0]])
+        self.room.after_game()
+
+    def view(self, uid):
+        opp = [u for u in self.p if u != uid]
+        v = {"phase": self.phase, "round": min(self.round + 1, len(self.words)), "of": len(self.words), "wins": self.wins, "p": self.p,
+             "deadline": getattr(self, "deadline", 0), "tries": self.TRIES, "n": len(self.wu),
+             "mine": self.gs.get(uid, []), "done": bool(self.done.get(uid)), "winner": self.winner,
+             "opp": [g["s"] for g in self.gs.get(opp[0], [])] if opp else []}
+        if self.phase in ("show", "over"):
+            v["word"] = self.word
+        return v
+
+
+# ---------------------------------------------------------------- Tezkor poyga (umumiy asos)
+class RaceBase(HubGame):
+    """Hamma bir vaqtda bir savolga javob beradi; tez va to'g'ri javob ko'proq ball oladi."""
+    ROUNDS = 10
+    SECS = 25
+
+    def make_items(self):
+        return []
+
+    def check(self, item, text) -> bool:
+        return False
+
+    def public(self, item, uid, hint):
+        return {}
+
+    def reveal(self, item):
+        return ""
+
+    def start(self):
+        self.pts = {u: 0 for u in self.uids()}
+        self.items = self.make_items()
+        self.round = 0
+        self.begin_round()
+
+    def begin_round(self):
+        self.phase = "play"
+        self.solved = []
+        self.t0 = hub_now()
+        self.deadline = hub_ms(self.SECS)
+        self.after("t", self.SECS, self.end_round)
+        self.after("h", self.SECS * 0.5, lambda: None)
+
+    def end_round(self):
+        if self.phase != "play":
+            return
+        self.cancel("t")
+        self.cancel("h")
+        self.phase = "show"
+        self.deadline = hub_ms(4)
+        self.after("t", 4, self.next_round)
+
+    def next_round(self):
+        if self.phase != "show":
+            return
+        self.round += 1
+        if self.round >= len(self.items):
+            return self.finish()
+        self.begin_round()
+
+    def finish(self):
+        self.phase = "over"
+        self.over = True
+        self.cancel()
+        top = max(self.pts.values()) if self.pts else 0
+        if top > 0:
+            self.room.win([u for u, v in self.pts.items() if v == top])
+        self.room.after_game()
+
+    def act(self, uid, m):
+        if m.get("a") != "ans" or self.phase != "play" or uid not in self.room.players or uid in self.solved:
+            return
+        text = str(m.get("x", "")).strip()[:40]
+        if not text:
+            return
+        if self.check(self.items[self.round], text):
+            left = max(0.0, self.deadline / 1000.0 - hub_now())
+            gain = max(30, 100 - 20 * len(self.solved)) + int(left / self.SECS * 50)
+            self.pts[uid] = self.pts.get(uid, 0) + gain
+            self.solved.append(uid)
+            self.room.sys(f"✅ {self.name_of(uid)} topdi! (+{gain})")
+            if all(u in self.solved for u in self.room.players):
+                self.end_round()
+        else:
+            self.room.toast(uid, "Noto'g'ri, yana urinib ko'ring")
+
+    def on_leave(self, uid):
+        if self.phase == "play" and self.room.players and all(u in self.solved for u in self.room.players):
+            self.end_round()
+
+    def view(self, uid):
+        it = self.items[min(self.round, len(self.items) - 1)]
+        hint = self.phase == "play" and (hub_now() - self.t0) > self.SECS * 0.5
+        v = {"phase": self.phase, "round": min(self.round + 1, len(self.items)), "of": len(self.items), "deadline": self.deadline,
+             "pts": self.pts, "solved": list(self.solved), "kind": self.key}
+        v.update(self.public(it, uid, hint))
+        if self.phase in ("show", "over"):
+            v["answer"] = self.reveal(it)
+        return v
+
+
+# ---------------------------------------------------------------- 🔀 So'zni tuz (anagramma)
+HUB_ANA_EXTRA = [
+    "maktab", "daftar", "tarvuz", "kompyuter", "telefon", "samolyot", "velosiped", "mashina", "kutubxona", "o'qituvchi", "shifokor",
+    "mehmonxona", "qaldirg'och", "chumoli", "kapalak", "yo'lbars", "toshbaqa", "qurbaqa", "baliqchi", "dehqon", "bog'bon", "haydovchi",
+    "uchuvchi", "kosmonavt", "muzqaymoq", "qovurdoq", "chuchvara", "lag'mon", "shashlik", "qaynatma", "dasturxon", "choynak", "piyola",
+    "stakan", "qoshiq", "pichoq", "yostiq", "ko'rpa", "choyshab", "televizor", "muzlatgich", "dazmol", "yomg'ir", "momaqaldiroq",
+    "kamalak", "shabnam", "daraxt", "gulzor", "o'rmon", "dengiz", "daryo", "sharshara", "vulqon", "sayyora", "galaktika", "kometa",
+    "bahor", "yoz", "kuz", "qish", "dushanba", "seshanba", "chorshanba", "payshanba", "juma", "shanba", "yakshanba", "navro'z",
+    "Toshkent", "Samarqand", "Buxoro", "Xiva", "Farg'ona", "Andijon", "Namangan", "Qarshi", "Termiz", "Nukus", "Jizzax", "Guliston",
+]
+HUB_ANA = [w.lower() for w in dict.fromkeys(HUB_WORDLE_RAW + HUB_ANA_EXTRA) if 5 <= len(hub_units(w)) <= 9 and hub_is_latin_word(w)]
+
+
+class AnagramGame(RaceBase):
+    key, name, emoji = "anagram", "So'zni tuz", "🔀"
+    desc = "Harflari aralashib ketgan so'zni hammadan oldin toping. Tez topgan ko'p ball oladi!"
+    min, max = 2, 10
+    ROUNDS = 10
+    SECS = 25
+
+    def make_items(self):
+        out = []
+        for w in random.sample(HUB_ANA, self.ROUNDS):
+            us = hub_units(w)
+            sc = us[:]
+            for _ in range(20):
+                random.shuffle(sc)
+                if sc != us:
+                    break
+            out.append({"w": w, "u": us, "s": sc})
+        return out
+
+    def check(self, item, text):
+        return hub_norm(text) == hub_norm(item["w"])
+
+    def public(self, item, uid, hint):
+        v = {"scr": [x.upper() for x in item["s"]], "len": len(item["u"])}
+        if hint:
+            v["hint"] = item["u"][0].upper()
+        return v
+
+    def reveal(self, item):
+        return item["w"].upper()
+
+
+# ---------------------------------------------------------------- ➕ Tez hisob
+def hub_math_item(level):
+    r = random
+    if level == 0:
+        a, b = r.randint(5, 40), r.randint(3, 30)
+        if r.random() < 0.5:
+            return f"{a} + {b}", a + b
+        a, b = max(a, b), min(a, b)
+        return f"{a} − {b}", a - b
+    if level == 1:
+        k = r.random()
+        if k < 0.5:
+            a, b = r.randint(3, 12), r.randint(3, 12)
+            return f"{a} × {b}", a * b
+        a, b, c = r.randint(10, 60), r.randint(10, 60), r.randint(5, 40)
+        return f"{a} + {b} − {c}" if a + b > c else f"{a} + {b} + {c}", (a + b - c) if a + b > c else (a + b + c)
+    k = r.random()
+    if k < 0.4:
+        a, b, c = r.randint(2, 9), r.randint(2, 9), r.randint(2, 9)
+        return f"({a} + {b}) × {c}", (a + b) * c
+    if k < 0.75:
+        a, b, c = r.randint(6, 15), r.randint(6, 15), r.randint(5, 50)
+        return f"{a} × {b} − {c}" if a * b > c else f"{a} × {b} + {c}", (a * b - c) if a * b > c else (a * b + c)
+    b, q = r.randint(3, 12), r.randint(3, 15)
+    return f"{b * q} ÷ {b}", q
+
+
+class MathGame(RaceBase):
+    key, name, emoji = "math", "Tez hisob", "➕"
+    desc = "Misolni hamma birdan yechadi. Eng tez to'g'ri javob bergan ko'proq ball oladi!"
+    min, max = 2, 10
+    ROUNDS = 10
+    SECS = 18
+
+    def make_items(self):
+        out = []
+        for i in range(self.ROUNDS):
+            lvl = 0 if i < 3 else (1 if i < 7 else 2)
+            q, a = hub_math_item(lvl)
+            out.append({"q": q, "a": a})
+        return out
+
+    def check(self, item, text):
+        t = re.sub(r"\s+", "", text).replace("−", "-")
+        try:
+            return int(t) == item["a"]
+        except Exception:
+            return False
+
+    def public(self, item, uid, hint):
+        return {"q": item["q"]}
+
+    def reveal(self, item):
+        return str(item["a"])
+
+
+# ---------------------------------------------------------------- 🎴 Xotira kartalari
+HUB_MEM_EMO = ["🐶", "🐱", "🦊", "🐼", "🐸", "🐵", "🦁", "🐯", "🐰", "🐨", "🦄", "🐢", "🐙", "🦋", "🍎", "🍉", "🍇", "🍓", "🍋", "🥕",
+               "⚽", "🏀", "🚗", "✈️", "🚀", "⭐", "🌙", "🔥", "🌈", "🎸"]
+
+
+class MemoryGame(HubGame):
+    key, name, emoji = "memory", "Xotira kartalari", "🎴"
+    desc = "Kartalarni oching va juftini toping. Juft topsangiz — yana bir yurish! Eng ko'p juft yig'gan g'olib."
+    min, max = 2, 4
+    COLS, ROWS = 4, 5
+
+    def start(self):
+        us = self.uids()
+        random.shuffle(us)
+        self.order = us
+        n = self.COLS * self.ROWS // 2
+        cards = random.sample(HUB_MEM_EMO, n) * 2
+        random.shuffle(cards)
+        self.cards = cards
+        self.matched = {}
+        self.flipped = []
+        self.pts = {u: 0 for u in us}
+        self.ti = 0
+        self.phase = "play"
+        self.deadline = 0
+        self.turn_timer()
+
+    def cur(self):
+        return self.order[self.ti % len(self.order)]
+
+    def turn_timer(self):
+        self.deadline = hub_ms(25)
+        self.after("t", 25, self.timeout)
+
+    def advance(self):
+        self.flipped = []
+        for _ in range(len(self.order) + 1):
+            self.ti += 1
+            if self.cur() in self.room.players:
+                break
+        self.phase = "play"
+        self.turn_timer()
+
+    def timeout(self):
+        if self.phase == "play":
+            self.advance()
+
+    def flip(self, uid, i):
+        if self.phase != "play" or uid != self.cur() or not (0 <= i < len(self.cards)):
+            return
+        if i in self.matched or i in self.flipped:
+            return
+        self.flipped.append(i)
+        if len(self.flipped) == 2:
+            self.phase = "resolve"
+            self.deadline = hub_ms(1.3)
+            self.after("t", 1.3, self.resolve)
+        else:
+            self.turn_timer()
+
+    def resolve(self):
+        if self.phase != "resolve":
+            return
+        a, b = self.flipped
+        if self.cards[a] == self.cards[b]:
+            u = self.cur()
+            self.matched[a] = u
+            self.matched[b] = u
+            self.pts[u] = self.pts.get(u, 0) + 1
+            self.flipped = []
+            if len(self.matched) >= len(self.cards):
+                return self.finish()
+            self.phase = "play"
+            self.turn_timer()
+        else:
+            self.advance()
+
+    def finish(self):
+        self.phase = "over"
+        self.over = True
+        self.cancel()
+        top = max(self.pts.values()) if self.pts else 0
+        if top > 0:
+            self.room.win([u for u, v in self.pts.items() if v == top])
+        self.room.after_game()
+
+    def act(self, uid, m):
+        if m.get("a") == "flip":
+            try:
+                self.flip(uid, int(m.get("i")))
+            except Exception:
+                pass
+
+    def on_leave(self, uid):
+        if self.phase in ("play", "resolve") and self.cur() == uid:
+            if self.phase == "resolve":
+                self.cancel("t")
+            self.advance()
+
+    def view(self, uid):
+        grid = []
+        for i, c in enumerate(self.cards):
+            grid.append(c if (i in self.matched or i in self.flipped or self.phase == "over") else None)
+        return {"phase": self.phase, "grid": grid, "by": {i: u for i, u in self.matched.items()}, "flipped": list(self.flipped),
+                "turn": self.cur() if self.phase != "over" else None, "pts": self.pts, "deadline": self.deadline,
+                "cols": self.COLS, "order": self.order}
+
+
+# ---------------------------------------------------------------- ✊ Tosh-qaychi-qog'oz
+class RpsGame(HubGame):
+    key, name, emoji = "rps", "Tosh-qaychi-qog'oz", "✊"
+    desc = "Klassik duel: 5 raundlik o'yinda birinchi bo'lib 3 marta yutgan g'olib bo'ladi."
+    min, max = 2, 2
+
+    BEATS = {"r": "s", "s": "p", "p": "r"}
+
+    def start(self):
+        us = self.uids()
+        random.shuffle(us)
+        self.p = us
+        self.sc = {u: 0 for u in us}
+        self.round = 1
+        self.hist = []
+        self.begin()
+
+    def begin(self):
+        self.picks = {}
+        self.last = None
+        self.phase = "pick"
+        self.deadline = hub_ms(12)
+        self.after("t", 12, self.reveal)
+
+    def reveal(self):
+        if self.phase != "pick":
+            return
+        for u in self.p:
+            if u not in self.picks:
+                self.picks[u] = random.choice("rps")
+        a, b = self.p
+        pa, pb = self.picks[a], self.picks[b]
+        win = None
+        if pa != pb:
+            win = a if self.BEATS[pa] == pb else b
+            self.sc[win] += 1
+        self.last = {"picks": dict(self.picks), "win": win}
+        self.hist.append(self.last)
+        self.phase = "show"
+        self.deadline = hub_ms(3.5)
+        self.after("t", 3.5, self.next_round)
+
+    def next_round(self):
+        if self.phase != "show":
+            return
+        if max(self.sc.values()) >= 3 or self.round >= 9:
+            return self.finish()
+        self.round += 1
+        self.begin()
+
+    def finish(self):
+        self.phase = "over"
+        self.over = True
+        self.cancel()
+        a, b = self.p
+        if self.sc[a] != self.sc[b]:
+            self.room.win([a if self.sc[a] > self.sc[b] else b])
+        self.room.after_game()
+
+    def act(self, uid, m):
+        if m.get("a") == "pick" and self.phase == "pick" and uid in self.p and uid not in self.picks:
+            c = m.get("c")
+            if c in ("r", "p", "s"):
+                self.picks[uid] = c
+                if len(self.picks) >= 2:
+                    self.reveal()
+
+    def on_leave(self, uid):
+        if self.phase == "over":
+            return
+        rest = [u for u in self.p if u != uid and u in self.room.players]
+        self.cancel()
+        self.phase = "over"
+        self.over = True
+        if rest:
+            self.sc[rest[0]] = max(self.sc.values()) + 1
+            self.room.win([rest[0]])
+        self.room.after_game()
+
+    def view(self, uid):
+        v = {"phase": self.phase, "p": self.p, "sc": self.sc, "round": self.round, "deadline": self.deadline,
+             "mine": self.picks.get(uid), "picked": [u for u in self.p if u in self.picks]}
+        if self.phase in ("show", "over") and self.last:
+            v["last"] = self.last
+        return v
+
+
+# ---------------------------------------------------------------- 🎯 Haqiqat yoki jasorat
+HUB_TRUTHS = [
+    "Hayotingizdagi eng kulgili voqea qaysi?", "Bolaligingizda nimadan eng ko'p qo'rqqansiz?", "Eng sevimli taomingiz va nima uchun?",
+    "Hech kimga aytmagan kichik orzuingiz bormi?", "Eng uyalgan holatingiz nima edi?", "Agar bir kunga ko'rinmas bo'lsangiz, nima qilardingiz?",
+    "Telefoningizda eng ko'p ishlatadigan ilova qaysi?", "Qaysi mashhur odam bilan bir kun o'tkazishni xohlardingiz?",
+    "Eng g'alati odatingiz nima?", "Million so'm yutib olsangiz, birinchi nimaga sarflaysiz?", "Hozirgacha yeb ko'rgan eng g'alati taom nima?",
+    "Eng yaxshi ko'rgan multfilm qahramoningiz kim?", "Agar hayvonga aylansangiz, qaysi hayvon bo'lardingiz?", "Olgan eng yaxshi sovg'angiz nima bo'lgan?",
+    "Bir hafta internetsiz yashay olasizmi? Nega?", "Qaysi tilni o'rganishni orzu qilasiz?", "Maktabda eng yoqtirgan fan va ustozingiz kim edi?",
+    "Eng ko'p kulgan paytingizni eslang — nima edi?", "Do'stlaringizning qaysi biri eng kulgili va nega?", "Agar prezident bo'lsangiz, birinchi qaysi qonunni chiqarardingiz?",
+    "Uyqusiz tunda nima qilasiz?", "Eng yomon ko'rgan sabzavotingiz qaysi?", "Qaysi qo'shiqni takror-takror tinglaysiz?", "Hayotingizda eng katta yutug'ingiz nima?",
+    "Yolg'on gapirib qutulib qolgan eng kichik yolg'oningiz?", "Agar vaqt mashinasi bo'lsa, qaysi davrga borardingiz?", "Qaysi kasb egasi bo'lishni hech xohlamas edingiz?",
+    "Sizni eng ko'p nima xursand qiladi?", "Yaqinda qilgan eng aqlli ishingiz nima?", "Superqahramon bo'lsangiz, qanday super kuchingiz bo'lardi?",
+    "Eng yaxshi ko'rgan film yoki serialingiz va nega?", "Agar bir kunga o'qituvchi bo'lsangiz, qaysi fanni o'qitardingiz?", "Safarda eng yoqqan joyingiz qayer?",
+    "Ertalab uyg'onishingiz oson yoki qiyinmi? Nega?", "Eng ko'p kechikkan paytingiz va sababi?", "Telefon yo'qolsa, birinchi kimga qo'ng'iroq qilasiz?",
+    "Oshxonada eng yaxshi qiladigan taomingiz nima?", "Hech qachon sinab ko'rmagan, lekin sinab ko'rmoqchi bo'lgan ishingiz?",
+]
+HUB_DARES = [
+    "30 soniya davomida robotdek gapiring.", "Mushukdek miyovlab, 3 ta gap ayting.", "Bitta hayvonni ovoz bilan taqlid qiling — boshqalar topsin.",
+    "Ismingizni orqadan oldinga o'qing.", "Bitta so'zni 5 xil ohangda ayting (xursand, g'azabli, yig'layotgan...).", "20 soniya ichida o'zingizni reklama qiling.",
+    "Chatga faqat emojilar bilan bitta film nomini yozing — do'stlar topsin.", "1 daqiqa davomida faqat «ha» deb javob bering.",
+    "Eng kulgili yuz ifodangizni tasvirlab bering.", "«Sakkiz sakkizta sakkizoyoq» ni 3 marta tez ayting.", "Bir daqiqa davomida diktor kabi gapiring.",
+    "O'zingizni o'qituvchi deb tasavvur qiling va 20 soniya dars bering.", "Bir narsani gapirmasdan, faqat imo-ishora bilan tushuntiring.",
+    "Hozir o'ylagan birinchi so'zingizni 3 marta baland ayting.", "Chatga hozirgi kayfiyatingizni 3 ta emoji bilan yozing.",
+    "Eng sevimli ovqatingizni mazali qilib ta'riflang — 20 soniya.", "Birinchi eslagan ertak qahramoningiz kabi gapiring.",
+    "Kimdir ko'rsatgan so'zni qo'shiq kabi kuylab ayting.", "20 soniya ichida 5 ta mevaning nomini ayting.", "Bir daqiqa davomida aktyor kabi dramatik gapiring.",
+    "Eng yaxshi ko'rgan joyingizni 3 ta gapda ta'riflang.", "Do'stingiz uchun 3 ta maqtov so'z ayting.", "Maktab qo'ng'irog'ini ovoz bilan taqlid qiling.",
+    "30 soniya davomida kulmasdan turing — boshqalar sizni kuldirishga harakat qiladi.", "Hozirgi ob-havoni telediktor kabi e'lon qiling.",
+    "O'zingiz haqingizda kulgili bir gap to'qing.", "Bir so'zni qisqa vaqtda 10 marta ayting.", "Eng kulgili latifangizni ayting.",
+]
+
+
+class TodGame(HubGame):
+    key, name, emoji = "tod", "Haqiqat yoki jasorat", "🎯"
+    desc = "Haqiqatni ayting yoki jasoratli topshiriqni bajaring. Do'stlar 👍 yoki 👎 bilan baho beradi — har 👍 uchun ball!"
+    min, max = 2, 10
+
+    def start(self):
+        us = self.uids()
+        random.shuffle(us)
+        self.order = us
+        self.pts = {u: 0 for u in us}
+        self.usedT, self.usedD = set(), set()
+        self.ti = -1
+        self.total = min(2 * len(us), 16)
+        self.n = 0
+        self.kind = None
+        self.task = None
+        self.votes = {}
+        self.ups = 0
+        self.phase = "choose"
+        self.deadline = 0
+        self.next_turn()
+
+    def cur(self):
+        return self.order[self.ti % len(self.order)] if self.ti >= 0 else None
+
+    def next_turn(self):
+        if self.n >= self.total:
+            return self.finish()
+        for _ in range(len(self.order) + 1):
+            self.ti += 1
+            if self.cur() in self.room.players:
+                break
+        else:
+            return self.finish()
+        self.n += 1
+        self.kind = None
+        self.task = None
+        self.votes = {}
+        self.phase = "choose"
+        self.deadline = hub_ms(20)
+        self.after("t", 20, lambda: self.pick(random.choice(["t", "d"])))
+
+    def pick(self, k):
+        if self.phase != "choose":
+            return
+        pool, used = (HUB_TRUTHS, self.usedT) if k == "t" else (HUB_DARES, self.usedD)
+        free = [x for x in pool if x not in used] or pool
+        self.task = random.choice(free)
+        used.add(self.task)
+        self.kind = k
+        self.phase = "task"
+        self.deadline = hub_ms(75)
+        self.after("t", 75, self.next_turn)
+
+    def done(self):
+        if self.phase != "task":
+            return
+        self.votes = {}
+        self.phase = "rate"
+        self.deadline = hub_ms(12)
+        self.after("t", 12, self.settle)
+        if len(self.room.players) <= 1:
+            self.settle()
+
+    def settle(self):
+        if self.phase != "rate":
+            return
+        ups = sum(1 for v in self.votes.values() if v == 1)
+        self.ups = ups
+        self.pts[self.cur()] = self.pts.get(self.cur(), 0) + ups * 10
+        self.phase = "show"
+        self.deadline = hub_ms(3)
+        self.after("t", 3, self.next_turn)
+
+    def finish(self):
+        self.phase = "over"
+        self.over = True
+        self.cancel()
+        top = max(self.pts.values()) if self.pts else 0
+        if top > 0:
+            self.room.win([u for u, v in self.pts.items() if v == top])
+        self.room.after_game()
+
+    def act(self, uid, m):
+        a = m.get("a")
+        if a == "pick" and self.phase == "choose" and uid == self.cur() and m.get("k") in ("t", "d"):
+            self.pick(m.get("k"))
+        elif a == "done" and self.phase == "task" and uid == self.cur():
+            self.done()
+        elif a == "skip" and self.phase in ("choose", "task") and uid == self.cur():
+            self.next_turn()
+        elif a == "rate" and self.phase == "rate" and uid != self.cur() and uid in self.room.players and m.get("v") in (1, -1):
+            self.votes[uid] = m.get("v")
+            if len(self.votes) >= len(self.room.players) - 1:
+                self.settle()
+
+    def on_leave(self, uid):
+        if self.phase == "over":
+            return
+        if self.cur() == uid:
+            return self.next_turn()
+        if self.phase == "rate" and len(self.votes) >= len(self.room.players) - 1:
+            self.settle()
+
+    def view(self, uid):
+        v = {"phase": self.phase, "cur": self.cur() if self.phase != "over" else None, "kind": self.kind, "task": self.task,
+             "deadline": self.deadline, "pts": self.pts, "n": min(self.n, self.total), "of": self.total, "order": self.order}
+        if self.phase == "rate":
+            v["rated"] = list(self.votes.keys())
+            v["mine"] = self.votes.get(uid)
+        if self.phase == "show":
+            v["ups"] = self.ups
+        return v
+
+
+HUB_GAMES = {g.key: g for g in (DurakGame, BurKozelGame, UnoGame, ShashkaGame, ChessGame, NardGame, QuizGame, BattleshipGame, LiarGame, MafiaGame, SpyGame, DrawGame, StoryGame, FunnyGame, C4Game, ChainGame,
+                                WhoAmIGame, WordleGame, AnagramGame, MathGame, MemoryGame, RpsGame, TodGame)}
 
 
 def hub_games_info():
@@ -27035,6 +28021,60 @@ h2{font-size:17px;margin:18px 0 8px}
 .g-funny{background:linear-gradient(150deg,#5a4a0a,#1d1707)}
 .g-c4{background:linear-gradient(150deg,#5a1020,#1c0910)}
 .g-chain{background:linear-gradient(150deg,#0b4a3a,#08201b)}
+.g-whoami{background:linear-gradient(150deg,#5a2a6b,#1a0f26)}
+.g-wordle{background:linear-gradient(150deg,#1c5a2c,#0a1f10)}
+.g-anagram{background:linear-gradient(150deg,#0e4d6b,#08202b)}
+.g-math{background:linear-gradient(150deg,#6b3a0e,#24150a)}
+.g-memory{background:linear-gradient(150deg,#6b1f4a,#240a19)}
+.g-rps{background:linear-gradient(150deg,#5a4d0e,#1e1a08)}
+.g-tod{background:linear-gradient(150deg,#6b1f1f,#240a0a)}
+.who-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}
+.who-c{background:var(--card);border:2px solid var(--bd);border-radius:16px;padding:10px;text-align:center}
+.who-c.cur{border-color:var(--ok);background:rgba(56,214,160,.12)}
+.who-c.me{border-color:var(--ac)}
+.who-c.ok{opacity:.7}
+.who-n{font-size:17px;font-weight:900;margin:6px 0;line-height:1.2;word-break:break-word}
+.who-log{margin-top:12px}
+.who-log div{padding:5px 0;font-size:13px;border-bottom:1px solid var(--bd)}
+.who-log div:last-child{border:0}
+.wd-b{display:grid;gap:6px;justify-content:center;margin:12px 0}
+.wd-r{display:grid;grid-template-columns:repeat(var(--n,5),48px);gap:6px}
+.wd-t{height:48px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:21px;text-transform:uppercase;border:2px solid var(--bd);background:var(--card)}
+.wd-t.s0{background:#3a4258;border-color:#3a4258;color:#fff}
+.wd-t.s1{background:#d9a21b;border-color:#d9a21b;color:#fff}
+.wd-t.s2{background:#2fae63;border-color:#2fae63;color:#fff}
+.wd-opp{display:grid;gap:3px;justify-content:center;margin:6px 0}
+.wd-opp .wd-r{grid-template-columns:repeat(var(--n,5),16px);gap:3px}
+.wd-opp .wd-t{height:16px;border-radius:4px;border-width:1px}
+.wd-keys{display:flex;flex-wrap:wrap;gap:4px;justify-content:center;margin:8px 0}
+.wd-k{min-width:26px;padding:5px 6px;border-radius:7px;background:var(--card2);border:1px solid var(--bd);font-size:12px;font-weight:800;text-transform:uppercase;text-align:center}
+.wd-k.s0{background:#3a4258;color:#8f9bb3}
+.wd-k.s1{background:#d9a21b;color:#fff}
+.wd-k.s2{background:#2fae63;color:#fff}
+.ana-w{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin:12px 0}
+.ana-t{width:44px;height:52px;border-radius:12px;background:linear-gradient(160deg,#7c5cff,#5a3fd0);display:flex;align-items:center;justify-content:center;font-weight:900;font-size:22px;color:#fff;box-shadow:0 4px 0 rgba(0,0,0,.4)}
+.ana-t.hint{background:linear-gradient(160deg,#2fae63,#1c7a43)}
+.math-q{font-size:42px;font-weight:900;text-align:center;padding:22px 8px;letter-spacing:1px}
+.mm{display:grid;gap:8px;margin:12px 0}
+.mm-c{aspect-ratio:1;border-radius:14px;font-size:30px;background:linear-gradient(160deg,#4a3fb0,#2a2475);border:2px solid transparent;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:900;transition:transform .2s}
+.mm-c.up{background:var(--card);transform:rotateY(0)}
+.mm-c.done{background:var(--card2);opacity:.9}
+.mm-c[disabled]{opacity:1}
+.rps-b{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:14px 0}
+.rps-b button{padding:20px 4px;border-radius:20px;background:var(--card);border:2px solid var(--bd);font-size:44px;display:flex;flex-direction:column;align-items:center;gap:6px}
+.rps-b button span{font-size:13px;font-weight:700}
+.rps-b button.sel{border-color:var(--ac);background:rgba(124,92,255,.2)}
+.rps-vs{display:flex;align-items:center;justify-content:space-around;margin:14px 0;text-align:center}
+.rps-vs .rp{font-size:64px}
+.td-kind{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:14px 0}
+.td-kind button{padding:26px 8px;border-radius:20px;font-weight:900;font-size:18px;display:flex;flex-direction:column;align-items:center;gap:8px;border:2px solid var(--bd);background:var(--card)}
+.td-kind button i{font-style:normal;font-size:40px}
+.td-task{font-size:20px;font-weight:800;text-align:center;line-height:1.4;padding:20px 12px;margin:10px 0;border-radius:22px;background:var(--card);border:2px solid var(--bd)}
+.td-task.t{border-color:#4da3ff}
+.td-task.d{border-color:#ff7a4d}
+.td-rate{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:10px 0}
+.td-rate button{padding:18px;border-radius:18px;font-size:28px;background:var(--card);border:2px solid var(--bd)}
+.td-rate button.sel{border-color:var(--ac);background:rgba(124,92,255,.2)}
 .codebox{display:flex;gap:8px}
 .codebox input{text-transform:uppercase;letter-spacing:6px;text-align:center;font-weight:800;font-size:20px}
 .codebox button{width:auto;padding:0 22px;flex:none}
@@ -27559,7 +28599,7 @@ function renderGame() {
   var R = S.room, v = S.view, g = gameInfo(R.game);
   topBar(g.e + " " + esc(g.n), true);
   $("#dock").style.display = "none";
-  var fn = {nard: rNard, uno: rUno, quiz: rQuiz, bship: rBship, liar: rLiar, burkozel: rBur, chess: rChess, shashka: rShashka, durak: rDurak, mafia: rMafia, spy: rSpy, draw: rDraw, story: rStory, funny: rFunny, c4: rC4, chain: rChain}[R.game];
+  var fn = {nard: rNard, uno: rUno, quiz: rQuiz, bship: rBship, liar: rLiar, burkozel: rBur, chess: rChess, shashka: rShashka, durak: rDurak, mafia: rMafia, spy: rSpy, draw: rDraw, story: rStory, funny: rFunny, c4: rC4, chain: rChain, whoami: rWho, wordle: rWord, anagram: rRace, math: rRace, memory: rMem, rps: rRps, tod: rTod}[R.game];
   var h = "";
   if (S.micOn && v.talk === false) h += '<div class="muted-bar">🔇 Hozir gaplashish mumkin emas</div>';
   var body = fn ? fn(v) : "";
@@ -28173,6 +29213,169 @@ function rChain(v) {
   return h;
 }
 
+// ================= YANGI O'YINLAR =================
+function ptsOfV(v, u) { return (v.pts && v.pts[u]) || 0; }
+function rankPlayers(v) { return S.room.players.slice().sort(function (a, b) { return ptsOfV(v, b.u) - ptsOfV(v, a.u); }); }
+function scoreChips(v, solved) {
+  return '<div class="score" style="flex-wrap:wrap;justify-content:center">' + rankPlayers(v).map(function (p) {
+    var ok = solved && solved.indexOf(p.u) >= 0;
+    return '<div class="sc' + (p.u === S.me ? " me" : "") + (ok ? " cur" : "") + '">' + esc(p.n) + " · " + ptsOfV(v, p.u) + (ok ? " ✅" : "") + "</div>";
+  }).join("") + "</div>";
+}
+function podium(v, emoji, noWinnerText) {
+  var rank = rankPlayers(v), top = rank.length ? ptsOfV(v, rank[0].u) : 0;
+  var h = '<div class="role win c pop"><div class="big">' + emoji + "</div><h3>" + (top > 0 ? esc(rank[0].n) + " g'olib!" : noWinnerText) + "</h3></div>";
+  h += '<div class="card">' + rank.map(function (p, i) { return '<div class="pl-row"><b>' + (i + 1) + "</b>" + av(p.u) + '<b style="flex:1">' + esc(p.n) + "</b><b>" + ptsOfV(v, p.u) + "</b></div>"; }).join("") + "</div>";
+  return h;
+}
+
+// ---------- Men kimman? ----------
+function rWho(v) {
+  var R = S.room, h = "";
+  if (v.phase === "over") {
+    h += podium(v, "🧩", "Hech kim topa olmadi");
+    h += '<div class="card"><b>Qahramonlar</b>' + R.players.map(function (p) { return '<div class="pl-row">' + av(p.u) + '<div style="flex:1"><b>' + esc(p.n) + '</b><div class="mu sm">' + esc((v.chars && v.chars[p.u]) || "?") + (v.solved.indexOf(p.u) >= 0 ? " ✅ topdi" : " ❌ topa olmadi") + "</div></div></div>"; }).join("") + "</div>";
+    return h + endBar();
+  }
+  h += '<div class="c">' + timerHtml(v.deadline) + ' <span class="mu sm">· ' + v.turn + "/" + v.of + " yurish</span></div>";
+  h += '<div class="who-grid">' + R.players.map(function (p) {
+    var me = p.u === S.me, ch = v.chars && v.chars[p.u], ok = v.solved.indexOf(p.u) >= 0;
+    return '<div class="who-c' + (p.u === v.cur ? " cur" : "") + (me ? " me" : "") + (ok ? " ok" : "") + '"><div class="sm">' + esc(p.n) + (me ? " (siz)" : "") + '</div><div class="who-n">' + (ch ? esc(ch) + (ok ? " ✅" : "") : "❓ ???") + '</div><div class="mu sm">' + ((v.qn && v.qn[p.u]) || 0) + " savol · " + ptsOfV(v, p.u) + " ball</div></div>";
+  }).join("") + "</div>";
+  var mine = v.cur === S.me;
+  if (v.phase === "ask") {
+    if (mine) {
+      h += '<div class="banner"><b>👉 Navbat sizda!</b><div class="mu sm">Peshonangizdagi qahramon haqida ha/yo\'q savol bering yoki taxmin qiling.</div></div>';
+      h += '<div class="cin" style="padding:0"><input id="wq" data-enter="w_ask" placeholder="Masalan: Men odammanmi?" maxlength="90" autocomplete="off"><button data-a="w_ask">➤</button></div>';
+      h += '<button class="btn sec" style="margin:8px 0" data-a="w_oral">🗣 Savolni og\'zaki so\'radim (mikrofon)</button>';
+      h += '<div class="cin" style="padding:0"><input id="wg" data-enter="w_guess" placeholder="Men ... man! (taxmin)" maxlength="40" autocomplete="off"><button data-a="w_guess">🎯</button></div>';
+      h += '<button class="btn sec" style="margin-top:8px" data-a="w_pass">⏭ Navbatni o\'tkazish</button>';
+    } else h += '<div class="c pulse" style="padding:16px 0"><b>' + esc(pname(v.cur)) + "</b> savol o'ylayapti...</div>";
+  } else if (v.phase === "answer") {
+    h += '<div class="prompt">' + esc(pname(v.cur)) + ": " + esc(v.q) + "</div>";
+    if (mine) h += '<div class="hint">Javoblar kutilmoqda: ' + (v.done || []).length + "/" + Math.max(0, R.players.length - 1) + "</div>";
+    else h += '<div class="hint">Uning qahramoni: <b>' + esc((v.chars && v.chars[v.cur]) || "?") + "</b> — to'g'ri javobni bosing</div>" + [["y", "✅ Ha"], ["n", "❌ Yo'q"], ["m", "🤷 Aniq emas"]].map(function (x) { return '<button class="ans' + (v.mine === x[0] ? " sel" : "") + '" data-a="w_ans" data-v="' + x[0] + '">' + x[1] + "</button>"; }).join("");
+  } else if (v.phase === "result") {
+    var vd = v.verdict, cn = v.counts || [0, 0, 0];
+    h += '<div class="prompt">' + esc(pname(v.cur)) + ": " + esc(v.q) + '</div><div class="role win c pop" style="padding:16px"><div class="big" style="font-size:44px">' + (vd === "y" ? "✅" : vd === "n" ? "❌" : "🤷") + "</div><h3>" + (vd === "y" ? "Ha" : vd === "n" ? "Yo'q" : "Aniq emas") + '</h3><div class="sm">' + cn[0] + " ha · " + cn[1] + " yo'q · " + cn[2] + " aniq emas</div></div>";
+  }
+  if (v.log && v.log.length) h += '<div class="card who-log"><b class="sm">So\'nggi savollar</b>' + v.log.slice().reverse().map(function (e) { return "<div>" + (e.r === "y" ? "✅" : e.r === "n" ? "❌" : "🤷") + " <b>" + esc(pname(e.u)) + ":</b> " + esc(e.q) + "</div>"; }).join("") + "</div>";
+  return h;
+}
+
+// ---------- Boshqotirma (Wordle) ----------
+function wdRow(cells, sts, n) {
+  var r = '<div class="wd-r" style="--n:' + n + '">';
+  for (var i = 0; i < n; i++) r += '<div class="wd-t' + (sts ? " s" + sts[i] : "") + '">' + (cells && cells[i] ? esc(cells[i]) : "") + "</div>";
+  return r + "</div>";
+}
+function rWord(v) {
+  var n = v.n || 5, h = '<div class="c">' + (v.phase === "play" ? timerHtml(v.deadline) : "") + ' <span class="mu sm">· ' + v.round + "/" + v.of + "-raund</span></div>";
+  h += '<div class="score" style="justify-content:center">' + v.p.map(function (u) { return '<div class="sc' + (u === S.me ? " me" : "") + '">' + esc(pname(u)) + " · 🏆 " + ((v.wins && v.wins[u]) || 0) + "</div>"; }).join("") + "</div>";
+  var opp = v.p.filter(function (u) { return u !== S.me; })[0];
+  h += '<div class="c mu sm">Raqib: <b>' + esc(pname(opp)) + "</b> (" + (v.opp || []).length + "/" + v.tries + ' urinish)</div><div class="wd-opp">';
+  for (var i = 0; i < v.tries; i++) h += wdRow(null, (v.opp || [])[i] || null, n);
+  h += "</div>";
+  h += '<div class="wd-b">';
+  for (var j = 0; j < v.tries; j++) { var g = (v.mine || [])[j]; h += g ? wdRow(g.w, g.s, n) : wdRow(null, null, n); }
+  h += "</div>";
+  if (v.phase === "play") {
+    var best = {};
+    (v.mine || []).forEach(function (g) { g.w.forEach(function (u, i) { if (best[u] === undefined || g.s[i] > best[u]) best[u] = g.s[i]; }); });
+    var keys = "abcdefghijklmnopqrstuvwxyz".split("").concat(["o'", "g'", "sh", "ch"]);
+    h += '<div class="wd-keys">' + keys.map(function (k) { return '<span class="wd-k' + (best[k] !== undefined ? " s" + best[k] : "") + '">' + esc(k) + "</span>"; }).join("") + "</div>";
+    if (v.done) h += '<div class="hint">Urinishlar tugadi — raqibni kuting...</div>';
+    else h += '<div class="cin" style="padding:0"><input id="wdin" data-enter="wd_go" placeholder="' + n + ' harfli so\'z (o\', g\', sh, ch — bitta harf)" maxlength="14" autocomplete="off" autocapitalize="off" spellcheck="false"><button data-a="wd_go">➤</button></div>';
+    return h;
+  }
+  if (v.phase === "show" || v.phase === "over") {
+    var res = v.winner ? (v.winner === S.me ? "🟩 Siz topdingiz!" : "😮 " + esc(pname(v.winner)) + " topdi") : "⌛ Hech kim topa olmadi";
+    if (v.phase === "show") h += '<div class="banner c"><b>' + res + '</b><div style="margin-top:6px">So\'z: <b style="font-size:20px;text-transform:uppercase">' + esc(v.word || "") + "</b></div></div>";
+  }
+  if (v.phase === "over") {
+    var a = v.p[0], b = v.p[1], wa = (v.wins && v.wins[a]) || 0, wb = (v.wins && v.wins[b]) || 0;
+    h += '<div class="role win c pop"><div class="big">' + (wa === wb ? "🤝" : "🏆") + "</div><h3>" + (wa === wb ? "Durang!" : esc(pname(wa > wb ? a : b)) + " yutdi!") + '</h3><div class="sm">So\'nggi so\'z: ' + esc((v.word || "").toUpperCase()) + "</div></div>" + endBar();
+  }
+  return h;
+}
+
+// ---------- So'zni tuz / Tez hisob ----------
+function rRace(v) {
+  var h = '<div class="c">' + (v.phase === "play" ? timerHtml(v.deadline) : "") + ' <span class="mu sm">· ' + v.round + "/" + v.of + "-raund</span></div>";
+  if (v.phase === "over") return h + podium(v, v.kind === "math" ? "➕" : "🔀", "Durang!") + endBar();
+  h += scoreChips(v, v.solved);
+  if (v.kind === "anagram") {
+    h += '<div class="c mu sm" style="margin-top:10px">Harflardan so\'z tuzing (' + v.len + " harf)</div><div class=\"ana-w\">" + (v.scr || []).map(function (x) { return '<div class="ana-t">' + esc(x) + "</div>"; }).join("") + "</div>";
+    if (v.hint) h += '<div class="hint">💡 Birinchi harf: <b>' + esc(v.hint) + "</b></div>";
+  } else h += '<div class="math-q">' + esc(v.q) + " = ?</div>";
+  if (v.phase === "play") {
+    if (v.solved.indexOf(S.me) >= 0) h += '<div class="role win c pop" style="padding:14px"><b>✅ To\'g\'ri! Boshqalarni kuting...</b></div>';
+    else h += '<div class="cin" style="padding:0"><input id="rx" data-enter="r_go" placeholder="' + (v.kind === "math" ? "Javob (son)" : "So\'z") + '" maxlength="30" autocomplete="off" autocapitalize="off"' + (v.kind === "math" ? ' inputmode="numeric"' : "") + '><button data-a="r_go">➤</button></div>';
+  } else if (v.phase === "show") h += '<div class="banner c">To\'g\'ri javob: <b style="font-size:20px">' + esc(v.answer) + "</b></div>";
+  return h;
+}
+
+// ---------- Xotira kartalari ----------
+function rMem(v) {
+  var R = S.room, h = '<div class="c">' + (v.phase === "play" || v.phase === "resolve" ? timerHtml(v.deadline) : "") + "</div>";
+  h += '<div class="score" style="justify-content:center">' + v.order.filter(function (u) { return pl(u); }).map(function (u) { return '<div class="sc' + (u === S.me ? " me" : "") + (u === v.turn ? " cur" : "") + '"><span style="width:10px;height:10px;border-radius:50%;background:' + colorOf(u) + '"></span>' + esc(pname(u)) + " · " + ptsOfV(v, u) + " juft</div>"; }).join("") + "</div>";
+  if (v.phase === "over") return h + podium(v, "🎴", "Durang!") + endBar();
+  h += '<div class="hint">' + (v.turn === S.me ? "👉 Sizning navbatingiz — ikkita karta oching" : "⏳ " + esc(pname(v.turn)) + " o'ynayapti") + '</div><div class="mm" style="grid-template-columns:repeat(' + v.cols + ',1fr)">';
+  v.grid.forEach(function (c, i) {
+    var done = v.by && v.by[i] !== undefined, up = c !== null;
+    h += '<button class="mm-c' + (done ? " done" : up ? " up" : "") + '" data-a="mm_flip" data-i="' + i + '"' + (done ? ' style="border-color:' + colorOf(v.by[i]) + '"' : "") + (v.turn !== S.me || v.phase !== "play" || up ? " disabled" : "") + ">" + (up ? c : "?") + "</button>";
+  });
+  return h + "</div>";
+}
+
+// ---------- Tosh-qaychi-qog'oz ----------
+var RPS_E = {r: "✊", p: "✋", s: "✌️"}, RPS_N = {r: "Tosh", p: "Qog'oz", s: "Qaychi"};
+function rRps(v) {
+  var h = '<div class="c">' + (v.phase === "pick" ? timerHtml(v.deadline) : "") + ' <span class="mu sm">· ' + v.round + "-raund</span></div>";
+  h += '<div class="score" style="justify-content:center">' + v.p.map(function (u) { return '<div class="sc' + (u === S.me ? " me" : "") + '">' + esc(pname(u)) + " · " + ((v.sc && v.sc[u]) || 0) + "</div>"; }).join("") + "</div>";
+  if (v.phase === "pick") {
+    h += '<div class="c mu sm" style="margin-top:8px">' + (v.mine ? "Tanlov qabul qilindi — raqibni kuting..." : "Tanlang!") + '</div><div class="rps-b">' + ["r", "s", "p"].map(function (k) { return '<button data-a="rp_pick" data-c="' + k + '" class="' + (v.mine === k ? "sel" : "") + '"' + (v.mine ? " disabled" : "") + ">" + RPS_E[k] + "<span>" + RPS_N[k] + "</span></button>"; }).join("") + "</div>";
+    return h;
+  }
+  if (v.last) {
+    var a = v.p[0], b = v.p[1], w = v.last.win;
+    h += '<div class="rps-vs"><div><div class="rp">' + RPS_E[v.last.picks[a]] + '</div><div class="sm">' + esc(pname(a)) + '</div></div><b>VS</b><div><div class="rp">' + RPS_E[v.last.picks[b]] + '</div><div class="sm">' + esc(pname(b)) + "</div></div></div>";
+    h += '<div class="banner c pop"><b>' + (w ? (w === S.me ? "🎉 Bu raundni siz yutdingiz!" : "😮 " + esc(pname(w)) + " yutdi") : "🤝 Durang") + "</b></div>";
+  }
+  if (v.phase === "over") {
+    var wa = (v.sc && v.sc[v.p[0]]) || 0, wb = (v.sc && v.sc[v.p[1]]) || 0;
+    h += '<div class="role win c pop"><div class="big">' + (wa === wb ? "🤝" : "🏆") + "</div><h3>" + (wa === wb ? "Durang!" : esc(pname(wa > wb ? v.p[0] : v.p[1])) + " g'olib!") + "</h3></div>" + endBar();
+  }
+  return h;
+}
+
+// ---------- Haqiqat yoki jasorat ----------
+function rTod(v) {
+  var R = S.room, h = "";
+  if (v.phase === "over") return podium(v, "🎯", "Hech kim ball olmadi") + endBar();
+  var mine = v.cur === S.me;
+  h += '<div class="c">' + timerHtml(v.deadline) + ' <span class="mu sm">· ' + v.n + "/" + v.of + " navbat</span></div>" + scoreChips(v, [v.cur]);
+  if (v.phase === "choose") {
+    if (mine) h += '<h2 class="c">Tanlang!</h2><div class="td-kind"><button data-a="td_pick" data-k="t"><i>🤔</i>Haqiqat</button><button data-a="td_pick" data-k="d"><i>🔥</i>Jasorat</button></div><button class="btn sec" data-a="td_skip">⏭ O\'tkazib yuborish</button>';
+    else h += '<div class="c pulse" style="padding:30px 0"><div style="font-size:40px">🎯</div><b>' + esc(pname(v.cur)) + "</b> tanlamoqda: haqiqat yoki jasorat?</div>";
+    return h;
+  }
+  h += '<div class="c"><b>' + esc(pname(v.cur)) + "</b> · " + (v.kind === "t" ? "🤔 Haqiqat" : "🔥 Jasorat") + '</div><div class="td-task ' + (v.kind === "t" ? "t" : "d") + '">' + esc(v.task) + "</div>";
+  if (v.phase === "task") {
+    if (mine) h += '<button class="btn" data-a="td_done">✅ Bajardim / Javob berdim</button><button class="btn sec" style="margin-top:8px" data-a="td_skip">⏭ O\'tkazib yuborish</button>';
+    else h += '<div class="hint">' + esc(pname(v.cur)) + " bajarishini kuting — keyin baho berasiz 👍/👎</div>";
+  } else if (v.phase === "rate") {
+    if (mine) h += '<div class="hint">Do\'stlaringiz baho bermoqda: ' + (v.rated || []).length + "/" + Math.max(0, R.players.length - 1) + "</div>";
+    else h += '<div class="hint">Baho bering — har 👍 uchun +10 ball</div><div class="td-rate"><button data-a="td_rate" data-v="1" class="' + (v.mine === 1 ? "sel" : "") + '">👍</button><button data-a="td_rate" data-v="-1" class="' + (v.mine === -1 ? "sel" : "") + '">👎</button></div>';
+  } else if (v.phase === "show") h += '<div class="banner c pop"><b>👍 ' + (v.ups || 0) + " ta — +" + (v.ups || 0) * 10 + " ball</b></div>";
+  return h;
+}
+document.addEventListener("keydown", function (e) {
+  if (e.key !== "Enter" || !e.target || !e.target.getAttribute) return;
+  var k = e.target.getAttribute("data-enter"); if (!k) return;
+  var btn = document.querySelector('[data-a="' + k + '"]'); if (btn) btn.click();
+});
+
 // ---------------- 3D: barmoq bilan egilish ----------------
 document.addEventListener("pointermove", function (e) {
   var t = e.target.closest && e.target.closest(".role"); if (!t) return;
@@ -28265,6 +29468,19 @@ document.addEventListener("click", function (e) {
     case "f_vote": act({a: "vote", u: +d("u")}); break;
     case "c4": act({a: "drop", c: +d("c")}); break;
     case "ch_send": var t3 = $("#cw"); if (t3 && t3.value.trim()) { act({a: "word", x: t3.value}); t3.value = ""; } break;
+    case "w_ask": var wq = $("#wq"); if (wq && wq.value.trim().length >= 3) { act({a: "ask", x: wq.value}); wq.value = ""; } else toast("Savolni yozing (kamida 3 belgi)"); break;
+    case "w_oral": act({a: "ask", x: "🗣 (og'zaki savol)"}); break;
+    case "w_guess": var wg = $("#wg"); if (wg && wg.value.trim()) { act({a: "guess", x: wg.value}); wg.value = ""; } else toast("Taxminingizni yozing"); break;
+    case "w_pass": act({a: "pass"}); break;
+    case "w_ans": act({a: "ans", v: d("v")}); break;
+    case "wd_go": var wd = $("#wdin"); if (wd && wd.value.trim()) { act({a: "guess", x: wd.value}); wd.value = ""; } break;
+    case "r_go": var rx = $("#rx"); if (rx && rx.value.trim()) { act({a: "ans", x: rx.value}); rx.value = ""; } break;
+    case "mm_flip": act({a: "flip", i: +d("i")}); break;
+    case "rp_pick": act({a: "pick", c: d("c")}); break;
+    case "td_pick": act({a: "pick", k: d("k")}); break;
+    case "td_done": act({a: "done"}); break;
+    case "td_skip": act({a: "skip"}); break;
+    case "td_rate": act({a: "rate", v: +d("v")}); break;
   }
 });
 document.addEventListener("change", function (e) { if (e.target && e.target.id === "pc") { CV.color = e.target.value; if (CV.tool === "eraser") CV.tool = "brush"; render(); } });
@@ -28533,7 +29749,7 @@ def setup_hub_bot(dp: Dispatcher, token: str):
         else:
             await message.answer(
                 "🎮 <b>O'yinlar markazi</b>\n\n2–10 kishilik kreativ o'yinlar: 🃏 Durak (karta), 🐐 Bur-Kozel, 🌈 Uno, ♟ Shashka, ♚ Shaxmat, 🎲 Nard, 🧠 Viktorina, 🚢 Dengiz jangi, 🎭 Kim yolg'onchi, 🔪 Mafia, 🕵️ Josus, 🎨 Chizib top, 📖 Hikoya zanjiri, "
-                "😂 Kulgili javob, 🔴 4 ketma-ket, 🔤 So'z zanjiri.\n\n🎙 Xohlasangiz mikrofon orqali gaplashib o'ynang!", reply_markup=kb)
+                "😂 Kulgili javob, 🔴 4 ketma-ket, 🔤 So'z zanjiri, 🧩 Men kimman?, 🟩 Boshqotirma, 🔀 So'zni tuz, ➕ Tez hisob, 🎴 Xotira kartalari, ✊ Tosh-qaychi-qog'oz, 🎯 Haqiqat yoki jasorat.\n\n🎙 Xohlasangiz mikrofon orqali gaplashib o'ynang!", reply_markup=kb)
 
     @dp.message(Command("start"))
     async def hstart(message: Message):
