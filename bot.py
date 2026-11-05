@@ -1505,7 +1505,7 @@ def tariff_card_text(tid: str, t: dict) -> str:
 BOT_DESCRIPTIONS = {
     "hub": (
         "<i>Do'stlar bilan 2–10 kishilik kreativ o'yinlar: xona oching, kod yoki havola bilan chaqiring va birga o'ynang.</i>\n\n"
-        "🃏 Durak (karta), ♟ Shashka, ♚ Shaxmat, 🔪 Mafia, 🕵️ Josus, 🎨 Chizib top, 📖 Hikoya zanjiri, 😂 Kulgili javob, 🔴 4 ketma-ket, 🔤 So'z zanjiri.\n"
+        "🃏 Durak (karta), 🐐 Bur-Kozel, 🌈 Uno, ♟ Shashka, ♚ Shaxmat, 🎲 Nard, 🧠 Viktorina, 🚢 Dengiz jangi, 🎭 Kim yolg'onchi, 🔪 Mafia, 🕵️ Josus, 🎨 Chizib top, 📖 Hikoya zanjiri, 😂 Kulgili javob, 🔴 4 ketma-ket, 🔤 So'z zanjiri.\n"
         "💬 Chat va 🎙 mikrofon (xohlasa yoqadi, xohlasa o'chiradi) — hammasi o'yin ichida.\n\n"
         "📊 Admin panelda: statistika, ommaviy xabar, majburiy obuna, adminlar."
     ),
@@ -23430,6 +23430,7 @@ import time
 # 2-10 kishilik xonalar, yozma chat, ixtiyoriy mikrofon (WebRTC) va 7 ta kreativ o'yin.
 # Hamma holat xotirada (RAM) saqlanadi — xonalar vaqtinchalik.
 
+HUB_REACTS = ('🔥', '👏', '😂', '😮', '❤️', '👍', '😡', '🤔')
 HUB_ROOMS = {}          # (bot_id, kod) -> HubRoom
 HUB_MAX_ROOMS = 400
 
@@ -23468,11 +23469,43 @@ class HubGame:
     desc = ""
     min = 2
     max = 10
+    ai = False
 
     def __init__(self, room):
         self.room = room
         self.timers = {}
         self.over = False
+        self._jobs = set()
+
+    def run_ai(self, fn, args, cb, delay=0.7):
+        """Og'ir hisobni oqimda bajaradi, natijani cb(res) bilan qo'llaydi."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        async def job():
+            t0 = hub_now()
+            try:
+                res = await loop.run_in_executor(None, fn, *args)
+                rest = delay - (hub_now() - t0)
+                if rest > 0:
+                    await asyncio.sleep(rest)
+                if self.over or self.room.g is not self:
+                    return
+                cb(res)
+                self.room.changed()
+            except Exception as ex:
+                logging.warning(f"hub ai {self.key}: {ex}")
+        t = loop.create_task(job())
+        self._jobs.add(t)
+        t.add_done_callback(self._jobs.discard)
+
+    def maybe_ai(self):
+        pass
+
+    def bot_turn(self, uid):
+        return uid is not None and uid < 0
 
     # --- vaqt ---
     def after(self, tag, sec, fn):
@@ -24764,6 +24797,13 @@ class ShashkaGame(HubGame):
     key, name, emoji = "shashka", "Shashka", "♟"
     desc = "Ikki kishilik klassik shashka: majburiy urish, ketma-ket urish va damka (uchib yuradigan)."
     min, max = 2, 2
+    ai = True
+
+    def maybe_ai(self):
+        if self.phase == "play" and self.bot_turn(self.turn):
+            u, side = self.turn, self.side_of(self.turn)
+            self.run_ai(sh_search, ([r[:] for r in self.b], side, getattr(self.room, "level", 2)),
+                        lambda m: self.act(u, {"a": "mv", "p": m["p"]}), 0.8)
 
     def start(self):
         us = self.uids()
@@ -24779,6 +24819,7 @@ class ShashkaGame(HubGame):
         self.moves = sh_moves(self.b, 1)
         self.deadline = hub_ms(120)
         self.after("t", 120, self.timeout)
+        self.maybe_ai()
 
     def side_of(self, uid):
         return 1 if uid == self.white else -1
@@ -24833,6 +24874,7 @@ class ShashkaGame(HubGame):
             return self.end(None, "durang (30 yurish davomida urish bo'lmadi)")
         self.deadline = hub_ms(120)
         self.after("t", 120, self.timeout)
+        self.maybe_ai()
 
     def on_leave(self, uid):
         if self.phase == "play" and uid in (self.white, self.black):
@@ -25054,6 +25096,7 @@ class ChessGame(HubGame):
     key, name, emoji = "chess", "Shaxmat", "♚"
     desc = "Ikki kishilik klassik shaxmat: rokirovka, «o'tishda olish», piyoda almashishi, shoh va mat. Har kimga 10 daqiqa."
     min, max = 2, 2
+    ai = True
     CLOCK = 600000
     INC = 3000
 
@@ -25073,6 +25116,15 @@ class ChessGame(HubGame):
         self.legal = ch_legal(self.st)
         self.tstart = hub_now()
         self.after("t", self.CLOCK / 1000.0, self.flag)
+        self.maybe_ai()
+
+    def maybe_ai(self):
+        if self.phase != "play":
+            return
+        u = self.uid_of(self.st[1])
+        if self.bot_turn(u):
+            st = (self.st[0], self.st[1], self.st[2], self.st[3], self.st[4], self.st[5])
+            self.run_ai(ch_search, (st, getattr(self.room, "level", 2)), lambda m: self.act(u, {"a": "mv", "fr": [m[0], m[1]], "to": [m[2], m[3]], "p": m[4]}), 0.8)
 
     def uid_of(self, side):
         return self.white if side == "w" else self.black
@@ -25104,6 +25156,8 @@ class ChessGame(HubGame):
         if a == "resign":
             return self.end(self.uid_of("b" if side == "w" else "w"), "taslim bo'ldi")
         if a == "draw":
+            if self.bot_turn(self.uid_of("b" if side == "w" else "w")):
+                return self.room.toast(uid, "🤖 Kompyuter durangga rozi emas")
             self.offer = uid
             self.room.sys(f"🤝 {self.name_of(uid)} durang taklif qildi")
             return
@@ -25148,6 +25202,7 @@ class ChessGame(HubGame):
         if self.hist.count(self.hist[-1]) >= 3:
             return self.end(None, "uch marta takrorlanish (durang)")
         self.after("t", max(0.2, self.clock[nxt] / 1000.0), self.flag)
+        self.maybe_ai()
 
     def on_leave(self, uid):
         if self.phase == "play" and uid in (self.white, self.black):
@@ -25167,11 +25222,1402 @@ class ChessGame(HubGame):
                 "cap": self.cap, "offer": self.offer, "inc": self.INC}
 
 
-HUB_GAMES = {g.key: g for g in (DurakGame, ShashkaGame, ChessGame, MafiaGame, SpyGame, DrawGame, StoryGame, FunnyGame, C4Game, ChainGame)}
+# ---------------------------------------------------------------- 🐐 Bur-Kozel
+BK_PTS = {8: 11, 4: 10, 7: 4, 6: 3, 5: 2}            # r (6,7,8,9,10,J,Q,K,A) -> ochko
+BK_STR = {8: 8, 4: 7, 7: 6, 6: 5, 5: 4, 3: 3, 2: 2, 1: 1, 0: 0}   # kuch: A > 10 > K > Q > J > 9 > 8 > 7 > 6
+
+
+def bk_pts(c):
+    return BK_PTS.get(c % 9, 0)
+
+
+def bk_str(c):
+    return BK_STR[c % 9]
+
+
+class BurKozelGame(HubGame):
+    key, name, emoji = "burkozel", "Bur-Kozel", "🐐"
+    desc = "Mashhur karta o'yini: 36 ta karta, har kimga 4 tadan. Kozir, Bura, Molodka kombinatsiyalari. 12 jarima to'plagan yutqazadi."
+    min, max = 2, 4
+    LIMIT = 12
+    TURN = 40
+
+    # ---------- boshlash ----------
+    def start(self):
+        us = self.uids()
+        random.shuffle(us)
+        self.seats = us
+        self.gone = set()
+        self.pen = {u: 0 for u in us}
+        self.tot = {u: 0 for u in us}
+        self.dealno = 0
+        self.winner = None
+        self.reason = None
+        self.summary = []
+        self.note = ""
+        self.ti, self.order, self.tw, self.twpts = 0, [], None, 0
+        self.new_deal()
+
+    def low_limit(self):
+        n = len(self.seats)
+        return 31 if n == 2 else 21 if n == 3 else 15
+
+    def new_deal(self):
+        self.dealno += 1
+        cards = list(range(36))
+        random.shuffle(cards)
+        self.deck = cards
+        self.hands = {u: [] for u in self.seats}
+        for _ in range(4):
+            for u in self.seats:
+                self.hands[u].append(self.deck.pop(0))
+        self.trump_card = self.deck[-1]
+        self.trump = self.trump_card // 9
+        self.taken = {u: 0 for u in self.seats}
+        self.plays = []
+        self.best = 0
+        self.need = 0
+        self.note = ""
+        self.dealwin = []
+        self.phase = "play"
+        self.leader = self.seats[(self.dealno - 1) % len(self.seats)]
+        # kombinatsiyalar: Bura > Molodka > Moskva > To'rt uchlik
+        best = None
+        for u in self.seats:
+            h = self.hands[u]
+            kind = 0
+            if all(c // 9 == self.trump for c in h):
+                kind = 4
+            elif len({c // 9 for c in h}) == 1:
+                kind = 3
+            elif sum(1 for c in h if c % 9 == 8) == 3 and any(c // 9 == self.trump for c in h):
+                kind = 2
+            elif sum(1 for c in h if c % 9 == 8) == 4 or sum(1 for c in h if c % 9 == 4) == 4:
+                kind = 1
+            if kind:
+                sc = (kind, sum(bk_str(c) for c in h))
+                if best is None or sc > best[0]:
+                    best = (sc, u)
+        if best:
+            kind, u = best[0][0], best[1]
+            names = {4: "BURA (4 kozir)", 3: "MOLODKA (4 ta bir xil mast)", 2: "MOSKVA (3 tuz + kozir)", 1: "TO'RT UCHLIK"}
+            self.note = f"🔥 {self.name_of(u)}: {names[kind]}!"
+            if kind == 4:
+                self.reveal = {u: list(self.hands[u])}
+                return self.end_deal([u], "Bura")
+            self.leader = u
+        self.start_trick()
+
+    def alive(self):
+        return [u for u in self.seats if u in self.hands]
+
+    def start_trick(self):
+        al = self.alive()
+        i = al.index(self.leader) if self.leader in al else 0
+        al = al[i:] + al[:i]
+        self.order = [u for u in al if self.hands[u]]
+        self.ti = 0
+        self.plays = []
+        self.best = 0
+        self.need = 0
+        self.phase = "play"
+        self.arm()
+
+    def mover(self):
+        return self.order[self.ti] if self.phase == "play" and self.ti < len(self.order) else None
+
+    def arm(self):
+        u = self.mover()
+        if u in self.gone:
+            self.deadline = hub_ms(1)
+            self.after("t", 0.9, self.auto)
+        else:
+            self.deadline = hub_ms(self.TURN)
+            self.after("t", self.TURN, self.auto)
+
+    # ---------- yurish ----------
+    def beats(self, best, new):
+        s = {c // 9 for c in new}
+        if len(s) != 1:
+            return False
+        ns, bs = s.pop(), best[0] // 9
+        if ns == bs:
+            a = sorted(bk_str(c) for c in best)
+            b = sorted(bk_str(c) for c in new)
+            return all(y > x for x, y in zip(a, b))
+        return ns == self.trump and bs != self.trump
+
+    def auto(self):
+        u = self.mover()
+        if u is None:
+            return
+        h = sorted(self.hands[u], key=lambda c: ((c // 9 == self.trump), bk_pts(c), bk_str(c)))
+        n = 1 if self.ti == 0 else self.need
+        self.play(u, h[:n])
+
+    def play(self, u, cs):
+        if self.phase != "play" or u != self.mover():
+            return
+        try:
+            cs = [int(c) for c in cs]
+        except Exception:
+            return
+        h = self.hands[u]
+        if not cs or len(set(cs)) != len(cs) or any(c not in h for c in cs):
+            return self.room.toast(u, "Bunday kartalarni tashlab bo'lmaydi")
+        if self.ti == 0:
+            lim = min(len(self.hands[o]) for o in self.order if o != u)
+            if len(cs) > lim:
+                return self.room.toast(u, f"Raqibda {lim} ta karta qolgan — ko'pi bilan {lim} ta tashlang")
+            if len({c // 9 for c in cs}) != 1:
+                return self.room.toast(u, "Bir nechta karta tashlasangiz, hammasi bir xil mastda bo'lishi kerak")
+        elif len(cs) != self.need:
+            return self.room.toast(u, f"Aynan {self.need} ta karta tashlang")
+        for c in cs:
+            h.remove(c)
+        if self.ti == 0:
+            self.need = len(cs)
+            self.plays = [{"u": u, "cs": cs, "vis": True}]
+            self.best = 0
+        else:
+            b = self.beats(self.plays[self.best]["cs"], cs)
+            self.plays.append({"u": u, "cs": cs, "vis": b})
+            if b:
+                self.best = len(self.plays) - 1
+        self.ti += 1
+        if self.ti >= len(self.order):
+            return self.resolve()
+        self.arm()
+
+    def resolve(self):
+        w = self.plays[self.best]["u"]
+        pts = sum(bk_pts(c) for p in self.plays for c in p["cs"])
+        self.taken[w] += pts
+        self.tw = w
+        self.twpts = pts
+        self.phase = "trick"
+        self.deadline = hub_ms(2.8)
+        self.after("t", 2.8, self.after_trick)
+
+    def after_trick(self):
+        w = self.tw
+        al = self.alive()
+        i = al.index(w) if w in al else 0
+        for u in al[i:] + al[:i]:
+            while len(self.hands[u]) < 4 and self.deck:
+                self.hands[u].append(self.deck.pop(0))
+        self.plays = []
+        self.leader = w
+        if self.taken[w] >= 61:
+            return self.end_deal([w], "61 ochko")
+        if sum(1 for u in al if self.hands[u]) < 2:
+            top = max(self.taken.values())
+            ws = [u for u in al if self.taken[u] == top]
+            return self.end_deal(ws, "kartalar tugadi")
+        self.start_trick()
+
+    # ---------- taqsimot / match ----------
+    def end_deal(self, winners, why):
+        self.phase = "deal"
+        lim = self.low_limit()
+        self.summary = []
+        for u in self.seats:
+            pts = self.taken.get(u, 0)
+            if u in winners:
+                add = 0
+            else:
+                add = 6 if pts == 0 else (4 if pts <= lim else 2)
+            self.pen[u] += add
+            self.tot[u] += pts
+            self.summary.append({"u": u, "pts": pts, "add": add, "pen": self.pen[u], "w": u in winners})
+        self.dealwin = list(winners)
+        self.dealwhy = why
+        if any(self.pen[u] >= self.LIMIT for u in self.seats):
+            low = min(self.pen.values())
+            cand = [u for u in self.seats if self.pen[u] == low]
+            top = max(self.tot[u] for u in cand)
+            ws = [u for u in cand if self.tot[u] == top]
+            self.phase = "over"
+            self.over = True
+            self.cancel()
+            self.winner = ws[0] if len(ws) == 1 else None
+            self.reason = "12 jarimaga yetgan yutqazdi"
+            self.room.win(ws)
+            self.room.after_game()
+            return
+        self.deadline = hub_ms(7)
+        self.after("t", 7, self.new_deal)
+
+    # ---------- interfeys ----------
+    def act(self, uid, m):
+        if m.get("a") == "play" and isinstance(m.get("cs"), list):
+            self.play(uid, m["cs"][:4])
+
+    def on_leave(self, uid):
+        if uid not in self.seats or self.phase == "over":
+            return
+        self.gone.add(uid)
+        live = [u for u in self.seats if u not in self.gone and u in self.room.players]
+        if len(live) < 2:
+            self.phase = "over"
+            self.over = True
+            self.cancel()
+            self.winner = live[0] if live else None
+            self.reason = "raqiblar chiqib ketdi"
+            if live:
+                self.room.win(live)
+            self.room.after_game()
+        elif self.mover() == uid:
+            self.arm()
+
+    def view(self, uid):
+        hand = sorted(self.hands.get(uid, []), key=lambda c: (c // 9, bk_str(c)))
+        seats = [{"u": u, "cnt": len(self.hands.get(u, [])), "pen": self.pen[u], "gone": u in self.gone} for u in self.seats]
+        table = [{"u": p["u"], "n": len(p["cs"]), "cs": (p["cs"] if (p["vis"] or p["u"] == uid or self.phase in ("deal", "over")) else None)}
+                 for p in self.plays]
+        v = {"phase": self.phase, "seats": seats, "hand": hand, "trump": self.trump, "tcard": self.trump_card,
+             "deckN": len(self.deck), "table": table, "turn": self.mover(), "need": self.need if self.ti else 0,
+             "lead": bool(self.phase == "play" and self.ti == 0),
+             "maxlead": min([len(self.hands[o]) for o in self.alive() if o != uid] or [4]), "deadline": getattr(self, "deadline", 0),
+             "mypts": self.taken.get(uid, 0), "dealno": self.dealno, "note": self.note, "limit": self.LIMIT,
+             "tw": getattr(self, "tw", None) if self.phase == "trick" else None, "twpts": getattr(self, "twpts", 0),
+             "winner": self.winner, "reason": self.reason}
+        if self.phase in ("deal", "over"):
+            v["summary"] = self.summary
+            v["dealwin"] = self.dealwin
+            v["why"] = getattr(self, "dealwhy", "")
+            v["reveal"] = getattr(self, "reveal", {}) if self.dealwhy == "Bura" else {}
+        return v
+
+
+# ---------------------------------------------------------------- 🤖 Kompyuter (shaxmat va shashka uchun)
+HUB_BOT = -1
+
+
+class _AITimeout(Exception):
+    pass
+
+
+CH_V = {"p": 100, "n": 320, "b": 330, "r": 500, "q": 900, "k": 0}
+
+
+def ch_eval(b):
+    s = 0
+    for r in range(8):
+        for c in range(8):
+            p = b[r][c]
+            if p == ".":
+                continue
+            t = p.lower()
+            v = CH_V[t]
+            if t == "p":
+                v += ((6 - r) if p.isupper() else (r - 1)) * 6
+                if c in (3, 4):
+                    v += 8
+            elif t in "nb":
+                v += int(10 - (abs(r - 3.5) + abs(c - 3.5)) * 2.5)
+            s += v if p.isupper() else -v
+    return s
+
+
+def ch_search(st, level):
+    """Eng yaxshi yurishni qaytaradi (fr, fc, tr, tc, promo)."""
+    limit = {1: 0.3, 2: 1.2, 3: 3.0}.get(level, 1.2)
+    maxd = {1: 1, 2: 3, 3: 6}.get(level, 3)
+    t0 = time.time()
+
+    def order(ms, b):
+        def k(m):
+            tgt = b[m[2]][m[3]]
+            return -(CH_V[tgt.lower()] * 10 - CH_V[b[m[0]][m[1]].lower()] // 10) if tgt != "." else (0 if not m[4] else -50)
+        return sorted(ms, key=k)
+
+    def q(s, alpha, beta, d):
+        ev = ch_eval(s[0])
+        stand = ev if s[1] == "w" else -ev
+        if d == 0:
+            return stand
+        if stand >= beta:
+            return stand
+        alpha = max(alpha, stand)
+        b = s[0]
+        for m in order([m for m in ch_legal(s) if b[m[2]][m[3]] != "."], b):
+            if time.time() - t0 > limit:
+                raise _AITimeout
+            sc = -q(ch_apply(s, m), -beta, -alpha, d - 1)
+            if sc >= beta:
+                return sc
+            alpha = max(alpha, sc)
+        return alpha
+
+    def nm(s, d, alpha, beta, ply):
+        if time.time() - t0 > limit:
+            raise _AITimeout
+        legal = ch_legal(s)
+        if not legal:
+            return (-99000 + ply) if ch_in_check(s) else 0
+        if d == 0:
+            return q(s, alpha, beta, 3)
+        best = -10 ** 9
+        for m in order(legal, s[0]):
+            sc = -nm(ch_apply(s, m), d - 1, -beta, -alpha, ply + 1)
+            if sc > best:
+                best = sc
+            alpha = max(alpha, sc)
+            if alpha >= beta:
+                break
+        return best
+
+    legal = ch_legal(st)
+    if len(legal) == 1:
+        return legal[0]
+    ordered = order(legal, st[0])
+    best = ordered[0]
+    if level <= 1:
+        scored = []
+        try:
+            for m in ordered:
+                scored.append((-nm(ch_apply(st, m), 0, -10 ** 9, 10 ** 9, 1) + random.randint(-70, 70), m))
+        except _AITimeout:
+            pass
+        return max(scored, key=lambda x: x[0])[1] if scored else best
+    for d in range(1, maxd + 1):
+        try:
+            alpha, cur = -10 ** 9, None
+            for m in ordered:
+                sc = -nm(ch_apply(st, m), d - 1, -10 ** 9, -alpha, 1)
+                if sc > alpha:
+                    alpha, cur = sc, m
+            if cur:
+                best = cur
+                ordered = [cur] + [m for m in ordered if m != cur]
+            if alpha > 90000:
+                break
+        except _AITimeout:
+            break
+    return best
+
+
+def sh_do(b, mv, side):
+    nb = [r[:] for r in b]
+    p = mv["p"]
+    (r0, c0), (r1, c1) = p[0], p[-1]
+    piece = nb[r0][c0]
+    nb[r0][c0] = 0
+    for r, c in mv["c"]:
+        nb[r][c] = 0
+    if abs(piece) == 1 and r1 == (0 if side == 1 else 7):
+        piece = 2 * side
+    nb[r1][c1] = piece
+    return nb
+
+
+def sh_eval(b, side):
+    s = 0
+    for r in range(8):
+        for c in range(8):
+            v = b[r][c]
+            if not v:
+                continue
+            if abs(v) == 2:
+                x = 320
+            else:
+                x = 100 + ((7 - r) if v > 0 else r) * 4
+                if c in (0, 7):
+                    x += 3
+            s += x if v > 0 else -x
+    return s * side
+
+
+def sh_search(b, side, level):
+    limit = {1: 0.25, 2: 1.0, 3: 2.5}.get(level, 1.0)
+    maxd = {1: 2, 2: 5, 3: 9}.get(level, 5)
+    t0 = time.time()
+
+    def nm(bd, sd, d, alpha, beta):
+        if time.time() - t0 > limit:
+            raise _AITimeout
+        ms = sh_moves(bd, sd)
+        if not ms:
+            return -90000 - d
+        if d == 0:
+            return sh_eval(bd, sd)
+        best = -10 ** 9
+        for m in ms:
+            sc = -nm(sh_do(bd, m, sd), -sd, d - 1, -beta, -alpha)
+            if sc > best:
+                best = sc
+            alpha = max(alpha, sc)
+            if alpha >= beta:
+                break
+        return best
+
+    moves = sh_moves(b, side)
+    if len(moves) == 1:
+        return moves[0]
+    best = random.choice(moves)
+    if level <= 1 and random.random() < 0.3:
+        return best
+    for d in range(1, maxd + 1):
+        try:
+            alpha, cur = -10 ** 9, None
+            for m in moves:
+                sc = -nm(sh_do(b, m, side), -side, d - 1, -10 ** 9, -alpha) + random.randint(0, 2 if level > 1 else 25)
+                if sc > alpha:
+                    alpha, cur = sc, m
+            if cur:
+                best = cur
+                moves = [cur] + [m for m in moves if m is not cur]
+        except _AITimeout:
+            break
+    return best
+
+
+# ---------------------------------------------------------------- 🎲 Nard (Backgammon)
+def bg_start():
+    pts = [0] * 26
+    for p, n in ((24, 2), (13, 5), (8, 3), (6, 5)):
+        pts[p] = n
+    for p, n in ((1, 2), (12, 5), (17, 3), (19, 5)):
+        pts[p] = -n
+    return pts
+
+
+def bg_single(pts, bar, side, die):
+    """Bitta zar bilan mumkin bo'lgan yurishlar: (f, t). f=0 — baradan, t=0 — chiqarish."""
+    i = 0 if side == 1 else 1
+    res = []
+    if bar[i]:
+        t = 25 - die if side == 1 else die
+        if pts[t] * side >= -1:
+            res.append((0, t))
+        return res
+    home = all(pts[p] * side <= 0 for p in (range(7, 25) if side == 1 else range(1, 19)))
+    for p in range(1, 25):
+        if pts[p] * side <= 0:
+            continue
+        t = p - die if side == 1 else p + die
+        if 1 <= t <= 24:
+            if pts[t] * side >= -1:
+                res.append((p, t))
+        elif home:
+            if t == (0 if side == 1 else 25):
+                res.append((p, 0))
+            else:
+                far = range(p + 1, 25) if side == 1 else range(1, p)
+                if all(pts[q] * side <= 0 for q in far):
+                    res.append((p, 0))
+    return res
+
+
+def bg_apply(pts, bar, off, side, f, t):
+    pts, bar, off = pts[:], bar[:], off[:]
+    i = 0 if side == 1 else 1
+    if f == 0:
+        bar[i] -= 1
+    else:
+        pts[f] -= side
+    if t == 0:
+        off[i] += 1
+    else:
+        if pts[t] * side == -1:
+            pts[t] = 0
+            bar[1 - i] += 1
+        pts[t] += side
+    return pts, bar, off
+
+
+def bg_depth(pts, bar, off, side, dice, memo):
+    if not dice:
+        return 0
+    key = (tuple(pts), tuple(bar), tuple(off), side, tuple(sorted(dice)))
+    if key in memo:
+        return memo[key]
+    best = 0
+    for d in set(dice):
+        rest = list(dice)
+        rest.remove(d)
+        for f, t in bg_single(pts, bar, side, d):
+            p2, b2, o2 = bg_apply(pts, bar, off, side, f, t)
+            v = 1 + bg_depth(p2, b2, o2, side, rest, memo)
+            if v > best:
+                best = v
+                if best == len(dice):
+                    memo[key] = best
+                    return best
+    memo[key] = best
+    return best
+
+
+def bg_legal(pts, bar, off, side, dice):
+    """Hozir qo'yish mumkin bo'lgan (f, t, die) lar — «imkon qadar ko'p zar ishlatish» qoidasi bilan."""
+    if not dice:
+        return []
+    memo = {}
+    cand = []
+    for d in set(dice):
+        rest = list(dice)
+        rest.remove(d)
+        for f, t in bg_single(pts, bar, side, d):
+            p2, b2, o2 = bg_apply(pts, bar, off, side, f, t)
+            cand.append((f, t, d, 1 + bg_depth(p2, b2, o2, side, rest, memo)))
+    if not cand:
+        return []
+    mx = max(x[3] for x in cand)
+    cand = [x for x in cand if x[3] == mx]
+    if mx == 1 and len(set(dice)) == 2:
+        hi = max(dice)
+        if any(x[2] == hi for x in cand):
+            cand = [x for x in cand if x[2] == hi]
+    return [(f, t, d) for f, t, d, _ in cand]
+
+
+class NardGame(HubGame):
+    key, name, emoji = "nard", "Nard", "🎲"
+    desc = "Klassik nard (Backgammon): zar tashlang, 15 ta donangizni birinchi bo'lib uyingizga olib chiqing."
+    min, max = 2, 2
+
+    def start(self):
+        us = self.uids()
+        random.shuffle(us)
+        self.white, self.black = us[0], us[1]
+        self.pts, self.bar, self.off = bg_start(), [0, 0], [0, 0]
+        self.winner = None
+        self.reason = None
+        self.last = []
+        self.nomove = False
+        self.lastroll = None
+        self.dice, self.roll = [], []
+        d1, d2 = random.randint(1, 6), random.randint(1, 6)
+        while d1 == d2:
+            d1, d2 = random.randint(1, 6), random.randint(1, 6)
+        self.side = 1 if d1 > d2 else -1
+        self.dice, self.roll = [d1, d2], [d1, d2]
+        self.phase = "move"
+        self.legal = bg_legal(self.pts, self.bar, self.off, self.side, self.dice)
+        self.arm()
+
+    def uid_of(self, side):
+        return self.white if side == 1 else self.black
+
+    def arm(self):
+        secs = 45 if self.phase == "roll" else 90
+        self.deadline = hub_ms(secs)
+        self.after("t", secs, self.timeout)
+
+    def timeout(self):
+        if self.phase == "roll":
+            self.do_roll()
+        n = 0
+        while self.phase == "move" and self.legal and n < 8:
+            f, t, d = random.choice(self.legal)
+            self.do_move(f, t, d)
+            n += 1
+
+    def do_roll(self):
+        a, b = random.randint(1, 6), random.randint(1, 6)
+        self.roll = [a, b]
+        self.dice = [a] * 4 if a == b else [a, b]
+        self.phase = "move"
+        self.last = []
+        self.legal = bg_legal(self.pts, self.bar, self.off, self.side, self.dice)
+        if not self.legal:
+            self.nomove = True
+            self.deadline = hub_ms(2)
+            self.after("t", 2.2, self.next_turn)
+        else:
+            self.nomove = False
+            self.arm()
+
+    def next_turn(self):
+        if self.phase == "over":
+            return
+        self.lastroll = list(self.roll)
+        self.side = -self.side
+        self.phase = "roll"
+        self.dice, self.legal, self.nomove = [], [], False
+        self.arm()
+
+    def do_move(self, f, t, d):
+        i = 0 if self.side == 1 else 1
+        self.pts, self.bar, self.off = bg_apply(self.pts, self.bar, self.off, self.side, f, t)
+        self.dice.remove(d)
+        self.last = (self.last or []) + [[f, t]]
+        if self.off[i] >= 15:
+            loser = self.off[1 - i]
+            return self.end(self.uid_of(self.side), "15 ta dona chiqarildi" + (" — MARS! 🔥" if loser == 0 else ""))
+        self.legal = bg_legal(self.pts, self.bar, self.off, self.side, self.dice) if self.dice else []
+        if not self.legal:
+            self.next_turn()
+        else:
+            self.arm()
+
+    def end(self, winner, reason):
+        self.phase = "over"
+        self.over = True
+        self.cancel()
+        self.winner = winner
+        self.reason = reason
+        if winner:
+            self.room.win([winner])
+        self.room.after_game()
+
+    def act(self, uid, m):
+        if self.phase == "over" or uid not in (self.white, self.black):
+            return
+        a = m.get("a")
+        if a == "resign":
+            return self.end(self.black if uid == self.white else self.white, "taslim bo'ldi")
+        if uid != self.uid_of(self.side):
+            return
+        if a == "roll" and self.phase == "roll":
+            return self.do_roll()
+        if a == "mv" and self.phase == "move":
+            try:
+                f, t = int(m.get("f")), int(m.get("to"))
+            except Exception:
+                return
+            c = sorted([x for x in self.legal if x[0] == f and x[1] == t], key=lambda x: x[2])
+            if not c:
+                return self.room.toast(uid, "Bunday yurish mumkin emas")
+            self.do_move(c[0][0], c[0][1], c[0][2])
+
+    def on_leave(self, uid):
+        if self.phase != "over" and uid in (self.white, self.black):
+            self.end(self.black if uid == self.white else self.white, "raqib chiqib ketdi")
+
+    def view(self, uid):
+        mover = self.uid_of(self.side)
+        return {"phase": self.phase, "pts": self.pts[1:25], "bar": self.bar, "off": self.off, "white": self.white,
+                "black": self.black, "turn": mover, "dice": self.dice, "roll": self.roll if self.phase != "roll" else [],
+                "lastroll": self.lastroll, "nomove": self.nomove,
+                "legal": [list(x) for x in self.legal] if (uid == mover and self.phase == "move") else [],
+                "last": self.last, "deadline": self.deadline, "winner": self.winner, "reason": self.reason}
+
+
+# ---------------------------------------------------------------- 🃏 Uno
+UNO_COL = "RYGB"
+
+
+def uno_deck():
+    d = []
+    for c in UNO_COL:
+        d.append(c + "0")
+        for v in "123456789srd":          # s — o'tkazish, r — teskari, d — +2
+            d += [c + v, c + v]
+    d += ["Wx"] * 4 + ["Wf"] * 4          # Wx — rang tanlash, Wf — +4
+    random.shuffle(d)
+    return d
+
+
+class UnoGame(HubGame):
+    key, name, emoji = "uno", "Uno", "🌈"
+    desc = "Rangli kartalar: bir xil rang yoki raqamni tashlang. +2, +4, teskari yurish, o'tkazish. Birinchi bo'lib kartalarni tugatgan yutadi."
+    min, max = 2, 8
+    TURN = 30
+
+    def start(self):
+        us = self.uids()
+        random.shuffle(us)
+        self.seats = us
+        self.deck = uno_deck()
+        self.hands = {u: [self.deck.pop() for _ in range(7)] for u in us}
+        while True:
+            c = self.deck.pop()
+            if c[1] in "0123456789":
+                break
+            self.deck.insert(0, c)
+        self.disc = [c]
+        self.color = c[0]
+        self.dir = 1
+        self.ti = 0
+        self.drawn = None
+        self.phase = "play"
+        self.winner = None
+        self.log = []
+        self.say("🌈 O'yin boshlandi!")
+        self.arm()
+
+    def say(self, t):
+        self.log = (self.log + [t])[-3:]
+
+    def cur(self):
+        return self.seats[self.ti]
+
+    def arm(self):
+        self.deadline = hub_ms(self.TURN)
+        self.after("t", self.TURN, self.timeout)
+
+    def timeout(self):
+        u = self.cur()
+        if self.drawn is None:
+            self.draw_cards(u, 1)
+            self.say(f"⏱ {self.name_of(u)} vaqtida yurmadi — karta oldi")
+        self.advance(1)
+
+    def draw_cards(self, u, n):
+        got = []
+        for _ in range(n):
+            if not self.deck:
+                top = self.disc.pop()
+                self.deck = self.disc
+                random.shuffle(self.deck)
+                self.disc = [top]
+                if not self.deck:
+                    break
+            c = self.deck.pop()
+            self.hands[u].append(c)
+            got.append(c)
+        return got
+
+    def playable(self, c):
+        top = self.disc[-1]
+        return c[0] == "W" or c[0] == self.color or c[1] == top[1]
+
+    def advance(self, steps):
+        n = len(self.seats)
+        self.ti = (self.ti + self.dir * steps) % n
+        self.drawn = None
+        self.arm()
+
+    def act(self, uid, m):
+        if self.phase != "play" or uid != self.cur():
+            return
+        a = m.get("a")
+        h = self.hands[uid]
+        if a == "draw":
+            if self.drawn is not None:
+                return
+            got = self.draw_cards(uid, 1)
+            if got and self.playable(got[0]):
+                self.drawn = len(h) - 1
+                self.say(f"🎴 {self.name_of(uid)} karta oldi")
+                self.arm()
+            else:
+                self.say(f"🎴 {self.name_of(uid)} karta oldi va o'tkazdi")
+                self.advance(1)
+        elif a == "pass":
+            if self.drawn is None:
+                return
+            self.advance(1)
+        elif a == "play":
+            try:
+                i = int(m.get("i"))
+            except Exception:
+                return
+            if not (0 <= i < len(h)) or (self.drawn is not None and i != self.drawn):
+                return
+            c = h[i]
+            if not self.playable(c):
+                return self.room.toast(uid, "Bu kartani tashlab bo'lmaydi")
+            col = str(m.get("col") or "")
+            if c[0] == "W" and col not in UNO_COL:
+                return self.room.toast(uid, "Rang tanlang")
+            h.pop(i)
+            self.disc.append(c)
+            self.color = col if c[0] == "W" else c[0]
+            nm = self.name_of(uid)
+            if not h:
+                return self.finish(uid)
+            if len(h) == 1:
+                self.say(f"🔔 {nm}: UNO!")
+                self.room.sys(f"🔔 {nm}: UNO!")
+            v = c[1]
+            nxt = self.seats[(self.ti + self.dir) % len(self.seats)]
+            if v == "s":
+                self.say(f"🚫 {nm} → {self.name_of(nxt)} o'tkazdi")
+                return self.advance(2)
+            if v == "r":
+                if len(self.seats) == 2:
+                    self.say(f"🔄 {nm} yana yuradi")
+                    return self.advance(0)
+                self.dir = -self.dir
+                self.say(f"🔄 {nm}: teskari yo'nalish")
+                return self.advance(1)
+            if v == "d":
+                self.draw_cards(nxt, 2)
+                self.say(f"➕2 {nm} → {self.name_of(nxt)} 2 ta oldi")
+                return self.advance(2)
+            if v == "f":
+                self.draw_cards(nxt, 4)
+                self.say(f"➕4 {nm} → {self.name_of(nxt)} 4 ta oldi")
+                return self.advance(2)
+            self.say(f"🃏 {nm} tashladi")
+            self.advance(1)
+
+    def finish(self, uid):
+        self.phase = "over"
+        self.over = True
+        self.cancel()
+        self.winner = uid
+        self.room.win([uid])
+        self.room.after_game()
+
+    def on_leave(self, uid):
+        if uid not in self.seats or self.phase != "play":
+            return
+        i = self.seats.index(uid)
+        self.deck = self.hands.pop(uid, []) + self.deck
+        random.shuffle(self.deck)
+        self.seats.remove(uid)
+        if len(self.seats) < 2:
+            return self.finish(self.seats[0]) if self.seats else None
+        if i < self.ti or (self.dir == -1 and i <= self.ti):
+            self.ti -= 1
+        if i == self.ti or True:
+            self.ti %= len(self.seats)
+        if self.dir == -1 and i == self.ti + 1:
+            pass
+        self.drawn = None
+        self.arm()
+
+    def view(self, uid):
+        hand = self.hands.get(uid, [])
+        mine = self.phase == "play" and uid == self.cur()
+        ok = [i for i, c in enumerate(hand) if mine and self.playable(c) and (self.drawn is None or i == self.drawn)]
+        return {"phase": self.phase, "hand": hand, "ok": ok, "top": self.disc[-1], "color": self.color, "dir": self.dir,
+                "seats": [{"u": u, "cnt": len(self.hands.get(u, []))} for u in self.seats], "turn": self.cur() if self.phase == "play" else None,
+                "deckN": len(self.deck), "drawn": self.drawn, "log": self.log, "deadline": self.deadline, "winner": self.winner}
+
+
+# ---------------------------------------------------------------- 🧠 Viktorina
+HUB_GEMINI = None        # async fn(prompt) -> str | None  (bot.py da ulanadi)
+HUB_NOTIFY = None        # async fn(bid, uid, text, code) -> bool
+
+QZ_TOPICS = ["Aralash", "O'zbekiston", "Tarix", "Geografiya", "Fan va texnika", "Sport", "Kino va musiqa"]
+QZ_BANK = {
+    "O'zbekiston": [
+        ("O'zbekiston poytaxti qaysi shahar?", ["Toshkent", "Samarqand", "Buxoro", "Xiva"], 0),
+        ("Registon maydoni qaysi shaharda joylashgan?", ["Samarqand", "Toshkent", "Qarshi", "Namangan"], 0),
+        ("«Boburnoma» asarining muallifi kim?", ["Zahiriddin Muhammad Bobur", "Alisher Navoiy", "Amir Temur", "Mirzo Ulug'bek"], 0),
+        ("«Xamsa» asarini kim yozgan?", ["Alisher Navoiy", "Abdulla Qodiriy", "Cho'lpon", "Mashrab"], 0),
+        ("Navro'z bayrami qaysi faslda nishonlanadi?", ["Bahor", "Yoz", "Kuz", "Qish"], 0),
+        ("O'zbekiston mustaqilligi qaysi yilda e'lon qilingan?", ["1991", "1989", "1993", "1995"], 0),
+        ("O'zbekiston pul birligi nima?", ["So'm", "Tanga", "Rubl", "Dirham"], 0),
+        ("Mirzo Ulug'bek qaysi fan bilan mashhur?", ["Astronomiya", "Kimyo", "Tibbiyot", "Geologiya"], 0),
+        ("«Alpomish» nima?", ["Xalq dostoni", "Roman", "She'riy to'plam", "Drama"], 0),
+        ("Buxoroda joylashgan mashhur minora qaysi?", ["Kalon minorasi", "Eyfel minorasi", "Pisa minorasi", "Ostankino"], 0),
+    ],
+    "Tarix": [
+        ("Ikkinchi jahon urushi qaysi yilda tugagan?", ["1945", "1939", "1941", "1950"], 0),
+        ("Birinchi jahon urushi qaysi yilda boshlangan?", ["1914", "1918", "1905", "1920"], 0),
+        ("Kolumb Amerikaga qaysi yilda yetib borgan?", ["1492", "1453", "1519", "1607"], 0),
+        ("Misr ehromlari asosan kimlar uchun qurilgan?", ["Fir'avnlar", "Dehqonlar", "Savdogarlar", "Askarlar"], 0),
+        ("Amir Temur qaysi yilda tug'ilgan?", ["1336", "1220", "1405", "1370"], 0),
+        ("Buyuk Ipak yo'li nimani bog'lagan?", ["Sharq va G'arbni", "Faqat Hindistonni", "Afrika va Amerikani", "Qutblarni"], 0),
+        ("Al-Xorazmiy qaysi fanga asos solgan?", ["Algebra", "Biologiya", "Kimyo", "Geografiya"], 0),
+    ],
+    "Geografiya": [
+        ("Dunyodagi eng katta okean qaysi?", ["Tinch okeani", "Atlantika", "Hind okeani", "Shimoliy Muz okeani"], 0),
+        ("Eng baland tog' cho'qqisi qaysi?", ["Everest (Jomolungma)", "Elbrus", "Kilimanjaro", "Monblan"], 0),
+        ("Misr qaysi qit'ada joylashgan?", ["Afrika", "Osiyo", "Yevropa", "Avstraliya"], 0),
+        ("Maydoni bo'yicha eng katta davlat qaysi?", ["Rossiya", "Kanada", "Xitoy", "AQSH"], 0),
+        ("Yaponiya poytaxti qaysi shahar?", ["Tokio", "Osaka", "Kioto", "Seul"], 0),
+        ("Fransiya poytaxti qaysi shahar?", ["Parij", "Lion", "Marsel", "Nitssa"], 0),
+        ("Amazonka daryosi qaysi qit'ada?", ["Janubiy Amerika", "Afrika", "Osiyo", "Yevropa"], 0),
+        ("Turkiya poytaxti qaysi shahar?", ["Anqara", "Istanbul", "Izmir", "Bursa"], 0),
+        ("Avstraliya poytaxti qaysi shahar?", ["Kanberra", "Sidney", "Melburn", "Pert"], 0),
+    ],
+    "Fan va texnika": [
+        ("Suvning kimyoviy formulasi qaysi?", ["H2O", "CO2", "O2", "NaCl"], 0),
+        ("Quyosh tizimidagi eng katta sayyora qaysi?", ["Yupiter", "Saturn", "Yer", "Neptun"], 0),
+        ("Quyoshga eng yaqin sayyora qaysi?", ["Merkuriy", "Venera", "Mars", "Yer"], 0),
+        ("«Qizil sayyora» deb qaysi sayyora ataladi?", ["Mars", "Venera", "Yupiter", "Uran"], 0),
+        ("Kattalar skeletida nechta suyak bor?", ["206", "150", "300", "180"], 0),
+        ("Havoning asosiy qismini qaysi gaz tashkil qiladi?", ["Azot", "Kislorod", "Vodorod", "Karbonat angidrid"], 0),
+        ("O'simliklar fotosintez uchun qaysi gazni yutadi?", ["Karbonat angidrid", "Kislorod", "Azot", "Geliy"], 0),
+        ("Olmos qaysi kimyoviy elementdan iborat?", ["Uglerod", "Temir", "Kremniy", "Oltin"], 0),
+        ("Koinotga uchgan birinchi inson kim?", ["Yuriy Gagarin", "Nil Armstrong", "Alan Shepard", "German Titov"], 0),
+        ("Telefonni ixtiro qilgan olim kim?", ["Aleksandr Bell", "Tomas Edison", "Nikola Tesla", "Gugliyelmo Markoni"], 0),
+    ],
+    "Sport": [
+        ("Futbolda maydonda bir jamoadan nechta o'yinchi bo'ladi?", ["11", "9", "10", "12"], 0),
+        ("Olimpiya o'yinlari necha yilda bir marta o'tkaziladi?", ["4", "2", "3", "5"], 0),
+        ("Basketbolda maydonda bir jamoadan nechta o'yinchi bo'ladi?", ["5", "6", "7", "4"], 0),
+        ("Shaxmatda eng kuchli dona qaysi?", ["Farzin (ferz)", "Fil", "Ot", "Rux"], 0),
+        ("2022-yil Jahon chempionatida kim g'olib bo'ldi?", ["Argentina", "Fransiya", "Braziliya", "Xorvatiya"], 0),
+        ("Tennisda nechta «Katta dubulg'a» (Grand Slam) turniri bor?", ["4", "3", "5", "6"], 0),
+    ],
+    "Kino va musiqa": [
+        ("«Titanik» filmining rejissyori kim?", ["Jeyms Kameron", "Stiven Spilberg", "Kristofer Nolan", "Kventin Tarantino"], 0),
+        ("«Garri Potter» kitoblarini kim yozgan?", ["J. K. Rouling", "Tolkin", "K. S. Lyuis", "Stiven King"], 0),
+        ("Mikki Mausni kim yaratgan?", ["Uolt Disney", "Valter Lantz", "Maks Fleysher", "Jorj Lukas"], 0),
+        ("Klassik gitarada nechta tor bor?", ["6", "4", "5", "8"], 0),
+        ("Betxoven kim bo'lgan?", ["Bastakor", "Rassom", "Yozuvchi", "Haykaltarosh"], 0),
+    ],
+}
+
+
+def qz_fallback(topic, n=10):
+    pool = []
+    cats = list(QZ_BANK) if topic not in QZ_BANK else [topic]
+    for c in cats:
+        pool += QZ_BANK[c]
+    random.shuffle(pool)
+    out = []
+    for q, o, a in pool[:n]:
+        idx = list(range(4))
+        random.shuffle(idx)
+        out.append({"q": q, "o": [o[i] for i in idx], "a": idx.index(a)})
+    return out
+
+
+def qz_parse(txt):
+    try:
+        s, e = txt.find("["), txt.rfind("]")
+        arr = json.loads(txt[s:e + 1])
+    except Exception:
+        return []
+    out = []
+    for x in arr if isinstance(arr, list) else []:
+        try:
+            q, o, a = str(x["q"]).strip()[:200], [str(i).strip()[:60] for i in x["o"]], int(x["a"])
+            if q and len(o) == 4 and len(set(o)) == 4 and all(o) and 0 <= a < 4:
+                out.append({"q": q, "o": o, "a": a})
+        except Exception:
+            continue
+    return out
+
+
+class QuizGame(HubGame):
+    key, name, emoji = "quiz", "Viktorina", "🧠"
+    desc = "Savollarga tez va to'g'ri javob bering! Mavzuni xona egasi tanlaydi, savollarni sun'iy intellekt tuzadi."
+    min, max = 2, 10
+    NQ = 10
+    TQ = 15
+
+    def start(self):
+        self.score = {u: 0 for u in self.uids()}
+        self.phase = "topic"
+        self.qs, self.qi = [], -1
+        self.ans = {}
+        self.delta = {}
+        self.winner = None
+        self.winners = []
+        self.topic = "Aralash"
+        self.deadline = hub_ms(15)
+        self.after("t", 15, lambda: self.pick(random.randrange(len(QZ_TOPICS))))
+
+    def pick(self, k):
+        if self.phase != "topic":
+            return
+        self.topic = QZ_TOPICS[k]
+        self.phase = "load"
+        self.cancel()
+        self.deadline = hub_ms(25)
+        self.after("t", 28, self.use_fallback)         # zaxira
+        try:
+            asyncio.get_running_loop().create_task(self.fetch())
+        except RuntimeError:
+            self.use_fallback()
+
+    async def fetch(self):
+        qs = []
+        if HUB_GEMINI:
+            t = "" if self.topic == "Aralash" else f"Mavzu: {self.topic}. "
+            prompt = (f"Viktorina uchun {self.NQ} ta qiziqarli, aniq javobli savol tuz. {t}"
+                      "Savollar o'zbek tilida (lotin), turli qiyinlikda (oson va o'rta), faqat 100% ishonchli faktlar. "
+                      "Har birida 4 ta variant bo'lsin, faqat bittasi to'g'ri; to'g'ri javob o'rni (0-3) aralash bo'lsin. "
+                      'FAQAT JSON massiv qaytar, boshqa matn va ``` belgilarsiz: [{"q":"savol","o":["a","b","c","d"],"a":0}]')
+            try:
+                qs = qz_parse(await asyncio.wait_for(HUB_GEMINI(prompt), 24) or "")
+            except Exception as ex:
+                logging.info(f"quiz gemini: {ex}")
+        if self.over or self.phase != "load":
+            return
+        self.use_fallback(qs)
+
+    def use_fallback(self, qs=None):
+        if self.phase != "load":
+            return
+        qs = list(qs or [])
+        if len(qs) < self.NQ:
+            have = {q["q"] for q in qs}
+            qs += [q for q in qz_fallback(self.topic, self.NQ) if q["q"] not in have][:self.NQ - len(qs)]
+        self.qs = qs[:self.NQ]
+        self.cancel()
+        self.next_q()
+        self.room.changed()
+
+    def next_q(self):
+        self.qi += 1
+        if self.qi >= len(self.qs):
+            return self.finish()
+        self.phase = "q"
+        self.ans = {}
+        self.qstart = hub_now()
+        self.deadline = hub_ms(self.TQ)
+        self.after("t", self.TQ, self.reveal)
+
+    def act(self, uid, m):
+        a = m.get("a")
+        if a == "topic" and self.phase == "topic" and uid == self.room.host:
+            try:
+                self.pick(int(m.get("k")))
+            except Exception:
+                pass
+        elif a == "ans" and self.phase == "q" and uid in self.score and uid not in self.ans:
+            try:
+                k = int(m.get("k"))
+            except Exception:
+                return
+            if 0 <= k < 4:
+                self.ans[uid] = (k, hub_now() - self.qstart)
+                if all(u in self.ans for u in self.room.players if u in self.score):
+                    self.reveal()
+
+    def reveal(self):
+        if self.phase != "q":
+            return
+        self.cancel()
+        q = self.qs[self.qi]
+        self.delta = {}
+        for u, (k, dt) in self.ans.items():
+            if k == q["a"]:
+                self.delta[u] = 100 + int(100 * max(0.0, 1 - dt / self.TQ))
+                self.score[u] = self.score.get(u, 0) + self.delta[u]
+        self.phase = "rev"
+        self.deadline = hub_ms(4.5)
+        self.after("t", 4.5, self.next_q)
+
+    def finish(self):
+        self.phase = "over"
+        self.over = True
+        self.cancel()
+        sc = {u: s for u, s in self.score.items() if u in self.room.players}
+        top = max(sc.values()) if sc else 0
+        self.winners = [u for u, s in sc.items() if s == top and top > 0]
+        self.winner = self.winners[0] if len(self.winners) == 1 else None
+        if self.winners:
+            self.room.win(self.winners)
+        self.room.after_game()
+
+    def on_leave(self, uid):
+        if self.phase == "q" and all(u in self.ans for u in self.room.players if u in self.score):
+            self.reveal()
+
+    def view(self, uid):
+        v = {"phase": self.phase, "topics": QZ_TOPICS, "topic": self.topic, "host": self.room.host, "deadline": self.deadline,
+             "score": {str(u): s for u, s in self.score.items() if u in self.room.players}, "n": len(self.qs) or self.NQ,
+             "qi": self.qi, "winners": self.winners, "winner": self.winner}
+        if self.phase in ("q", "rev") and 0 <= self.qi < len(self.qs):
+            q = self.qs[self.qi]
+            v["q"], v["o"] = q["q"], q["o"]
+            v["my"] = self.ans.get(uid, (None,))[0]
+            v["answered"] = len(self.ans)
+            if self.phase == "rev":
+                v["a"] = q["a"]
+                v["delta"] = {str(u): d for u, d in self.delta.items()}
+                cnt = [0, 0, 0, 0]
+                for k, _ in self.ans.values():
+                    cnt[k] += 1
+                v["cnt"] = cnt
+        return v
+
+
+# ---------------------------------------------------------------- 🚢 Dengiz jangi
+BS_FLEET = [5, 4, 3, 3, 2]
+
+
+def bs_random(rng=random):
+    ships, occ = [], set()
+    for ln in BS_FLEET:
+        for _ in range(400):
+            h = rng.random() < 0.5
+            r, c = rng.randrange(10), rng.randrange(10)
+            cells = [(r, c + i) if h else (r + i, c) for i in range(ln)]
+            if all(0 <= a < 10 and 0 <= b < 10 and (a, b) not in occ for a, b in cells):
+                ships.append({"r": r, "c": c, "l": ln, "h": h})
+                occ |= set(cells)
+                break
+    return ships
+
+
+def bs_valid(ships):
+    try:
+        if sorted(int(s["l"]) for s in ships) != sorted(BS_FLEET):
+            return None
+        out, occ = [], set()
+        for s in ships:
+            r, c, ln, h = int(s["r"]), int(s["c"]), int(s["l"]), bool(s["h"])
+            cells = [(r, c + i) if h else (r + i, c) for i in range(ln)]
+            if any(not (0 <= a < 10 and 0 <= b < 10) or (a, b) in occ for a, b in cells):
+                return None
+            occ |= set(cells)
+            out.append({"r": r, "c": c, "l": ln, "h": h})
+        return out
+    except Exception:
+        return None
+
+
+def bs_cells(s):
+    return [(s["r"], s["c"] + i) if s["h"] else (s["r"] + i, s["c"]) for i in range(s["l"])]
+
+
+class BattleshipGame(HubGame):
+    key, name, emoji = "bship", "Dengiz jangi", "🚢"
+    desc = "Kemalaringizni joylashtiring va raqib flotini toping. Urib tushirsangiz yana otasiz!"
+    min, max = 2, 2
+
+    def start(self):
+        us = self.uids()
+        random.shuffle(us)
+        self.p = us
+        self.fleet = {u: None for u in us}
+        self.shots = {u: {} for u in us}        # u otgan nuqtalar: (r,c) -> 'h'|'m'
+        self.phase = "place"
+        self.turn = us[0]
+        self.winner = None
+        self.reason = None
+        self.last = None
+        self.deadline = hub_ms(100)
+        self.after("t", 100, self.force_ready)
+
+    def force_ready(self):
+        for u in self.p:
+            if not self.fleet[u]:
+                self.fleet[u] = bs_random()
+        self.begin()
+
+    def begin(self):
+        self.phase = "war"
+        self.cancel()
+        self.arm()
+
+    def arm(self):
+        self.deadline = hub_ms(30)
+        self.after("t", 30, self.timeout)
+
+    def other(self, u):
+        return self.p[1] if u == self.p[0] else self.p[0]
+
+    def timeout(self):
+        if self.phase != "war":
+            return
+        left = [(r, c) for r in range(10) for c in range(10) if (r, c) not in self.shots[self.turn]]
+        r, c = random.choice(left)
+        self.fire(self.turn, r, c)
+
+    def fire(self, uid, r, c):
+        if self.phase != "war" or uid != self.turn or not (0 <= r < 10 and 0 <= c < 10) or (r, c) in self.shots[uid]:
+            return
+        foe = self.other(uid)
+        hit = any((r, c) in bs_cells(s) for s in self.fleet[foe])
+        self.shots[uid][(r, c)] = "h" if hit else "m"
+        self.last = [r, c, hit]
+        if hit and all(all(x in self.shots[uid] and self.shots[uid][x] == "h" for x in bs_cells(s)) for s in self.fleet[foe]):
+            return self.end(uid, "barcha kemalar cho'ktirildi")
+        if not hit:
+            self.turn = foe
+        self.arm()
+
+    def sunk(self, shooter):
+        foe = self.other(shooter)
+        return [s for s in (self.fleet[foe] or []) if all(self.shots[shooter].get(x) == "h" for x in bs_cells(s))]
+
+    def end(self, winner, reason):
+        self.phase = "over"
+        self.over = True
+        self.cancel()
+        self.winner = winner
+        self.reason = reason
+        self.room.win([winner])
+        self.room.after_game()
+
+    def act(self, uid, m):
+        if uid not in self.p:
+            return
+        a = m.get("a")
+        if a == "resign" and self.phase != "over":
+            return self.end(self.other(uid), "taslim bo'ldi")
+        if a == "ready" and self.phase == "place" and not self.fleet[uid]:
+            ships = bs_random() if m.get("rnd") else bs_valid(m.get("ships") or [])
+            if not ships:
+                return self.room.toast(uid, "Kemalar noto'g'ri joylashtirilgan")
+            self.fleet[uid] = ships
+            if all(self.fleet.values()):
+                self.begin()
+        elif a == "fire" and self.phase == "war":
+            try:
+                self.fire(uid, int(m.get("r")), int(m.get("c")))
+            except Exception:
+                pass
+
+    def on_leave(self, uid):
+        if self.phase != "over" and uid in self.p:
+            self.end(self.other(uid), "raqib chiqib ketdi")
+
+    def view(self, uid):
+        if uid not in self.p:
+            return {"phase": self.phase}
+        foe = self.other(uid)
+        mine = self.fleet.get(uid) or []
+        inc = self.shots[foe]
+        my = [["." for _ in range(10)] for _ in range(10)]
+        for s in mine:
+            for r, c in bs_cells(s):
+                my[r][c] = "S"
+        for (r, c), x in inc.items():
+            my[r][c] = "X" if x == "h" else "o"
+        en = [["." for _ in range(10)] for _ in range(10)]
+        for (r, c), x in self.shots[uid].items():
+            en[r][c] = "X" if x == "h" else "o"
+        sunk = self.sunk(uid)
+        left_me = [s["l"] for s in mine if not all(inc.get(x) == "h" for x in bs_cells(s))]
+        reveal = self.fleet.get(foe) if self.phase == "over" else []
+        return {"phase": self.phase, "p": self.p, "turn": self.turn, "my": ["".join(r) for r in my], "en": ["".join(r) for r in en],
+                "sunk": sunk, "ready": bool(self.fleet.get(uid)), "foeReady": bool(self.fleet.get(foe)), "fleet": BS_FLEET,
+                "leftMe": left_me, "leftEn": [s["l"] for s in (self.fleet.get(foe) or []) if s not in sunk] if self.phase != "place" else [],
+                "reveal": reveal, "last": self.last, "deadline": self.deadline, "winner": self.winner, "reason": self.reason}
+
+
+# ---------------------------------------------------------------- 🔫 Kim yolg'onchi
+LR_NAMES = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"]
+
+
+class LiarGame(HubGame):
+    key, name, emoji = "liar", "Kim yolg'onchi", "🎭"
+    desc = "Kartalarni yopiq tashlab, «bu — 5!» deb ayting. Rost bo'lishi shart emas! Raqib ishonmasa «Yolg'on!» deydi. Kartalarni birinchi tugatgan yutadi."
+    min, max = 2, 6
+    TURN = 45
+
+    def start(self):
+        us = self.uids()
+        random.shuffle(us)
+        self.seats = us
+        deck = list(range(52))
+        random.shuffle(deck)
+        self.hands = {u: [] for u in us}
+        for i, c in enumerate(deck):
+            self.hands[us[i % len(us)]].append(c)
+        self.pile = []
+        self.rank = 0
+        self.ti = 0
+        self.phase = "lead"          # lead | claim | reveal | over
+        self.claim = None            # (uid, n, rank)
+        self.rev = None
+        self.winner = None
+        self.last_empty = None
+        self.log = ["🎭 O'yin boshlandi — birinchi yurish: " + self.name_of(us[0])]
+        self.arm()
+
+    def cur(self):
+        return self.seats[self.ti]
+
+    def arm(self):
+        self.deadline = hub_ms(self.TURN)
+        self.after("t", self.TURN, self.timeout)
+
+    def say(self, t):
+        self.log = (self.log + [t])[-4:]
+
+    def timeout(self):
+        u = self.cur()
+        if self.phase == "claim" and self.last_empty:
+            return self.act(u, {"a": "believe"})
+        h = self.hands[u]
+        if h:
+            self.act(u, {"a": "play", "cs": [random.choice(h)]})
+
+    def nxt(self, i):
+        return (i + 1) % len(self.seats)
+
+    def act(self, uid, m):
+        if self.phase in ("over", "reveal") or uid != self.cur():
+            return
+        a = m.get("a")
+        h = self.hands[uid]
+        if a == "play" and not (self.phase == "claim" and self.last_empty):
+            cs = m.get("cs")
+            try:
+                cs = [int(c) for c in cs]
+            except Exception:
+                return
+            if not (1 <= len(cs) <= 4) or len(set(cs)) != len(cs) or any(c not in h for c in cs):
+                return self.room.toast(uid, "1–4 ta karta tanlang")
+            for c in cs:
+                h.remove(c)
+            self.pile += cs
+            self.last_play = cs
+            self.claim = (uid, len(cs), self.rank)
+            self.last_empty = uid if not h else None
+            self.say(f"🂠 {self.name_of(uid)}: {len(cs)} ta «{LR_NAMES[self.rank]}»")
+            self.rank = (self.rank + 1) % 13
+            self.ti = self.nxt(self.ti)
+            self.phase = "claim"
+            self.arm()
+        elif a == "call" and self.phase == "claim":
+            who, n, rk = self.claim
+            cs = self.last_play
+            liar = any(c % 13 != rk for c in cs)
+            self.rev = {"cs": cs, "who": who, "caller": uid, "liar": liar, "rank": rk}
+            loser = who if liar else uid
+            self.hands[loser] += self.pile
+            self.say(f"❗ {self.name_of(uid)}: «Yolg'on!» — " + ("yolg'on edi! 😈" if liar else "rost edi!") + f" {self.name_of(loser)} {len(self.pile)} ta karta oldi")
+            self.pile = []
+            self.loser = loser
+            self.phase = "reveal"
+            self.cancel()
+            self.deadline = hub_ms(3.5)
+            self.after("t", 3.5, self.after_reveal)
+        elif a == "believe" and self.phase == "claim" and self.last_empty:
+            self.finish(self.last_empty)
+
+    def after_reveal(self):
+        self.rev = None
+        self.claim = None
+        self.last_empty = None
+        # kartalari tugagan o'yinchi (rost aytgan) — yutadi; yo'qsa davom
+        for u in self.seats:
+            if not self.hands[u]:
+                return self.finish(u)
+        self.phase = "lead"
+        self.arm()
+
+    def finish(self, uid):
+        self.phase = "over"
+        self.over = True
+        self.cancel()
+        self.winner = uid
+        self.room.win([uid])
+        self.room.after_game()
+
+    def on_leave(self, uid):
+        if uid not in self.seats or self.phase == "over":
+            return
+        i = self.seats.index(uid)
+        rest = self.hands.pop(uid, [])
+        self.seats.remove(uid)
+        for k, c in enumerate(rest + self.pile):
+            self.hands[self.seats[k % len(self.seats)]].append(c) if self.seats else None
+        self.pile = []
+        if len(self.seats) < 2:
+            return self.finish(self.seats[0]) if self.seats else None
+        if i < self.ti:
+            self.ti -= 1
+        self.ti %= len(self.seats)
+        self.phase = "lead"
+        self.claim = None
+        self.last_empty = None
+        self.arm()
+
+    def view(self, uid):
+        mine = self.hands.get(uid, [])
+        cur = self.cur() if self.phase in ("lead", "claim") else None
+        v = {"phase": self.phase, "hand": sorted(mine, key=lambda c: (c % 13, c // 13)), "rank": self.rank, "rname": LR_NAMES[self.rank],
+             "seats": [{"u": u, "cnt": len(self.hands.get(u, []))} for u in self.seats], "turn": cur, "pile": len(self.pile),
+             "claim": ({"u": self.claim[0], "n": self.claim[1], "r": LR_NAMES[self.claim[2]]} if self.claim else None),
+             "must": bool(self.phase == "claim" and self.last_empty), "log": self.log, "deadline": self.deadline, "winner": self.winner}
+        if self.rev:
+            v["rev"] = self.rev
+        return v
+
+
+HUB_GAMES = {g.key: g for g in (DurakGame, BurKozelGame, UnoGame, ShashkaGame, ChessGame, NardGame, QuizGame, BattleshipGame, LiarGame, MafiaGame, SpyGame, DrawGame, StoryGame, FunnyGame, C4Game, ChainGame)}
 
 
 def hub_games_info():
-    return [{"k": g.key, "n": g.name, "e": g.emoji, "d": g.desc, "min": g.min, "max": g.max} for g in HUB_GAMES.values()]
+    return [{"k": g.key, "n": g.name, "e": g.emoji, "d": g.desc, "min": g.min, "max": g.max, "ai": g.ai} for g in HUB_GAMES.values()]
 
 
 # ---------------------------------------------------------------- Xona
@@ -25186,14 +26632,15 @@ class HubRoom:
         self.created = hub_now()
         self.cleanup = None
         self.dirty = False
+        self.level = 2
 
     # --- yordamchilar ---
     def plist(self):
-        return [{"u": p.uid, "n": p.name, "m": p.mic, "o": p.conn is not None, "w": p.wins} for p in self.players.values()]
+        return [{"u": p.uid, "n": p.name, "m": p.mic, "o": (p.conn is not None or p.uid < 0), "w": p.wins} for p in self.players.values()]
 
     def public(self, uid):
         return {"code": self.code, "host": self.host, "game": self.gkey, "phase": self.phase, "players": self.plist(),
-                "me": uid}
+                "me": uid, "level": self.level, "bot": HUB_BOT in self.players}
 
     def view_for(self, uid):
         v = {}
@@ -25274,6 +26721,8 @@ class HubRoom:
             return f"Kamida {G.min} kishi kerak"
         if n > G.max:
             return f"Ko'pi bilan {G.max} kishi"
+        if HUB_BOT in self.players and not G.ai:
+            return "Kompyuter bilan faqat shaxmat va shashka o'ynaladi"
         self.stop_game()
         self.g = G(self)
         self.phase = "play"
@@ -25379,7 +26828,8 @@ async def hub_leave(conn: HubConn, hard: bool):
     for q in r.players.values():
         if q.conn:
             await q.conn.send({"t": "left", "u": conn.uid, "hard": hard})
-    if not r.players:
+    if not any(u > 0 for u in r.players):
+        r.stop_game()
         HUB_ROOMS.pop((r.bid, r.code), None)
 
 
@@ -25452,7 +26902,33 @@ async def hub_handle(conn: HubConn, m: dict):
         g = str(m.get("g", ""))
         if g in HUB_GAMES:
             r.gkey = g
+            if not HUB_GAMES[g].ai:
+                r.players.pop(HUB_BOT, None)
             await r.broadcast()
+        return
+    if t == "addbot" and uid == r.host and r.phase == "lobby":
+        G = HUB_GAMES[r.gkey]
+        if G.ai and HUB_BOT not in r.players and len(r.players) < G.max:
+            r.players[HUB_BOT] = HubP(HUB_BOT, "Kompyuter 🤖")
+            await r.broadcast()
+        return
+    if t == "rmbot" and uid == r.host and r.phase == "lobby":
+        r.players.pop(HUB_BOT, None)
+        await r.broadcast()
+        return
+    if t == "level" and uid == r.host and r.phase == "lobby":
+        try:
+            r.level = max(1, min(3, int(m.get("v"))))
+        except Exception:
+            pass
+        await r.broadcast()
+        return
+    if t == "react":
+        e = str(m.get("e", ""))
+        now = hub_now()
+        if e in HUB_REACTS and now - getattr(conn, "lr", 0) > 0.5:
+            conn.lr = now
+            await r.send_all({"t": "react", "u": uid, "e": e})
         return
     if t == "start" and uid == r.host and r.phase in ("lobby", "end"):
         err = r.start_game()
@@ -25506,6 +26982,12 @@ async def hub_handle(conn: HubConn, m: dict):
         if to in r.players and to != uid:
             await r.send_to(to, {"t": "rtc", "from": uid, "d": m.get("d")})
         return
+
+
+# ===================== /O'YINLAR MARKAZI =====================
+
+
+# ===================== /O'YINLAR MARKAZI =====================
 
 
 # ===================== /O'YINLAR MARKAZI =====================
@@ -25699,6 +27181,90 @@ canvas{width:100%;height:100%;display:block;touch-action:none}
 .ckl .clk{font:700 18px ui-monospace,monospace;padding:3px 9px;border-radius:9px;background:rgba(255,255,255,.08)}
 .ckl .clk.low{color:#ff5d6c}
 .promo{display:flex;gap:10px;justify-content:center;margin:8px 0}.promo button{font-size:38px;width:62px;height:62px;border-radius:14px;border:1px solid var(--bd);background:var(--card);color:#fff}
+
+.g-burkozel{background:linear-gradient(150deg,#2f6b3a,#0b2414)}
+.bkt{display:flex;flex-direction:column;align-items:center;gap:3px;transform:translateZ(2px)}
+.bkt .cs{display:flex}.bkt .cs .cd{margin-left:-26px}.bkt .cs .cd:first-child{margin-left:0}
+.bkt small{font-size:10px;font-weight:800;color:#fff;background:rgba(0,0,0,.45);border-radius:99px;padding:0 7px;max-width:84px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bkt.win .cd{box-shadow:0 0 0 3px var(--warn),0 0 18px var(--warn)}.bkt.win small{background:var(--warn);color:#000}
+.hand .cd.sel{transform:translateY(-22px) rotate(var(--r,0deg)) !important;box-shadow:0 0 0 3px #ffd24d,0 10px 20px rgba(255,210,77,.45)}
+.bkscore{background:var(--card);border:1px solid var(--bd);border-radius:16px;padding:10px;margin:8px 0}
+.bkscore .row{display:flex;gap:8px;align-items:center;padding:6px 4px;border-bottom:1px solid var(--bd)}.bkscore .row:last-child{border:0}
+.bkscore .row b{flex:1}.bkscore .row.w b{color:var(--ok)}
+.bkpen{font-size:12px;font-weight:800;margin-left:4px;color:#ffb74d}
+.g-nard{background:linear-gradient(150deg,#6b3f1d,#1f1208)}.g-uno{background:linear-gradient(150deg,#c0392b,#2b1060)}.g-quiz{background:linear-gradient(150deg,#1b6ca8,#12122b)}.g-bship{background:linear-gradient(150deg,#0b4f6c,#04121c)}.g-liar{background:linear-gradient(150deg,#5a2a82,#10091d)}
+/* reaksiyalar */
+#rfx{position:fixed;inset:0;pointer-events:none;z-index:30;overflow:hidden}
+.rx{position:absolute;bottom:90px;display:flex;flex-direction:column;align-items:center;animation:rxup 2.6s ease-out forwards;font-size:44px;filter:drop-shadow(0 4px 8px rgba(0,0,0,.5))}
+.rx small{font-size:11px;font-weight:800;background:rgba(0,0,0,.55);color:#fff;border-radius:99px;padding:1px 8px;margin-top:2px}
+@keyframes rxup{0%{transform:translateY(0) scale(.4);opacity:0}12%{transform:translateY(-30px) scale(1.2);opacity:1}100%{transform:translateY(-62vh) scale(1) rotate(8deg);opacity:0}}
+#rtray{position:fixed;top:60px;right:10px;z-index:25;display:none;gap:4px;flex-wrap:wrap;max-width:230px;padding:8px;background:var(--card);border:1px solid var(--bd);border-radius:18px;box-shadow:0 12px 30px rgba(0,0,0,.5)}
+#rtray.open{display:flex}#rtray button{font-size:26px;background:none;border:0;padding:4px 6px;border-radius:12px}#rtray button:active{background:rgba(255,255,255,.12)}
+.lvl{display:flex;gap:6px;margin-top:8px}.lvl button{flex:1}
+.fr-row{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--bd)}.fr-row b{flex:1}
+/* nard */
+.bgb{display:flex;gap:2px;background:#4a2c12;border:6px solid #6b3f1d;border-radius:12px;padding:3px;box-shadow:0 18px 30px rgba(0,0,0,.5),inset 0 0 14px rgba(0,0,0,.5);margin:6px 0}
+.bgh{flex:1;display:flex;flex-direction:column;gap:6px}.bgrow{display:flex;gap:0}
+.bgs{display:flex;flex:1}
+.bgp{position:relative;flex:1;min-width:0;height:130px;display:flex;align-items:center;padding:2px 0}
+.bgp.top{flex-direction:column;justify-content:flex-start}.bgp.bot{flex-direction:column-reverse;justify-content:flex-start}
+.bgp::before{content:"";position:absolute;left:8%;right:8%;top:0;bottom:0;clip-path:polygon(0 0,100% 0,50% 100%);background:#b98b56;z-index:0}
+.bgp.bot::before{clip-path:polygon(0 100%,100% 100%,50% 0)}
+.bgp.c1::before{background:#7a3b1e}
+.bgp.tg::before{background:#2ecc8f !important}
+.bgp.fr{cursor:pointer}
+.bgc{position:relative;z-index:1;width:min(6.3vw,25px);height:min(6.3vw,25px);border-radius:50%;flex:none;margin:-1px 0;box-shadow:0 2px 0 rgba(0,0,0,.45),0 4px 6px rgba(0,0,0,.4)}
+.bgc.w{background:radial-gradient(circle at 35% 30%,#fff,#e8e0d0 60%,#b9ad94)}.bgc.k{background:radial-gradient(circle at 35% 30%,#666,#222 60%,#050505)}
+.bgc.sel{box-shadow:0 0 0 3px #ffd24d,0 0 14px #ffd24d}
+.bgn{position:relative;z-index:2;font-style:normal;font-size:11px;font-weight:900;background:rgba(0,0,0,.6);color:#fff;border-radius:99px;padding:0 6px}
+.bgbar{width:24px;flex:none;background:#3a2210;border-radius:6px;display:flex;flex-direction:column;justify-content:space-between;align-items:center;padding:4px 0}.bgbar.sel{box-shadow:0 0 0 3px #ffd24d}
+.bgbar .bgc{width:20px;height:20px}
+.bgoff{width:30px;flex:none;background:#3a2210;border-radius:6px;display:flex;flex-direction:column;justify-content:space-between;align-items:center;padding:4px 0;font-weight:900;font-size:13px}.bgoff.tg{background:#2ecc8f;color:#000}
+.bgoff .bgc{width:22px;height:22px;display:flex;align-items:center;justify-content:center;font-size:12px;color:#000}.bgoff .bgc.k{color:#fff}
+.dice{display:flex;gap:10px;justify-content:center;align-items:center;margin:6px 0;min-height:56px}
+.die{font-size:54px;line-height:1;color:#fff;text-shadow:0 3px 8px rgba(0,0,0,.6);display:inline-block}.die.used{opacity:.25}
+.die.tumble{animation:tumble .8s cubic-bezier(.2,.8,.3,1)}
+@keyframes tumble{0%{transform:translateY(-70px) rotate(0) scale(.5);opacity:0}40%{transform:translateY(0) rotate(420deg) scale(1.25);opacity:1}70%{transform:translateY(-14px) rotate(560deg)}100%{transform:none}}
+/* uno */
+.uc{position:relative;width:62px;height:92px;border-radius:10px;border:3px solid #fff;flex:none;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:900;box-shadow:0 3px 8px rgba(0,0,0,.5);user-select:none}
+.uc::before{content:"";position:absolute;inset:7px 6px;border-radius:50%;background:rgba(255,255,255,.93);transform:rotate(-24deg) scaleX(.8)}
+.uc i{position:relative;font-style:normal;font-size:30px;color:var(--c);text-shadow:0 1px 0 rgba(0,0,0,.2)}
+.uc.R{--c:#e53935;background:#e53935}.uc.Y{--c:#e6a800;background:#f5b800}.uc.G{--c:#2e9e4f;background:#2eaa55}.uc.B{--c:#1e6fd9;background:#1e78e8}
+.uc.W{background:conic-gradient(#e53935 0 25%,#f5b800 0 50%,#2eaa55 0 75%,#1e78e8 0);--c:#111}
+.uc.bk{background:#151515;border-color:#fff}.uc.bk::before{background:#d32f2f;inset:14px 6px}.uc.bk i{color:#ffd24d;font-size:18px}
+.uhand{display:flex;gap:6px;overflow-x:auto;padding:22px 6px 8px;min-height:130px;scrollbar-width:none}.uhand .uc{transition:transform .15s}
+.uhand .uc.ok{transform:translateY(-14px);box-shadow:0 0 0 3px var(--ok),0 10px 18px rgba(56,214,160,.45)}.uhand .uc.dim{filter:brightness(.6)}
+.uctr{display:flex;align-items:center;justify-content:center;gap:22px;margin:10px 0;perspective:600px}
+.ucd{position:relative}.ucd .uc{transform:rotateX(14deg)}
+.ucol{width:34px;height:34px;border-radius:50%;border:3px solid #fff;box-shadow:0 0 16px currentColor}
+.ucol.R{background:#e53935;color:#e53935}.ucol.Y{background:#f5b800;color:#f5b800}.ucol.G{background:#2eaa55;color:#2eaa55}.ucol.B{background:#1e78e8;color:#1e78e8}
+.upick{display:flex;gap:10px;justify-content:center;margin:10px 0}.upick button{width:56px;height:56px;border-radius:50%;border:3px solid #fff}
+.ulog{margin-top:22px;text-align:center;font-size:13px;min-height:44px;opacity:.9}.ulog div{margin:1px 0}
+/* viktorina */
+.qq{font-size:20px;font-weight:800;text-align:center;margin:12px 4px;min-height:70px;display:flex;align-items:center;justify-content:center}
+.qo{display:block;width:100%;text-align:left;padding:14px;margin:8px 0;border-radius:16px;border:2px solid var(--bd);background:var(--card);color:#fff;font-size:16px;font-weight:700}
+.qo b{display:inline-block;width:26px;height:26px;line-height:26px;text-align:center;border-radius:50%;background:var(--card2);margin-right:10px}
+.qo.my{border-color:#7c5cff;background:rgba(124,92,255,.2)}.qo.ok{border-color:var(--ok);background:rgba(56,214,160,.22)}.qo.no{border-color:#ff5d6c;background:rgba(255,93,108,.2)}
+.qo .qc{float:right;font-size:12px;opacity:.8}
+.qbar{height:6px;border-radius:99px;background:var(--card2);overflow:hidden;margin:6px 0}.qbar i{display:block;height:100%;background:linear-gradient(90deg,#7c5cff,#ff5c9a)}
+.qrank{display:flex;align-items:center;gap:8px;padding:7px 4px;border-bottom:1px solid var(--bd)}.qrank b{flex:1}.qrank .d{color:var(--ok);font-weight:800;font-size:13px}
+/* dengiz jangi */
+.bsg{display:grid;grid-template-columns:repeat(10,1fr);gap:1px;background:#0a3a52;border:3px solid #0e5a7e;border-radius:10px;padding:2px;aspect-ratio:1;width:100%;max-width:330px;margin:0 auto;display:grid}
+.bsg.sm{width:62%;margin:0 auto}
+.bc{position:relative;background:linear-gradient(135deg,#1d8ab8,#126a94);border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:14px;min-width:0}
+.bc.S{background:linear-gradient(135deg,#8d99a6,#59636e)}.bc.X{background:linear-gradient(135deg,#ff6b5b,#b3261e)}.bc.X::after{content:"💥";font-size:min(4vw,16px)}
+.bc.o::after{content:"";width:28%;height:28%;border-radius:50%;background:rgba(255,255,255,.75)}
+.bc.sk{background:linear-gradient(135deg,#3a1010,#150505)}.bc.sk::after{content:"☠";font-size:min(4vw,15px);color:#ff8a80}
+.bc.lastc{box-shadow:inset 0 0 0 2px #ffd24d}.bc.pv{background:rgba(255,255,255,.35)}
+.bsl{display:flex;gap:6px;justify-content:center;margin:6px 0;flex-wrap:wrap}.bsl i{font-style:normal;background:var(--card2);border:1px solid var(--bd);border-radius:8px;padding:2px 8px;font-size:12px;font-weight:800}.bsl i.done{opacity:.35;text-decoration:line-through}
+/* yolg'onchi */
+.lrc{position:relative;width:54px;height:80px;border-radius:9px;background:linear-gradient(160deg,#fff,#eceff6);color:#1b1f2a;font-weight:900;display:flex;flex-direction:column;align-items:center;justify-content:center;box-shadow:0 3px 8px rgba(0,0,0,.5);flex:none;user-select:none;font-size:20px}
+.lrc.r{color:#d32f2f}.lrc small{font-size:20px;line-height:1}
+.lrc.back{background:repeating-linear-gradient(45deg,#5a2a82 0 5px,#7a3fb0 5px 10px);border:3px solid #fff}
+.lhand{display:flex;flex-wrap:wrap;justify-content:center;gap:0;padding:14px 4px 6px}.lhand .lrc{margin:0 -9px;transition:transform .15s}.lhand .lrc.sel{transform:translateY(-16px);box-shadow:0 0 0 3px #ffd24d,0 10px 18px rgba(255,210,77,.4)}
+.lrank{text-align:center;margin:8px 0}.lrank b{display:inline-block;font-size:34px;background:linear-gradient(135deg,#7c5cff,#ff5c9a);border-radius:16px;padding:2px 20px;box-shadow:0 8px 20px rgba(124,92,255,.4)}
+.lpile{display:flex;justify-content:center;align-items:center;gap:10px;margin:8px 0;min-height:90px}
+.lrev{display:flex;gap:4px;justify-content:center}.lrev .lrc.bad{box-shadow:0 0 0 3px #ff5d6c}.lrev .lrc.good{box-shadow:0 0 0 3px var(--ok)}
 .g-shashka{background:linear-gradient(150deg,#4a3320,#17100a)}
 .shl{display:flex;align-items:center;gap:10px;padding:8px 10px;background:var(--card);border:1px solid var(--bd);border-radius:16px;margin:6px 0}
 .shl.turn{border-color:var(--ok);box-shadow:0 0 0 1px var(--ok),0 0 18px rgba(56,214,160,.25)}
@@ -25724,6 +27290,75 @@ canvas{width:100%;height:100%;display:block;touch-action:none}
 
 .pulse{animation:pl 1.4s infinite}@keyframes pl{50%{opacity:.5}}
 .pop{animation:pop .35s}@keyframes pop{from{transform:scale(.85);opacity:0}}
+
+/* ===== 3D qoplama (hamma o'yinlar) ===== */
+.btn{box-shadow:0 6px 0 #4a36b8,0 14px 24px rgba(124,92,255,.35),inset 0 1px 0 rgba(255,255,255,.3);transition:transform .08s,box-shadow .08s}
+.btn.sec{box-shadow:0 6px 0 #0a0d1c,0 12px 20px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.1)}
+.btn.bad{box-shadow:0 6px 0 #a7303f,0 14px 24px rgba(255,93,108,.3),inset 0 1px 0 rgba(255,255,255,.3)}
+.btn:active:not([disabled]){transform:translateY(5px);box-shadow:0 1px 0 #4a36b8,0 4px 8px rgba(0,0,0,.4)}
+.btn.sec:active:not([disabled]){box-shadow:0 1px 0 #0a0d1c}
+.btn[disabled]{box-shadow:0 3px 0 rgba(0,0,0,.4)}
+.card,.banner,.pc,.sc,.qo,.ans,.loc,.chip,.like,.timer{box-shadow:0 4px 0 rgba(0,0,0,.4),0 12px 22px rgba(0,0,0,.3),inset 0 1px 0 rgba(255,255,255,.1)}
+.pc:active,.qo:active:not([disabled]),.ans:active,.loc:active,.chip:active{transform:translateY(3px);box-shadow:0 1px 0 rgba(0,0,0,.4)}
+.pc.sel{transform:translateY(-4px) perspective(500px) rotateX(8deg);box-shadow:0 8px 0 rgba(0,0,0,.4),0 18px 26px rgba(124,92,255,.4)}
+.qo.ok{animation:flip3 .6s}.qo.no{animation:shake3 .5s}
+@keyframes flip3{from{transform:perspective(600px) rotateX(-80deg);opacity:0}}
+@keyframes shake3{25%{transform:perspective(600px) rotateY(10deg)}75%{transform:perspective(600px) rotateY(-10deg)}}
+.role{transform:perspective(800px) rotateX(var(--tx,0deg)) rotateY(var(--ty,0deg));transition:transform .15s;box-shadow:0 8px 0 rgba(0,0,0,.35),0 22px 36px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.18)}
+.role .big{display:inline-block;text-shadow:0 8px 14px rgba(0,0,0,.5);animation:flt 3s ease-in-out infinite}
+@keyframes flt{50%{transform:translateY(-6px) rotateY(12deg)}}
+.pop{animation:pop3 .65s cubic-bezier(.2,.8,.3,1)}
+@keyframes pop3{from{transform:perspective(700px) rotateY(-90deg) scale(.8);opacity:0}}
+.av::after{content:"";position:absolute;inset:0;border-radius:50%;background:radial-gradient(circle at 32% 26%,rgba(255,255,255,.6),transparent 46%),radial-gradient(circle at 72% 82%,rgba(0,0,0,.4),transparent 62%);pointer-events:none}
+.av{box-shadow:0 4px 0 rgba(0,0,0,.35),0 8px 12px rgba(0,0,0,.4)}
+.letter{background:none;-webkit-text-fill-color:#fff;color:#fff;transform:perspective(500px) rotateX(18deg) rotateY(-14deg);animation:sway 4s ease-in-out infinite;text-shadow:1px 1px 0 #8f7bff,2px 2px 0 #7c5cff,3px 3px 0 #6d4de8,4px 4px 0 #5d3fd0,5px 5px 0 #4d33b4,6px 6px 0 #3f2a98,7px 7px 0 #33227c,8px 8px 0 #281a60,0 22px 28px rgba(0,0,0,.55)}
+@keyframes sway{50%{transform:perspective(500px) rotateX(14deg) rotateY(14deg)}}
+.mask{text-shadow:1px 1px 0 #8f7bff,2px 2px 0 #6d4de8,3px 3px 0 #4d33b4,4px 4px 0 #33227c,0 14px 18px rgba(0,0,0,.5);transform:perspective(500px) rotateX(12deg)}
+.used span{box-shadow:0 3px 0 rgba(0,0,0,.45),0 8px 12px rgba(0,0,0,.3);transform:perspective(300px) rotateX(10deg)}
+.prompt,.qq{transform:perspective(700px) rotateX(7deg);text-shadow:0 3px 0 rgba(0,0,0,.4),0 10px 16px rgba(0,0,0,.4)}
+.cv-wrap{border:10px solid #8a5a2b;box-shadow:0 6px 0 #5b3a1e,0 10px 0 #3a2410,0 24px 34px rgba(0,0,0,.55)}
+.sw{box-shadow:inset -3px -3px 5px rgba(0,0,0,.35),inset 3px 3px 5px rgba(255,255,255,.35),0 3px 0 rgba(0,0,0,.4)}
+.games{perspective:900px}
+.gc{transform-style:preserve-3d;transition:transform .15s;box-shadow:0 6px 0 rgba(0,0,0,.4),0 16px 26px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.15)}
+.gc .em{display:inline-block;transform:translateZ(40px);text-shadow:0 10px 14px rgba(0,0,0,.5);animation:flt 3.4s ease-in-out infinite}
+.gc:active{transform:rotateX(10deg) rotateY(-10deg) scale(.97)}
+/* nard: taxta va 3D zarlar */
+.nstage{perspective:900px;margin:6px -4px 0;padding-bottom:18px}
+.nstage .bgb{transform:rotateX(26deg) scale(.96);transform-origin:50% 60%}
+.bgc.w{box-shadow:0 1px 0 #c9bfa8,0 2px 0 #b9ad94,0 3px 0 #a99d84,0 4px 0 #998d74,0 8px 8px rgba(0,0,0,.55)}
+.bgc.k{box-shadow:0 1px 0 #000,0 2px 0 #0c0c0c,0 3px 0 #161616,0 4px 0 #1f1f1f,0 8px 8px rgba(0,0,0,.6)}
+.dice{perspective:700px;gap:18px;min-height:78px}
+.dscene{display:inline-block;width:54px;height:54px;perspective:500px}.dscene.used{opacity:.3}
+.cube{--h:27px;position:relative;display:block;width:54px;height:54px;transform-style:preserve-3d;transform:rotateX(var(--rx)) rotateY(var(--ry))}
+.cube.spin{animation:cspin .9s cubic-bezier(.2,.8,.3,1)}
+@keyframes cspin{from{transform:translateY(-80px) rotateX(calc(var(--rx) + 540deg)) rotateY(calc(var(--ry) + 720deg))}to{transform:rotateX(var(--rx)) rotateY(var(--ry))}}
+.cube .fc{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:46px;line-height:1;background:linear-gradient(135deg,#fff,#dfe3ee);color:#111;border-radius:9px;border:1px solid #aab;backface-visibility:hidden;font-weight:400}
+/* uno stoli */
+.ufelt{background:radial-gradient(ellipse at 50% 38%,#7a46e8,#3f1c94 62%,#1e0b50)!important}
+.ufelt .uctr{position:absolute;inset:0;margin:0;transform:translateZ(3px)}
+.uc{transform:perspective(500px) rotateX(10deg);box-shadow:0 1px 0 #ddd,0 2px 0 #ccc,0 3px 0 #bbb,0 8px 10px rgba(0,0,0,.5)}
+.uhand .uc.ok{transform:perspective(500px) rotateX(10deg) translateY(-14px)}
+/* 4 ketma-ket */
+.c4stage{perspective:800px;margin:6px -4px 0;padding-bottom:20px}
+.c4stage .board{transform:rotateX(24deg) scale(.97);transform-origin:50% 70%;border:6px solid #14307a;box-shadow:0 8px 0 #0e2260,0 14px 0 #0a1848,0 30px 36px rgba(0,0,0,.55)}
+.cell{box-shadow:inset 0 6px 10px rgba(0,0,0,.65),inset 0 -2px 3px rgba(255,255,255,.12)}
+.cell.r,.cell.y{box-shadow:inset 0 -6px 8px rgba(0,0,0,.35),inset 0 4px 6px rgba(255,255,255,.35),0 3px 0 rgba(0,0,0,.35);animation:drop3 .55s cubic-bezier(.3,1.2,.5,1)}
+@keyframes drop3{from{transform:translateY(-220%) scale(.9)}}
+.cell.l{animation:drop3 .55s cubic-bezier(.3,1.2,.5,1)}
+/* dengiz jangi */
+.bstage{perspective:900px;padding-bottom:14px}
+.bstage .bsg{transform:rotateX(28deg) scale(.96);transform-origin:50% 60%;box-shadow:0 8px 0 #07283a,0 24px 30px rgba(0,0,0,.5)}
+.bc{box-shadow:inset 0 2px 4px rgba(255,255,255,.18),inset 0 -2px 4px rgba(0,0,0,.25)}
+.bc.S{box-shadow:0 3px 0 #3d444c,0 5px 6px rgba(0,0,0,.5),inset 0 2px 3px rgba(255,255,255,.3)}
+.bc.X{animation:boom .5s}
+@keyframes boom{from{transform:scale(1.8) translateZ(20px);filter:brightness(2)}}
+/* yolg'onchi stoli */
+.lfelt{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px;transform:translateZ(3px)}
+.lfelt .lpile{margin:0;min-height:0}
+.lrc{box-shadow:0 1px 0 #ddd,0 2px 0 #ccc,0 3px 0 #bbb,0 8px 10px rgba(0,0,0,.5)}
+.lhand .lrc{margin:0 -8px;transform:rotate(var(--r,0deg)) translateY(var(--y,0px));transform-origin:50% 130%}
+.lhand .lrc.sel{transform:translateY(-20px) rotate(var(--r,0deg))}
+.lrank b{text-shadow:2px 2px 0 rgba(0,0,0,.3),0 4px 0 rgba(0,0,0,.25);transform:perspective(400px) rotateX(14deg);display:inline-block}
 </style></head>
 <body>
 <div id="app">
@@ -25783,6 +27418,9 @@ function onMsg(m) {
   else if (t === "home" || t === "kicked") { leaveLocal(); if (t === "kicked") toast("Xonadan chiqarildingiz"); render(); }
   else if (t === "left") { closePeer(m.u); }
   else if (t === "rtc") { onRtc(m); }
+  else if (t === "react") { showReact(m); }
+  else if (t === "friends") { S.friends = m.list || []; friendsSheet(); }
+  else if (t === "invited") { if (m.ok) { (S.invd || (S.invd = {}))[m.u] = 1; toast("🔔 Taklif yuborildi"); friendsSheet(); } else toast("Yuborib bo'lmadi (do'st botni bloklagan bo'lishi mumkin)"); }
   else if (t === "strokes") { cvLoad(m.list || [], m.sid); }
   else if (t === "stroke") { cvStroke(m.s, m.sid); }
   else if (t === "clear") { cvReset(); }
@@ -25873,6 +27511,7 @@ function render() {
 function topBar(title, back) {
   var t = '<button class="ib" data-a="' + (back ? "leave" : "none") + '" style="' + (back ? "" : "visibility:hidden") + '">←</button><h1>' + title + "</h1>";
   if (S.room) {
+    t += '<button class="ib" data-a="tray">😀</button>';
     t += '<button class="ib' + (S.micOn ? " on" : "") + '" data-a="mic">' + (S.micOn ? "🎙" : "🔇") + '</button>';
     t += '<button class="ib" data-a="chat">💬<span class="bd" id="chbd" style="display:none">0</span></button>';
   }
@@ -25894,11 +27533,15 @@ function renderHome() {
 function renderLobby() {
   var R = S.room, g = gameInfo(R.game), host = R.host === S.me;
   topBar(g.e + " " + esc(g.n), true);
-  var h = '<div class="card c"><div class="mu sm">Xona kodi</div><div class="code">' + esc(R.code) + '</div><div class="row" style="display:flex;gap:8px;margin-top:10px"><button class="btn sec" data-a="invite">📨 Taklif qilish</button><button class="btn sec" data-a="copy">📋 Nusxa</button></div></div>';
+  var h = '<div class="card c"><div class="mu sm">Xona kodi</div><div class="code">' + esc(R.code) + '</div><div class="row" style="display:flex;gap:8px;margin-top:10px"><button class="btn sec" data-a="invite">📨 Taklif</button><button class="btn sec" data-a="friends">🔔 Do\'stlar</button><button class="btn sec" data-a="copy">📋</button></div></div>';
   if (host) {
     h += '<div class="chips">' + S.games.map(function (x) { return '<button class="chip' + (x.k === R.game ? " on" : "") + '" data-a="game" data-g="' + x.k + '">' + x.e + " " + esc(x.n) + "</button>"; }).join("") + "</div>";
   }
   h += '<div class="card"><b>' + g.e + " " + esc(g.n) + '</b><div class="mu sm">' + esc(g.d) + '</div><div class="sm" style="margin-top:6px">👥 Kerak: <b>' + (g.min === g.max ? g.min : g.min + "–" + g.max) + "</b> kishi</div></div>";
+  if (g.ai && host) {
+    if (R.bot) h += '<div class="card"><b>🤖 Kompyuter raqib</b><div class="lvl">' + [1, 2, 3].map(function (l) { return '<button class="chip' + (R.level === l ? " on" : "") + '" data-a="lvl" data-v="' + l + '">' + ["Oson", "O\'rta", "Qiyin"][l - 1] + "</button>"; }).join("") + '</div><button class="btn sec" data-a="rmbot" style="margin-top:8px">✕ Kompyuterni olib tashlash</button></div>';
+    else if (R.players.length < g.max) h += '<button class="btn sec" data-a="addbot" style="margin:8px 0">🤖 Kompyuterga qarshi o\'ynash</button>';
+  }
   h += "<h2>O'yinchilar (" + R.players.length + ")</h2><div class=\"card\" style=\"padding:6px 14px\">";
   R.players.forEach(function (p) {
     h += '<div class="pl-row">' + av(p.u, !p.o) + '<div style="flex:1"><b>' + esc(p.n) + (p.u === S.me ? " (siz)" : "") + "</b>" + (p.u === R.host ? ' <span title="Xona egasi">👑</span>' : "") + '<div class="mu sm">' + (p.o ? (p.m ? "🎙 gapirishi mumkin" : "online") : "uzilgan") + (p.w ? " · 🏆 " + p.w : "") + "</div></div>" +
@@ -25916,7 +27559,7 @@ function renderGame() {
   var R = S.room, v = S.view, g = gameInfo(R.game);
   topBar(g.e + " " + esc(g.n), true);
   $("#dock").style.display = "none";
-  var fn = {chess: rChess, shashka: rShashka, durak: rDurak, mafia: rMafia, spy: rSpy, draw: rDraw, story: rStory, funny: rFunny, c4: rC4, chain: rChain}[R.game];
+  var fn = {nard: rNard, uno: rUno, quiz: rQuiz, bship: rBship, liar: rLiar, burkozel: rBur, chess: rChess, shashka: rShashka, durak: rDurak, mafia: rMafia, spy: rSpy, draw: rDraw, story: rStory, funny: rFunny, c4: rC4, chain: rChain}[R.game];
   var h = "";
   if (S.micOn && v.talk === false) h += '<div class="muted-bar">🔇 Hozir gaplashish mumkin emas</div>';
   var body = fn ? fn(v) : "";
@@ -26219,6 +27862,252 @@ function chClick(r, c) {
 }
 setInterval(function () { var v = S.view; if (!S.room || S.room.game !== "chess" || !v || !v.clock) return; document.querySelectorAll("[data-ck]").forEach(function (e) { var s = e.getAttribute("data-ck"), ms = ckMs(v, s); e.textContent = ckFmt(ms); e.classList.toggle("low", v.phase === "play" && ms < 30000); }); }, 300);
 
+// ---------- Bur-Kozel ----------
+function rBur(v) {
+  var me = S.me, over = v.phase === "over", dl = v.phase === "deal", mine = v.turn === me && v.phase === "play";
+  var sig = v.dealno + "|" + v.turn + "|" + v.hand.join(",") + "|" + v.table.length + "|" + v.phase;
+  if (S.bkSig !== sig) { S.bkSig = sig; S.bkSel = (S.bkSel || []).filter(function (c) { return v.hand.indexOf(c) >= 0; }); if (v.phase !== "play") S.bkSel = []; }
+  var sel = S.bkSel || (S.bkSel = []);
+  var others = v.seats.filter(function (s) { return s.u !== me; }), h = "";
+  h += '<div class="opps">' + others.map(function (s) {
+    var n = Math.min(s.cnt, 4), mid = (n - 1) / 2, fan = "";
+    for (var i = 0; i < n; i++) fan += '<div class="cd back" style="left:' + (38 + (i - mid) * 9) + "px;transform:rotate(" + ((i - mid) * 8) + 'deg)"></div>';
+    return '<div class="opp' + (v.turn === s.u ? " turn" : "") + (s.gone ? " out" : "") + '"><div class="fan">' + fan + "</div><b>" + esc(pname(s.u)) + '<span class="cnt">' + s.cnt + '</span></b><span class="bkpen">⚠ ' + s.pen + "/" + v.limit + "</span></div>";
+  }).join("") + "</div>";
+  var deck = '<div class="deckbox"><span class="tsuit' + (v.trump === 1 || v.trump === 2 ? " suit-r" : "") + '" title="Kozir">' + DS[v.trump] + "</span>";
+  if (v.deckN > 0) deck += cardH(v.tcard, "tc tb");
+  if (v.deckN > 1) deck += '<div class="cd back"></div><div class="cd back" style="left:3px;top:2px"></div>';
+  deck += '<span class="n">' + v.deckN + "</span></div>";
+  var tbl = '<div class="tbl">' + v.table.map(function (p) {
+    var cs = p.cs ? p.cs.map(function (c) { return cardH(c, "tb"); }).join("") : (function () { var x = ""; for (var i = 0; i < p.n; i++) x += '<div class="cd back tb"></div>'; return x; })();
+    return '<div class="bkt' + (v.tw === p.u ? " win" : "") + '"><div class="cs">' + cs + "</div><small>" + esc(pname(p.u)) + "</small></div>";
+  }).join("") + "</div>";
+  h += '<div class="stage"><div class="felt">' + deck + tbl + "</div></div>";
+  var st;
+  if (v.phase === "trick") st = "🏆 <b>" + esc(pname(v.tw)) + "</b> olti oldi" + (v.twpts ? " (+" + v.twpts + " ochko)" : "");
+  else if (dl) st = "🎴 Taqsimot tugadi";
+  else if (over) st = "🏁 O'yin tugadi";
+  else if (mine) st = v.lead ? "👉 Yuring: 1–" + v.maxlead + " ta bir xil mastdagi karta" : "🛡 Aynan <b>" + v.need + "</b> ta karta tashlang (kuchliroq yoki kozir bilan yoping)";
+  else st = "⏳ " + esc(pname(v.turn)) + " o'ylayapti";
+  h += '<div class="dinfo">' + (v.note && v.phase === "play" && v.table.length === 0 ? esc(v.note) + "<br>" : "") + st + (v.deadline && (v.phase === "play" || v.phase === "deal") ? " " + timerHtml(v.deadline) : "") + "</div>";
+  if (dl || over) {
+    h += '<div class="bkscore"><div class="mu sm c" style="margin-bottom:4px">' + esc(v.note ? v.note + " · " : "") + (v.dealwin && v.dealwin.length ? "Taqsimotni yutdi: <b>" + v.dealwin.map(pname).map(esc).join(", ") + "</b>" : "Taqsimot durang") + " · " + esc(v.why || "") + "</div>";
+    v.summary.forEach(function (r) { h += '<div class="row' + (r.w ? " w" : "") + '"><b>' + (r.w ? "🏆 " : "") + esc(pname(r.u)) + (r.u === me ? " (siz)" : "") + '</b><span class="mu sm">' + r.pts + " ochko</span><span class=\"bkpen\">" + (r.add ? "+" + r.add : "0") + " ⚠ " + r.pen + "/" + v.limit + "</span></div>"; });
+    h += "</div>";
+    if (over) { h += '<div class="role win c pop"><div class="big">' + (v.winner === me ? "🏆" : "🐐") + '</div><h3>' + (v.winner ? (v.winner === me ? "Siz yutdingiz!" : esc(pname(v.winner)) + " yutdi") : "Durang") + '</h3><div class="sm">' + esc(v.reason || "") + "</div></div>"; return h + endBar(); }
+  }
+  var hand = v.hand, n = hand.length, mid = (n - 1) / 2;
+  if (!over) {
+    h += '<div class="dact">' + (mine ? '<button class="btn" data-a="bk_go"' + ((v.lead ? sel.length >= 1 : sel.length === v.need) ? "" : " disabled") + ">▶ Tashlash" + (sel.length ? " (" + sel.length + ")" : "") + '</button><button class="btn sec" data-a="bk_clr">✖</button>' : "") + "</div>";
+    h += '<div class="hand">' + hand.map(function (c, i) {
+      var rot = (i - mid) * 5;
+      return cardH(c, (sel.indexOf(c) >= 0 ? "sel" : "") + (!mine ? " dim" : ""), 'data-a="bk_c" data-c="' + c + '" style="--r:' + rot.toFixed(1) + "deg;transform:rotate(" + rot.toFixed(1) + 'deg) translateY(' + (Math.abs(i - mid) * Math.abs(i - mid) * 1.2).toFixed(1) + 'px)"');
+    }).join("") + "</div>";
+    h += '<div class="c mu sm">Sizning ochkoingiz: <b>' + v.mypts + '</b> · <span class="bkpen">⚠ ' + (v.seats.filter(function (s) { return s.u === me; })[0] || {pen: 0}).pen + "/" + v.limit + "</span></div>";
+  }
+  return h;
+}
+function bkToggle(c) {
+  var v = S.view; if (v.turn !== S.me || v.phase !== "play") return toast("Hozir sizning navbatingiz emas");
+  var sel = S.bkSel || (S.bkSel = []), i = sel.indexOf(c);
+  if (i >= 0) sel.splice(i, 1);
+  else {
+    if (v.lead) { if (sel.length && ((sel[0] / 9) | 0) !== ((c / 9) | 0)) sel.length = 0; if (sel.length >= v.maxlead) sel.shift(); }
+    else if (sel.length >= v.need) sel.shift();
+    sel.push(c);
+  }
+  render();
+}
+// ---------- Nard ----------
+var DICE = ["", "⚀", "⚁", "⚂", "⚃", "⚄", "⚅"];
+var CUBE = {1: [0, 0], 2: [90, 0], 3: [0, -90], 4: [0, 90], 5: [-90, 0], 6: [0, 180]};
+var CFACES = [[1, "translateZ(var(--h))"], [6, "rotateY(180deg) translateZ(var(--h))"], [3, "rotateY(90deg) translateZ(var(--h))"], [4, "rotateY(-90deg) translateZ(var(--h))"], [5, "rotateX(90deg) translateZ(var(--h))"], [2, "rotateX(-90deg) translateZ(var(--h))"]];
+function cubeH(n, used, fresh, i) {
+  var r = CUBE[n]; return '<span class="dscene' + (used ? " used" : "") + '"><span class="cube' + (fresh ? " spin" : "") + '" style="--rx:' + r[0] + "deg;--ry:" + r[1] + "deg;animation-delay:" + (i * 0.08) + 's">' + CFACES.map(function (f) { return '<b class="fc" style="transform:' + f[1] + '">' + DICE[f[0]] + "</b>"; }).join("") + "</span></span>";
+}
+function rNard(v) {
+  var me = S.me, white = me === v.white, over = v.phase === "over", mine = v.turn === me && !over, opp = white ? v.black : v.white;
+  var sig = v.turn + "|" + v.pts.join(",") + "|" + v.dice.join(","); if (S.bgSig !== sig) { S.bgSig = sig; S.bgSel = null; }
+  var L = v.legal || [];
+  if (mine && v.phase === "move" && L.length && L.every(function (m) { return m[0] === 0; })) S.bgSel = 0;
+  var sel = S.bgSel, tg = {}, offT = false, from = {};
+  L.forEach(function (m) { from[m[0]] = 1; if (sel != null && m[0] === sel) { if (m[1] === 0) offT = true; else tg[m[1]] = 1; } });
+  function pt(p, top) {
+    var n = v.pts[p - 1], cnt = Math.abs(n), col = n > 0 ? "w" : "k", s = "", show = Math.min(cnt, 5);
+    for (var i = 0; i < show; i++) s += '<i class="bgc ' + col + (sel === p && i === show - 1 ? " sel" : "") + '"></i>';
+    if (cnt > 5) s += '<em class="bgn">' + cnt + "</em>";
+    return '<div class="bgp ' + (top ? "top" : "bot") + " c" + (p % 2) + (tg[p] ? " tg" : "") + (mine && from[p] ? " fr" : "") + '" data-a="bg_pt" data-p="' + p + '">' + s + "</div>";
+  }
+  function rng(a, b) { var r = []; if (a <= b) for (var i = a; i <= b; i++) r.push(i); else for (var j = a; j >= b; j--) r.push(j); return r; }
+  var tl, tr, bl, br;
+  if (white) { tl = rng(13, 18); tr = rng(19, 24); bl = rng(12, 7); br = rng(6, 1); } else { tl = rng(1, 6); tr = rng(7, 12); bl = rng(24, 19); br = rng(18, 13); }
+  var mySide = white ? 0 : 1, oppSide = 1 - mySide, myCol = white ? "w" : "k", opCol = white ? "k" : "w";
+  function stack(n, col) { var s = "", k = Math.min(n, 4); for (var i = 0; i < k; i++) s += '<i class="bgc ' + col + (S.bgSel === 0 && col === myCol ? " sel" : "") + '"></i>'; if (n > 4) s += '<em class="bgn">' + n + "</em>"; return s; }
+  var bar = '<div class="bgbar' + (sel === 0 ? " sel" : "") + (mine && from[0] ? "" : "") + '" data-a="bg_pt" data-p="0"><div>' + stack(v.bar[oppSide], opCol) + "</div><div>" + stack(v.bar[mySide], myCol) + "</div></div>";
+  var off = '<div class="bgoff' + (offT ? " tg" : "") + '" data-a="bg_off"><div class="bgc ' + opCol + '">' + v.off[oppSide] + '</div><span>🏁</span><div class="bgc ' + myCol + '">' + v.off[mySide] + "</div></div>";
+  var board = '<div class="bgb"><div class="bgh"><div class="bgrow"><div class="bgs">' + tl.map(function (p) { return pt(p, 1); }).join("") + "</div>" + '<div style="width:26px"></div><div class="bgs">' + tr.map(function (p) { return pt(p, 1); }).join("") + '</div></div><div class="bgrow"><div class="bgs">' + bl.map(function (p) { return pt(p, 0); }).join("") + '</div><div style="width:26px"></div><div class="bgs">' + br.map(function (p) { return pt(p, 0); }).join("") + "</div></div></div></div>";
+  // bar va off ustunlari alohida joylashadi
+  board = '<div class="bgb">' + '<div class="bgh"><div class="bgrow"><div class="bgs">' + tl.map(function (p) { return pt(p, 1); }).join("") + "</div></div><div class=\"bgrow\"><div class=\"bgs\">" + bl.map(function (p) { return pt(p, 0); }).join("") + "</div></div></div>" + bar + '<div class="bgh"><div class="bgrow"><div class="bgs">' + tr.map(function (p) { return pt(p, 1); }).join("") + "</div></div><div class=\"bgrow\"><div class=\"bgs\">" + br.map(function (p) { return pt(p, 0); }).join("") + "</div></div></div>" + off + "</div>";
+  var lab = function (u, col) { return '<div class="ckl' + (v.turn === u && !over ? " turn" : "") + '"><span class="bgc ' + col + '" style="width:22px;height:22px;margin:0"></span><b>' + esc(pname(u)) + (u === me ? " (siz)" : "") + '</b><span class="cpt"></span>' + (v.turn === u && !over && v.deadline ? timerHtml(v.deadline) : "") + "</div>"; };
+  var rollSig = v.turn + "|" + v.roll.join(",") + "|" + v.phase; var fresh = v.phase === "move" && S.bgRs !== rollSig; S.bgRs = rollSig;
+  var show = v.phase === "roll" ? (v.lastroll || []) : v.roll, rem = v.dice.slice(), dh = "";
+  var dbl = show.length === 2 && show[0] === show[1], seq = dbl ? [show[0], show[0], show[0], show[0]] : show;
+  seq.forEach(function (d, i) { var used; if (v.phase === "roll") used = true; else if (dbl) used = i >= rem.length; else { var k = rem.indexOf(d); used = k < 0; if (k >= 0) rem.splice(k, 1); } dh += cubeH(d, used, fresh, i); });
+  var st = over ? (v.winner === me ? "🏆 Siz yutdingiz!" : "😔 " + esc(pname(v.winner)) + " yutdi") + ' <span class="mu sm">· ' + esc(v.reason || "") + "</span>" : v.phase === "roll" ? (mine ? "🎲 Zar tashlang!" : "⏳ " + esc(pname(v.turn)) + " zar tashlamoqda") : v.nomove ? (mine ? "😕 Yurish yo'q — navbat o'tadi" : "😕 " + esc(pname(v.turn)) + "da yurish yo'q") : mine ? "👉 Yuring: donani, so'ng manzilni bosing" : "⏳ " + esc(pname(v.turn)) + " yurmoqda";
+  var h = lab(opp, white ? "k" : "w") + '<div class="nstage">' + board + '</div><div class="dice">' + dh + "</div>" + lab(me, white ? "w" : "k") + '<div class="dinfo" style="margin:6px 0">' + st + "</div>";
+  if (over) return h + endBar();
+  if (mine && v.phase === "roll") h += '<button class="btn" data-a="bg_roll">🎲 Zar tashlash</button>';
+  h += '<button class="btn sec" data-a="bg_resign" style="padding:10px;margin-top:8px">🏳 Taslim bo\'lish</button>';
+  return h;
+}
+function bgClick(p) {
+  var v = S.view; if (v.turn !== S.me || v.phase !== "move") return;
+  var L = v.legal || [], sel = S.bgSel;
+  if (sel != null && L.some(function (m) { return m[0] === sel && m[1] === p; })) { act({a: "mv", f: sel, to: p}); S.bgSel = null; return; }
+  if (L.some(function (m) { return m[0] === p; })) S.bgSel = sel === p ? null : p; else S.bgSel = null;
+  render();
+}
+
+// ---------- Uno ----------
+function unoCard(c, cls, attr) {
+  var col = c[0], v = c[1], t = v === "s" ? "⊘" : v === "r" ? "⇄" : v === "d" ? "+2" : v === "f" ? "+4" : v === "x" ? "★" : v;
+  return '<div class="uc ' + col + (cls ? " " + cls : "") + '" ' + (attr || "") + "><i>" + t + "</i></div>";
+}
+function rUno(v) {
+  var me = S.me, over = v.phase === "over", mine = v.turn === me;
+  if (S.unSig !== v.hand.length + "|" + v.turn) { S.unSig = v.hand.length + "|" + v.turn; S.unWild = null; }
+  var others = v.seats.filter(function (s) { return s.u !== me; }), h = "";
+  h += '<div class="opps" style="flex-wrap:wrap">' + others.map(function (s) {
+    var n = Math.min(s.cnt, 7), mid = (n - 1) / 2, fan = "";
+    for (var i = 0; i < n; i++) fan += '<div class="cd back" style="left:' + (38 + (i - mid) * 8) + "px;transform:rotate(" + ((i - mid) * 7) + 'deg)"></div>';
+    return '<div class="opp' + (v.turn === s.u ? " turn" : "") + '"><div class="fan">' + fan + "</div><b>" + esc(pname(s.u)) + '<span class="cnt">' + s.cnt + "</span></b></div>";
+  }).join("") + "</div>";
+  h += '<div class="stage"><div class="felt ufelt"><div class="uctr"><div class="ucd"><div class="uc bk" data-a="un_draw"><i>UNO</i></div><span class="mu sm" style="position:absolute;left:0;right:0;bottom:-20px;text-align:center;color:#fff">' + v.deckN + '</span></div>' + unoCard(v.top, "") + '<div class="ucol ' + v.color + '" title="Joriy rang"></div><div style="font-size:26px">' + (v.dir > 0 ? "↻" : "↺") + "</div></div></div></div>";
+  h += '<div class="ulog">' + v.log.map(function (x) { return "<div>" + esc(x) + "</div>"; }).join("") + "</div>";
+  if (over) return h + '<div class="role win c pop"><div class="big">' + (v.winner === me ? "🏆" : "🌈") + "</div><h3>" + (v.winner === me ? "Siz yutdingiz!" : esc(pname(v.winner)) + " yutdi!") + "</h3></div>" + endBar();
+  h += '<div class="dinfo" style="margin:6px 0">' + (mine ? (v.drawn != null ? "🎴 Olingan kartani tashlang yoki o'tkazing" : "👉 Sizning navbatingiz") : "⏳ " + esc(pname(v.turn)) + " yurmoqda") + (v.deadline ? " " + timerHtml(v.deadline) : "") + "</div>";
+  if (S.unWild != null) h += '<div class="upick">' + ["R", "Y", "G", "B"].map(function (c) { return '<button class="ucol ' + c + '" data-a="un_col" data-c="' + c + '" style="width:56px;height:56px"></button>'; }).join("") + "</div>";
+  h += '<div class="dact">' + (mine && v.drawn == null ? '<button class="btn sec" data-a="un_draw">🎴 Karta olish</button>' : "") + (mine && v.drawn != null ? '<button class="btn sec" data-a="un_pass">⏭ O\'tkazish</button>' : "") + "</div>";
+  h += '<div class="uhand">' + v.hand.map(function (c, i) { return unoCard(c, mine ? (v.ok.indexOf(i) >= 0 ? "ok" : "dim") : "", 'data-a="un_card" data-i="' + i + '"'); }).join("") + "</div>";
+  return h;
+}
+
+// ---------- Viktorina ----------
+function rQuiz(v) {
+  var me = S.me, h = "", host = v.host === me;
+  var rank = Object.keys(v.score).map(function (k) { return [+k, v.score[k]]; }).sort(function (a, b) { return b[1] - a[1]; });
+  function board(d) { return '<div class="card" style="padding:6px 12px">' + rank.map(function (r, i) { return '<div class="qrank"><span>' + (i + 1) + '.</span>' + av(r[0]) + "<b>" + esc(pname(r[0])) + (r[0] === me ? " (siz)" : "") + '</b><span class="d">' + (d && d[r[0]] ? "+" + d[r[0]] : "") + "</span><b style=\"flex:none\">" + r[1] + "</b></div>"; }).join("") + "</div>"; }
+  if (v.phase === "topic") {
+    h += '<div class="c"><h2>🧠 Mavzuni tanlang</h2>' + timerHtml(v.deadline) + "</div>";
+    h += host ? '<div class="chips" style="flex-wrap:wrap">' + v.topics.map(function (t, i) { return '<button class="chip" data-a="qz_topic" data-k="' + i + '">' + esc(t) + "</button>"; }).join("") + "</div>" : '<div class="c pulse" style="padding:30px 0">⏳ ' + esc(pname(v.host)) + " mavzu tanlamoqda...</div>";
+    return h;
+  }
+  if (v.phase === "load") return '<div class="c pulse" style="padding:60px 0"><div style="font-size:54px">🤖</div><b>Sun\'iy intellekt savollar tuzmoqda...</b><div class="mu sm">Mavzu: ' + esc(v.topic) + "</div></div>";
+  if (v.phase === "over") {
+    var w = v.winners || [];
+    return '<div class="role win c pop"><div class="big">' + (w.indexOf(me) >= 0 ? "🏆" : "🧠") + "</div><h3>" + (w.length ? (w.length === 1 ? esc(pname(w[0])) + " yutdi!" : "Durang: " + w.map(pname).map(esc).join(", ")) : "O'yin tugadi") + "</h3></div>" + board() + endBar();
+  }
+  var rev = v.phase === "rev";
+  h += '<div class="c mu sm">' + (v.qi + 1) + "/" + v.n + " · " + esc(v.topic) + ' · <span class="mu">javob berdi: ' + v.answered + "</span> " + (rev ? "" : timerHtml(v.deadline)) + "</div>";
+  h += '<div class="qq">' + esc(v.q) + "</div>";
+  h += v.o.map(function (o, i) {
+    var cls = "qo"; if (rev) { if (i === v.a) cls += " ok"; else if (v.my === i) cls += " no"; } else if (v.my === i) cls += " my";
+    return '<button class="' + cls + '" data-a="qz_ans" data-k="' + i + '"' + (v.my != null || rev ? " disabled" : "") + "><b>" + "ABCD"[i] + "</b>" + esc(o) + (rev ? '<span class="qc">' + v.cnt[i] + " 👤</span>" : "") + "</button>";
+  }).join("");
+  if (rev) h += '<div class="c" style="margin:8px 0;font-weight:800">' + (v.my === v.a ? "✅ To'g'ri! +" + (v.delta[me] || 0) : v.my == null ? "⏰ Javob bermadingiz" : "❌ Noto'g'ri") + "</div>" + board(v.delta);
+  else if (v.my != null) h += '<div class="c pulse mu" style="margin:10px 0">Javob qabul qilindi — boshqalarni kuting...</div>';
+  return h;
+}
+
+// ---------- Dengiz jangi ----------
+function bsBuild(v, ships, small, opts) {
+  var cells = {}; (ships || []).forEach(function (s) { for (var i = 0; i < s.l; i++) cells[(s.h ? s.r : s.r + i) + "," + (s.h ? s.c + i : s.c)] = 1; });
+  var sk = {}; (opts.sunk || []).forEach(function (s) { for (var i = 0; i < s.l; i++) sk[(s.h ? s.r : s.r + i) + "," + (s.h ? s.c + i : s.c)] = 1; });
+  var g = opts.grid, h = '<div class="bstage"><div class="bsg' + (small ? " sm" : "") + '">';
+  for (var r = 0; r < 10; r++) for (var c = 0; c < 10; c++) {
+    var ch = g ? g[r][c] : (cells[r + "," + c] ? "S" : "."), cls = "bc" + (ch === "S" ? " S" : ch === "X" ? " X" : ch === "o" ? " o" : "") + (sk[r + "," + c] ? " sk" : "") + (opts.last && opts.last[0] === r && opts.last[1] === c ? " lastc" : "") + (opts.rev && cells[r + "," + c] && ch !== "X" ? " S" : "");
+    h += '<div class="' + cls + '" data-a="' + (opts.act || "none") + '" data-r="' + r + '" data-c="' + c + '"></div>';
+  }
+  return h + "</div></div>";
+}
+function bsShipsLeft(fleet, left) { var l = (left || []).slice(); return '<div class="bsl">' + fleet.map(function (n) { var k = l.indexOf(n); var done = k < 0; if (!done) l.splice(k, 1); return '<i class="' + (done ? "done" : "") + '">' + "■".repeat(n) + "</i>"; }).join("") + "</div>"; }
+function rBship(v) {
+  var me = S.me, h = "";
+  if (v.phase === "place") {
+    if (v.ready) return '<div class="c pulse" style="padding:30px 0"><div style="font-size:46px">⚓</div><b>Flot tayyor!</b><div class="mu sm">' + (v.foeReady ? "Boshlanmoqda..." : "Raqib kemalarini joylashtirmoqda...") + "</div></div>" + bsBuild(v, S.bsShips || [], true, {}) + '<div class="c mu sm" style="margin-top:6px">' + timerHtml(v.deadline) + "</div>";
+    var ships = S.bsShips || (S.bsShips = []); if (S.bsH == null) S.bsH = true;
+    var next = v.fleet[ships.length];
+    h += '<div class="c"><h2>🚢 Kemalarni joylashtiring</h2><div class="mu sm">' + (next ? "Navbatdagi kema: <b>" + "■".repeat(next) + "</b> — katakni bosing (" + (S.bsH ? "gorizontal ↔" : "vertikal ↕") + ")" : "Hammasi joylashtirildi!") + " " + timerHtml(v.deadline) + "</div></div>";
+    h += bsBuild(v, ships, false, {act: "bs_place"});
+    h += '<div class="dact" style="flex-wrap:wrap"><button class="btn sec" data-a="bs_rot">🔄 Aylantirish</button><button class="btn sec" data-a="bs_undo">↩ Bekor</button><button class="btn sec" data-a="bs_rnd">🎲 Tasodifiy</button></div>';
+    h += '<button class="btn" data-a="bs_ready"' + (ships.length === v.fleet.length ? "" : " disabled") + ">✅ Tayyor</button>";
+    return h;
+  }
+  S.bsShips = null;
+  var over = v.phase === "over", mine = v.turn === me && !over, foe = v.p[0] === me ? v.p[1] : v.p[0];
+  h += '<div class="ckl' + (v.turn === foe && !over ? " turn" : "") + '"><b>' + esc(pname(foe)) + "</b>" + bsShipsLeft(v.fleet, v.leftEn) + "</div>";
+  h += bsBuild(v, null, false, {grid: v.en, sunk: v.sunk, act: mine ? "bs_fire" : "none", last: (v.last && mine ? null : null), rev: false});
+  h += '<div class="dinfo" style="margin:6px 0">' + (over ? (v.winner === me ? "🏆 Siz yutdingiz!" : "😔 " + esc(pname(v.winner)) + " yutdi") + ' <span class="mu sm">· ' + esc(v.reason || "") + "</span>" : mine ? "🎯 Otish navbati sizda — raqib maydonini bosing" : "⏳ " + esc(pname(v.turn)) + " nishonga olmoqda") + (!over && v.deadline ? " " + timerHtml(v.deadline) : "") + "</div>";
+  h += '<div class="ckl' + (mine || over ? "" : " turn") + '"><b>Sizning flotingiz</b>' + bsShipsLeft(v.fleet, v.leftMe) + "</div>";
+  h += bsBuild(v, null, true, {grid: v.my});
+  if (over) { if (v.reveal && v.reveal.length) h += '<div class="c mu sm" style="margin-top:8px">Raqib floti:</div>' + bsBuild(v, v.reveal, true, {grid: v.en, rev: true, sunk: v.sunk}); return h + endBar(); }
+  return h + '<button class="btn sec" data-a="bs_resign" style="padding:10px;margin-top:8px">🏳 Taslim bo\'lish</button>';
+}
+
+// ---------- Kim yolg'onchi ----------
+var LRN = ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"];
+function lrCard(c, cls, attr) { var s = (c / 13) | 0, red = s === 1 || s === 2; return '<div class="lrc ' + (red ? "r" : "") + (cls ? " " + cls : "") + '" ' + (attr || "") + ">" + LRN[c % 13] + "<small>" + DS[s] + "</small></div>"; }
+function rLiar(v) {
+  var me = S.me, over = v.phase === "over", mine = v.turn === me, h = "";
+  var sig = v.hand.join(",") + "|" + v.turn + "|" + v.phase; if (S.lrSig !== sig) { S.lrSig = sig; S.lrSel = (S.lrSel || []).filter(function (c) { return v.hand.indexOf(c) >= 0; }); if (v.phase !== "lead" && v.phase !== "claim") S.lrSel = []; }
+  var sel = S.lrSel || (S.lrSel = []);
+  var others = v.seats.filter(function (s) { return s.u !== me; });
+  h += '<div class="opps" style="flex-wrap:wrap">' + others.map(function (s) {
+    var n = Math.min(s.cnt, 6), mid = (n - 1) / 2, fan = "";
+    for (var i = 0; i < n; i++) fan += '<div class="cd back" style="left:' + (38 + (i - mid) * 8) + "px;transform:rotate(" + ((i - mid) * 7) + 'deg)"></div>';
+    return '<div class="opp' + (v.turn === s.u ? " turn" : "") + '"><div class="fan">' + fan + "</div><b>" + esc(pname(s.u)) + '<span class="cnt">' + s.cnt + "</span></b></div>";
+  }).join("") + "</div>";
+  if (over) return h + '<div class="role win c pop"><div class="big">' + (v.winner === me ? "🏆" : "🎭") + "</div><h3>" + (v.winner === me ? "Siz yutdingiz!" : esc(pname(v.winner)) + " yutdi!") + "</h3></div>" + endBar();
+  h += '<div class="lrank"><span class="mu sm">Hozirgi nom:</span><br><b>' + esc(v.rname) + "</b></div>";
+  var mid = "", after = "";
+  if (v.rev) {
+    mid += '<div class="lrev">' + v.rev.cs.map(function (c) { return lrCard(c, (c % 13 === LRN.indexOf(String(LRN[v.rev.rank]))) ? "good" : "bad"); }).join("") + "</div>";
+    mid += '<div class="dinfo c" style="margin:6px 0 0;color:#fff">' + (v.rev.liar ? "😈 " + esc(pname(v.rev.who)) + " yolg'on aytgan!" : "✅ " + esc(pname(v.rev.who)) + " rost aytgan!") + "</div>";
+  } else {
+    var pile = ""; for (var i = 0; i < Math.min(v.pile, 6); i++) pile += '<div class="lrc back" style="margin-left:' + (i ? -44 : 0) + 'px;transform:rotate(' + ((i - 2.5) * 6) + 'deg)"></div>';
+    mid += '<div class="lpile">' + (pile || '<span style="color:#cfe">Stol bo\'sh</span>') + (v.pile ? '<span class="cnt" style="background:rgba(0,0,0,.5);color:#fff;border-radius:99px;padding:0 10px;font-weight:800">' + v.pile + "</span>" : "") + "</div>";
+    if (v.claim) after = '<div class="banner c">🂠 <b>' + esc(pname(v.claim.u)) + "</b>: " + v.claim.n + " ta «" + esc(v.claim.r) + "» tashladi</div>";
+  }
+  h += '<div class="stage" style="margin-bottom:40px"><div class="felt"><div class="lfelt">' + mid + "</div></div></div>" + after;
+  h += '<div class="ulog">' + v.log.map(function (x) { return "<div>" + esc(x) + "</div>"; }).join("") + "</div>";
+  h += '<div class="dinfo" style="margin:4px 0">' + (v.phase === "reveal" ? "🔍 Kartalar ochildi..." : mine ? (v.must ? "❗ Oxirgi kartasini tashladi — ishonasizmi?" : v.phase === "claim" ? "🤔 Ishonasizmi? Yoki o'zingiz yuring" : "👉 Yuring: 1–4 ta karta («" + esc(v.rname) + "» deb ayting)") : "⏳ " + esc(pname(v.turn)) + " o'ylayapti") + (v.deadline && v.phase !== "reveal" ? " " + timerHtml(v.deadline) : "") + "</div>";
+  if (mine && v.phase === "claim") h += '<div class="dact"><button class="btn bad" data-a="lr_call">❗ Yolg\'on!</button>' + (v.must ? '<button class="btn" data-a="lr_believe">✅ Ishonaman</button>' : "") + "</div>";
+  if (mine && !v.must && (v.phase === "lead" || v.phase === "claim")) h += '<div class="dact"><button class="btn"' + (sel.length ? "" : " disabled") + ' data-a="lr_go">▶ Tashlash' + (sel.length ? " (" + sel.length + ")" : "") + "</button></div>";
+  h += '<div class="lhand">' + v.hand.map(function (c) { var i2 = v.hand.indexOf(c), mid2 = (v.hand.length - 1) / 2, rot = (i2 - mid2) * Math.min(4, 30 / Math.max(v.hand.length, 1)); return lrCard(c, sel.indexOf(c) >= 0 ? "sel" : "", 'data-a="lr_c" data-c="' + c + '" style="--r:' + rot.toFixed(1) + "deg;--y:" + (Math.abs(i2 - mid2) * Math.abs(i2 - mid2) * 0.35).toFixed(1) + 'px"'); }).join("") + "</div>";
+  return h;
+}
+// ---------- reaksiyalar va do'stlar ----------
+var REACTS = ["🔥", "👏", "😂", "😮", "❤️", "👍", "😡", "🤔"];
+function trayInit() {
+  if ($("#rtray")) return;
+  var t = document.createElement("div"); t.id = "rtray"; t.innerHTML = REACTS.map(function (e) { return '<button data-a="react" data-e="' + e + '">' + e + "</button>"; }).join(""); document.body.appendChild(t);
+  var f = document.createElement("div"); f.id = "rfx"; document.body.appendChild(f);
+}
+function showReact(m) {
+  trayInit(); var el = document.createElement("div"); el.className = "rx"; el.style.left = (10 + Math.random() * 72) + "%";
+  el.innerHTML = esc(m.e) + "<small>" + esc(pname(m.u)) + "</small>"; $("#rfx").appendChild(el); setTimeout(function () { el.remove(); }, 2700);
+}
+function friendsSheet() {
+  var old = $("#fsheet"); if (old) old.remove();
+  var el = document.createElement("div"); el.className = "sheetbg"; el.id = "fsheet";
+  var list = S.friends, inner;
+  if (list == null) inner = '<div class="c pulse" style="padding:20px">Yuklanmoqda...</div>';
+  else if (!list.length) inner = '<div class="c mu" style="padding:16px">Hali do\'stlar yo\'q. Birga o\'ynagan odamlaringiz shu yerda chiqadi. Hozircha «📨 Taklif qilish» tugmasidan foydalaning.</div>';
+  else inner = list.map(function (f) { return '<div class="fr-row">' + '<div class="av" style="background:' + colorOf(f.u) + '">' + esc(String(f.n).charAt(0).toUpperCase()) + "</div><b>" + esc(f.n) + "</b>" + (f.in ? '<span class="mu sm">xonada</span>' : '<button class="btn sec" style="width:auto;padding:8px 14px" data-a="inv" data-u="' + f.u + '">' + (S.invd && S.invd[f.u] ? "✅ Yuborildi" : "🔔 Chaqirish") + "</button>") + "</div>"; }).join("");
+  el.innerHTML = '<div class="sh"><h2 class="c" style="margin:0 0 6px">🔔 Do\'stlarni chaqirish</h2><div style="max-height:50vh;overflow:auto">' + inner + '</div><button class="btn sec" style="margin-top:10px" data-a="fclose">Yopish</button></div>';
+  el.onclick = function (e) { if (e.target === el) el.remove(); }; document.body.appendChild(el);
+}
+
 // ---------- Hikoya ----------
 function rStory(v) {
   var h = "";
@@ -26264,9 +28153,9 @@ function rC4(v) {
   if (v.phase === "play") h += '<div class="hint">' + (v.turn === S.me ? "👉 Sizning navbatingiz" : "⏳ " + esc(pname(v.turn)) + " o'ylayapti") + "</div>";
   var win = {}; (v.line || []).forEach(function (c) { win[c[0] + "," + c[1]] = 1; });
   h += '<div class="colbtns">' + [0, 1, 2, 3, 4, 5, 6].map(function (c) { return '<button data-a="c4" data-c="' + c + '"' + (v.phase !== "play" || v.turn !== S.me || v.b[0][c] ? " disabled" : "") + ">⬇️</button>"; }).join("") + "</div>";
-  h += '<div class="board">';
+  h += '<div class="c4stage"><div class="board">';
   for (var r = 0; r < 6; r++) for (var c = 0; c < 7; c++) { var x = v.b[r][c]; h += '<div class="cell' + (x === 1 ? " r" : x === 2 ? " y" : "") + (win[r + "," + c] ? " w" : "") + (v.last && v.last[0] === r && v.last[1] === c ? " l" : "") + '"></div>'; }
-  h += "</div>";
+  h += "</div></div>";
   if (v.phase === "over") h += '<div class="role win c pop" style="margin-top:14px"><div class="big">' + (v.winner ? "🏆" : "🤝") + "</div><h3>" + (v.winner ? esc(pname(v.winner)) + " yutdi!" : "Durang!") + "</h3></div>" + endBar();
   return h;
 }
@@ -26284,6 +28173,13 @@ function rChain(v) {
   return h;
 }
 
+// ---------------- 3D: barmoq bilan egilish ----------------
+document.addEventListener("pointermove", function (e) {
+  var t = e.target.closest && e.target.closest(".role"); if (!t) return;
+  var r = t.getBoundingClientRect(), x = (e.clientX - r.left) / r.width - 0.5, y = (e.clientY - r.top) / r.height - 0.5;
+  t.style.setProperty("--tx", (-y * 16).toFixed(1) + "deg"); t.style.setProperty("--ty", (x * 22).toFixed(1) + "deg");
+});
+document.addEventListener("pointerleave", function () {}, true);
 // ---------------- hodisalar ----------------
 function act(o) { o.t = "act"; send(o); buzz(); }
 document.addEventListener("click", function (e) {
@@ -26308,12 +28204,44 @@ document.addEventListener("click", function (e) {
     case "s_call": act({a: "call"}); break;
     case "s_vote": act({a: "vote", u: +d("u")}); break;
     case "s_guess": if (confirm("Joy: " + d("l") + " — to'g'rimi?")) act({a: "guess", loc: d("l")}); break;
+    case "bk_c": bkToggle(+d("c")); break;
+    case "bk_clr": S.bkSel = []; render(); break;
+    case "bk_go": if (S.bkSel && S.bkSel.length) { act({a: "play", cs: S.bkSel.slice()}); S.bkSel = []; } break;
     case "ch_sq": chClick(+d("r"), +d("c")); break;
     case "ch_pr": if (S.chPromo) { act({a: "mv", fr: S.chPromo.f, to: S.chPromo.t, p: d("p")}); S.chPromo = null; S.chSel = null; } break;
     case "ch_resign": if (confirm("Taslim bo'lasizmi?")) act({a: "resign"}); break;
     case "ch_draw": act({a: "draw"}); break;
     case "ch_dy": act({a: "draw_yes"}); break;
     case "ch_dn": act({a: "draw_no"}); break;
+    case "tray": trayInit(); $("#rtray").classList.toggle("open"); break;
+    case "react": send({t: "react", e: d("e")}); $("#rtray").classList.remove("open"); break;
+    case "friends": S.friends = null; friendsSheet(); send({t: "friends"}); break;
+    case "fclose": $("#fsheet").remove(); break;
+    case "inv": send({t: "invite", u: +d("u")}); break;
+    case "addbot": send({t: "addbot"}); break;
+    case "rmbot": send({t: "rmbot"}); break;
+    case "lvl": send({t: "level", v: +d("v")}); break;
+    case "bg_pt": bgClick(+d("p")); break;
+    case "bg_off": if (S.bgSel != null && (S.view.legal || []).some(function (m) { return m[0] === S.bgSel && m[1] === 0; })) { act({a: "mv", f: S.bgSel, to: 0}); S.bgSel = null; } break;
+    case "bg_roll": act({a: "roll"}); break;
+    case "bg_resign": if (confirm("Taslim bo'lasizmi?")) act({a: "resign"}); break;
+    case "un_draw": if (S.view.turn === S.me && S.view.drawn == null) act({a: "draw"}); break;
+    case "un_pass": act({a: "pass"}); break;
+    case "un_card": var ui = +d("i"), uv = S.view; if (uv.turn !== S.me) { toast("Hozir sizning navbatingiz emas"); break; } if (uv.ok.indexOf(ui) < 0) { toast("Bu kartani tashlab bo'lmaydi"); break; } if (uv.hand[ui][0] === "W") { S.unWild = ui; render(); } else act({a: "play", i: ui}); break;
+    case "un_col": if (S.unWild != null) { act({a: "play", i: S.unWild, col: d("c")}); S.unWild = null; } break;
+    case "qz_topic": act({a: "topic", k: +d("k")}); break;
+    case "qz_ans": act({a: "ans", k: +d("k")}); break;
+    case "bs_place": bsPlace(+d("r"), +d("c")); break;
+    case "bs_rot": S.bsH = !S.bsH; render(); break;
+    case "bs_undo": if (S.bsShips) S.bsShips.pop(); render(); break;
+    case "bs_rnd": act({a: "ready", rnd: 1}); break;
+    case "bs_ready": act({a: "ready", ships: S.bsShips}); break;
+    case "bs_fire": act({a: "fire", r: +d("r"), c: +d("c")}); break;
+    case "bs_resign": if (confirm("Taslim bo'lasizmi?")) act({a: "resign"}); break;
+    case "lr_c": var lc = +d("c"), lv = S.view; if (lv.turn !== S.me || lv.must) break; var ls = S.lrSel || (S.lrSel = []), li = ls.indexOf(lc); if (li >= 0) ls.splice(li, 1); else { if (ls.length >= 4) ls.shift(); ls.push(lc); } render(); break;
+    case "lr_go": if (S.lrSel && S.lrSel.length) { act({a: "play", cs: S.lrSel.slice()}); S.lrSel = []; } break;
+    case "lr_call": act({a: "call"}); break;
+    case "lr_believe": act({a: "believe"}); break;
     case "sh_sq": shClick(+d("r"), +d("c")); break;
     case "sh_resign": if (confirm("Taslim bo'lasizmi?")) act({a: "resign"}); break;
     case "du_card": var cc = +d("c"), vv = S.view, isDf = vv.dfn === S.me;
@@ -26341,6 +28269,13 @@ document.addEventListener("click", function (e) {
 });
 document.addEventListener("change", function (e) { if (e.target && e.target.id === "pc") { CV.color = e.target.value; if (CV.tool === "eraser") CV.tool = "brush"; render(); } });
 document.addEventListener("keydown", function (e) { if (e.key === "Enter" && e.target.id === "cw") { var t3 = e.target; if (t3.value.trim()) { act({a: "word", x: t3.value}); t3.value = ""; } } });
+function bsPlace(r, c) {
+  var v = S.view; if (v.phase !== "place" || v.ready) return;
+  var ships = S.bsShips || (S.bsShips = []), ln = v.fleet[ships.length]; if (!ln) return;
+  var hz = S.bsH !== false, occ = {}; ships.forEach(function (s) { for (var i = 0; i < s.l; i++) occ[(s.h ? s.r : s.r + i) + "," + (s.h ? s.c + i : s.c)] = 1; });
+  for (var i = 0; i < ln; i++) { var rr = hz ? r : r + i, cc = hz ? c + i : c; if (rr > 9 || cc > 9 || occ[rr + "," + cc]) { toast("Bu yerga sig'maydi (aylantirib ko'ring)"); return; } }
+  ships.push({r: r, c: c, l: ln, h: hz}); render();
+}
 function shClick(r, c) {
   var v = S.view; if (!v || v.turn !== S.me || v.phase !== "play") return; var sel = S.shSel || (S.shSel = []);
   function pref(m) { for (var i = 0; i < sel.length; i++) if (m.p[i][0] !== sel[i][0] || m.p[i][1] !== sel[i][1]) return false; return true; }
@@ -26366,7 +28301,7 @@ function invite() {
   else { try { navigator.clipboard.writeText(text); } catch (e) {} toast(text); }
 }
 window.__hub = {S: S, CV: CV};
-connect(); render();
+trayInit(); connect(); render();
 })();
 </script></body></html>
 """
@@ -26398,6 +28333,84 @@ async def hub_page(request):
         content_type="text/html",
         headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0", "Pragma": "no-cache"},
     )
+
+
+def hub_record_met(info, room):
+    """Birga o'ynagan odamlarni «do'stlar» ro'yxatiga yozadi."""
+    try:
+        hs = info.setdefault("hub", {})
+        met, names = hs.setdefault("met", {}), hs.setdefault("names", {})
+        humans = [(u, p.name) for u, p in room.players.items() if u > 0]
+        for u, n in humans:
+            names[str(u)] = n
+            lst = met.setdefault(str(u), [])
+            for v, _ in humans:
+                if v != u:
+                    if v in lst:
+                        lst.remove(v)
+                    lst.append(v)
+            del lst[:-40]
+        save_data()
+    except Exception as ex:
+        logging.info(f"hub_record_met: {ex}")
+
+
+def hub_friend_list(info, conn):
+    hs = info.get("hub", {})
+    lst = hs.get("met", {}).get(str(conn.uid), [])
+    names = hs.get("names", {})
+    inroom = conn.room.players if conn.room else {}
+    return [{"u": u, "n": names.get(str(u), "O'yinchi"), "in": u in inroom} for u in reversed(lst)][:30]
+
+
+async def hub_send_invite(token, info, conn, target):
+    """Do'stga «xonaga qo'shiling» xabarini botdan yuboradi."""
+    try:
+        target = int(target)
+    except Exception:
+        return False
+    r = conn.room
+    if not r or target not in info.get("hub", {}).get("met", {}).get(str(conn.uid), []) or target in r.players:
+        return False
+    if target in info.get("blocked_users", []):
+        return False
+    now = hub_now()
+    inv = getattr(conn, "inv", None)
+    if inv is None:
+        inv = conn.inv = {}
+    if now - inv.get(target, 0) < 45 or sum(1 for t in inv.values() if now - t < 600) >= 10:
+        return False
+    url = get_hubapp_url(info.get("id"), r.code)
+    if not url:
+        return False
+    g = HUB_GAMES.get(r.gkey)
+    text = (f"🎮 <b>{html_escape(conn.name or 'Do`st')}</b> sizni o'yinga chaqirmoqda!\n"
+            f"{g.emoji if g else '🎲'} {html_escape(g.name if g else '')} — xona <b>{html_escape(r.code)}</b>")
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚪 Xonaga qo'shilish", web_app=WebAppInfo(url=url))]])
+    try:
+        b = _new_bot(token)
+        try:
+            await b.send_message(target, text, reply_markup=kb)
+        finally:
+            await _close_bot(b)
+    except Exception as ex:
+        logging.info(f"hub invite: {ex}")
+        return False
+    inv[target] = now
+    return True
+
+
+async def hub_gemini_call(prompt):
+    if not GEMINI_API_KEY:
+        return None
+    try:
+        return await ask_gemini(prompt)
+    except Exception as ex:
+        logging.info(f"hub gemini: {ex}")
+        return None
+
+
+HUB_GEMINI = hub_gemini_call
 
 
 async def hub_ws(request):
@@ -26457,9 +28470,17 @@ async def hub_ws(request):
                 continue
             if conn.uid is None:
                 continue
+            if m.get("t") == "friends":
+                await conn.send({"t": "friends", "list": hub_friend_list(info, conn)})
+                continue
+            if m.get("t") == "invite":
+                ok = await hub_send_invite(token, info, conn, m.get("u"))
+                await conn.send({"t": "invited", "u": m.get("u"), "ok": ok})
+                continue
             was = conn.room.phase if conn.room else None
             await hub_handle(conn, m)
             if m.get("t") == "start" and conn.room and conn.room.phase == "play" and was != "play":
+                hub_record_met(info, conn.room)
                 st = info.setdefault("hub", {}).setdefault("games", {})
                 st[conn.room.gkey] = st.get(conn.room.gkey, 0) + 1
                 info["hub"]["plays"] = info["hub"].get("plays", 0) + 1
@@ -26511,7 +28532,7 @@ def setup_hub_bot(dp: Dispatcher, token: str):
             await message.answer(f"🚪 Xona <b>{html_escape(room)}</b> ga taklif qilindingiz!\nTugmani bosing va o'yinga qo'shiling 👇", reply_markup=kb)
         else:
             await message.answer(
-                "🎮 <b>O'yinlar markazi</b>\n\n2–10 kishilik kreativ o'yinlar: 🃏 Durak (karta), ♟ Shashka, ♚ Shaxmat, 🔪 Mafia, 🕵️ Josus, 🎨 Chizib top, 📖 Hikoya zanjiri, "
+                "🎮 <b>O'yinlar markazi</b>\n\n2–10 kishilik kreativ o'yinlar: 🃏 Durak (karta), 🐐 Bur-Kozel, 🌈 Uno, ♟ Shashka, ♚ Shaxmat, 🎲 Nard, 🧠 Viktorina, 🚢 Dengiz jangi, 🎭 Kim yolg'onchi, 🔪 Mafia, 🕵️ Josus, 🎨 Chizib top, 📖 Hikoya zanjiri, "
                 "😂 Kulgili javob, 🔴 4 ketma-ket, 🔤 So'z zanjiri.\n\n🎙 Xohlasangiz mikrofon orqali gaplashib o'ynang!", reply_markup=kb)
 
     @dp.message(Command("start"))
