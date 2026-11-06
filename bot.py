@@ -1506,7 +1506,7 @@ BOT_DESCRIPTIONS = {
     "hub": (
         "<i>Do'stlar bilan 2–10 kishilik kreativ o'yinlar: xona oching, kod yoki havola bilan chaqiring va birga o'ynang.</i>\n\n"
         "🃏 Durak (karta), 🐐 Bur-Kozel, 🌈 Uno, ♟ Shashka, ♚ Shaxmat, 🎲 Nard, 🧠 Viktorina, 🚢 Dengiz jangi, 🎭 Kim yolg'onchi, 🔪 Mafia, 🕵️ Josus, 🎨 Chizib top, 📖 Hikoya zanjiri, 😂 Kulgili javob, 🔴 4 ketma-ket, 🔤 So'z zanjiri, 🧩 Men kimman?, 🟩 Boshqotirma, 🔀 So'zni tuz, ➕ Tez hisob, 🎴 Xotira kartalari, ✊ Tosh-qaychi-qog'oz, 🎯 Haqiqat yoki jasorat.\n"
-        "💬 Chat va 🎙 mikrofon (xohlasa yoqadi, xohlasa o'chiradi) — hammasi o'yin ichida.\n\n"
+        "💬 Chat, 🎙 mikrofon va 📷 kamera (xohlasa yoqadi, xohlasa o'chiradi) — hammasi o'yin ichida.\n\n"
         "📊 Admin panelda: statistika, ommaviy xabar, majburiy obuna, adminlar."
     ),
     "city": (
@@ -23451,13 +23451,14 @@ def hub_norm(w: str) -> str:
 
 
 class HubP:
-    __slots__ = ("uid", "name", "conn", "mic", "wins", "joined")
+    __slots__ = ("uid", "name", "conn", "mic", "cam", "wins", "joined")
 
     def __init__(self, uid, name):
         self.uid = uid
         self.name = (name or "O'yinchi")[:20]
         self.conn = None
         self.mic = False
+        self.cam = False
         self.wins = 0
         self.joined = hub_now()
 
@@ -27622,7 +27623,7 @@ class HubRoom:
 
     # --- yordamchilar ---
     def plist(self):
-        return [{"u": p.uid, "n": p.name, "m": p.mic, "o": (p.conn is not None or p.uid < 0), "w": p.wins} for p in self.players.values()]
+        return [{"u": p.uid, "n": p.name, "m": p.mic, "c": p.cam, "o": (p.conn is not None or p.uid < 0), "w": p.wins} for p in self.players.values()]
 
     def public(self, uid):
         return {"code": self.code, "host": self.host, "game": self.gkey, "phase": self.phase, "players": self.plist(),
@@ -27805,6 +27806,7 @@ async def hub_leave(conn: HubConn, hard: bool):
         return
     p.conn = None
     p.mic = False
+    p.cam = False
     if hard or r.phase == "lobby":
         # lobbida chiqib ketgan — o'chiriladi; o'yin paytida (uzilish) joyi saqlanadi
         r.remove(conn.uid)
@@ -27960,6 +27962,12 @@ async def hub_handle(conn: HubConn, m: dict):
             p.mic = bool(m.get("on"))
             await r.broadcast()
         return
+    if t == "cam":
+        p = r.players.get(uid)
+        if p:
+            p.cam = bool(m.get("on"))
+            await r.broadcast()
+        return
     if t == "rtc":
         try:
             to = int(m.get("to"))
@@ -28075,6 +28083,53 @@ h2{font-size:17px;margin:18px 0 8px}
 .td-rate{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:10px 0}
 .td-rate button{padding:18px;border-radius:18px;font-size:28px;background:var(--card);border:2px solid var(--bd)}
 .td-rate button.sel{border-color:var(--ac);background:rgba(124,92,255,.2)}
+
+/* ===== 3D: yangi o'yinlar ===== */
+.who-grid{perspective:800px}
+.who-c{transform:rotateX(9deg);transform-origin:50% 100%;box-shadow:0 5px 0 rgba(0,0,0,.45),0 14px 20px rgba(0,0,0,.35);transition:transform .25s}
+.who-c.cur{transform:rotateX(0) translateY(-5px) scale(1.03);box-shadow:0 8px 0 rgba(0,0,0,.45),0 20px 28px rgba(56,214,160,.28)}
+.who-n{text-shadow:0 1px 0 #000,0 2px 0 rgba(0,0,0,.5),0 7px 10px rgba(0,0,0,.4)}
+.who-c.me .who-n{display:inline-block;animation:flt 3s ease-in-out infinite}
+.wd-b{transform:perspective(700px) rotateX(11deg);transform-origin:50% 100%;transform-style:preserve-3d}
+.wd-t{box-shadow:0 4px 0 rgba(0,0,0,.5),0 9px 12px rgba(0,0,0,.32);transform-style:preserve-3d}
+.wd-t.s0{box-shadow:0 4px 0 #232a3b,0 9px 12px rgba(0,0,0,.32)}
+.wd-t.s1{box-shadow:0 4px 0 #8f6a0c,0 9px 12px rgba(0,0,0,.32)}
+.wd-t.s2{box-shadow:0 4px 0 #1b7a43,0 9px 12px rgba(0,0,0,.32)}
+.wd-new .wd-t.s0,.wd-new .wd-t.s1,.wd-new .wd-t.s2{animation:wdflip .65s both;animation-delay:calc(var(--i) * .13s)}
+@keyframes wdflip{0%{transform:rotateX(0)}50%{transform:rotateX(90deg)}100%{transform:rotateX(0)}}
+.wd-k{box-shadow:0 3px 0 rgba(0,0,0,.45)}
+.ana-w{perspective:600px}
+.ana-t{transform:rotateX(14deg) rotateY(calc((var(--i,0) - 3) * 5deg));box-shadow:0 1px 0 #4c33b4,0 2px 0 #4a30ac,0 3px 0 #3f2a98,0 4px 0 #36238a,0 5px 0 #2d1d78,0 6px 0 #241766,0 16px 18px rgba(0,0,0,.55);animation:anaFloat 3s ease-in-out infinite;animation-delay:calc(var(--i,0) * .18s);text-shadow:0 2px 0 rgba(0,0,0,.4)}
+.ana-t.hint{box-shadow:0 1px 0 #1c7a43,0 2px 0 #1a7040,0 3px 0 #17653a,0 4px 0 #145a34,0 5px 0 #104e2d,0 6px 0 #0d4326,0 16px 18px rgba(0,0,0,.55)}
+@keyframes anaFloat{0%,100%{translate:0 0}50%{translate:0 -5px}}
+.math-q{transform:perspective(600px) rotateX(14deg) rotateY(-8deg);animation:sway 4s ease-in-out infinite;color:#fff;text-shadow:1px 1px 0 #8f7bff,2px 2px 0 #7c5cff,3px 3px 0 #6d4de8,4px 4px 0 #5d3fd0,5px 5px 0 #4d33b4,6px 6px 0 #3f2a98,7px 7px 0 #33227c,8px 8px 0 #281a60,0 22px 28px rgba(0,0,0,.55)}
+.mm{perspective:900px}
+.mm-c{background:none !important;border:0 !important;padding:0;position:relative;opacity:1 !important}
+.mm-in{position:absolute;inset:0;display:block;transform-style:preserve-3d}
+.mm-f{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;border-radius:14px;font-size:30px;backface-visibility:hidden;-webkit-backface-visibility:hidden}
+.mm-bk{background:linear-gradient(160deg,#7a6bff,#2a2475);color:#fff;font-weight:900;box-shadow:0 5px 0 #1a1550,0 11px 15px rgba(0,0,0,.45),inset 0 1px 0 rgba(255,255,255,.3)}
+.mm-ft{background:linear-gradient(160deg,#fff,#dbe3ff);transform:rotateY(180deg);box-shadow:0 5px 0 #8f9bc9,0 11px 15px rgba(0,0,0,.4)}
+.mm-c.up .mm-in{animation:mmflip .5s cubic-bezier(.3,.8,.3,1) forwards}
+.mm-c.done .mm-in{transform:rotateY(180deg)}
+.mm-c.done .mm-ft{background:linear-gradient(160deg,#f4f7ff,#cfd8ff);box-shadow:0 5px 0 var(--bc,#8f9bc9),0 0 0 3px var(--bc,#8f9bc9),0 11px 15px rgba(0,0,0,.4)}
+@keyframes mmflip{from{transform:rotateY(0)}to{transform:rotateY(180deg)}}
+.mm-c:not(.up):not(.done):not([disabled]):active .mm-bk{transform:translateY(4px);box-shadow:0 1px 0 #1a1550,0 4px 8px rgba(0,0,0,.4)}
+.rps-b{perspective:700px}
+.rps-b button{transform:rotateX(12deg);box-shadow:0 7px 0 rgba(0,0,0,.5),0 15px 20px rgba(0,0,0,.35);transition:transform .12s,box-shadow .12s;text-shadow:0 6px 8px rgba(0,0,0,.45)}
+.rps-b button:active{transform:rotateX(12deg) translateY(6px);box-shadow:0 1px 0 rgba(0,0,0,.5),0 4px 8px rgba(0,0,0,.35)}
+.rps-b button.sel{transform:rotateX(0) translateY(5px);box-shadow:0 2px 0 rgba(0,0,0,.5)}
+.rps-vs{perspective:700px}
+.rps-vs .rp{display:inline-block;text-shadow:0 10px 16px rgba(0,0,0,.55);animation:rpsSpin .9s cubic-bezier(.2,.8,.3,1) both}
+@keyframes rpsSpin{from{transform:rotateY(540deg) scale(.3)}to{transform:rotateY(0) scale(1)}}
+.td-kind{perspective:700px}
+.td-kind button{transform:rotateX(12deg);box-shadow:0 7px 0 rgba(0,0,0,.5),0 16px 22px rgba(0,0,0,.35);transition:transform .12s,box-shadow .12s}
+.td-kind button:active{transform:rotateX(12deg) translateY(6px);box-shadow:0 1px 0 rgba(0,0,0,.5)}
+.td-kind button i{display:inline-block;text-shadow:0 8px 12px rgba(0,0,0,.5);animation:flt 3s ease-in-out infinite}
+.td-task{transform:perspective(700px) rotateX(6deg);box-shadow:0 6px 0 rgba(0,0,0,.45),0 20px 30px rgba(0,0,0,.4);animation:tdFlip .7s cubic-bezier(.2,.8,.3,1);text-shadow:0 2px 0 rgba(0,0,0,.35)}
+@keyframes tdFlip{from{transform:perspective(700px) rotateY(-90deg) rotateX(6deg);opacity:0}}
+.td-rate{perspective:600px}
+.td-rate button{transform:rotateX(10deg);box-shadow:0 6px 0 rgba(0,0,0,.5),0 12px 16px rgba(0,0,0,.3);transition:transform .12s,box-shadow .12s}
+.td-rate button:active,.td-rate button.sel{transform:rotateX(0) translateY(5px);box-shadow:0 1px 0 rgba(0,0,0,.5)}
 .codebox{display:flex;gap:8px}
 .codebox input{text-transform:uppercase;letter-spacing:6px;text-align:center;font-weight:800;font-size:20px}
 .codebox button{width:auto;padding:0 22px;flex:none}
@@ -28399,6 +28454,18 @@ canvas{width:100%;height:100%;display:block;touch-action:none}
 .lhand .lrc{margin:0 -8px;transform:rotate(var(--r,0deg)) translateY(var(--y,0px));transform-origin:50% 130%}
 .lhand .lrc.sel{transform:translateY(-20px) rotate(var(--r,0deg))}
 .lrank b{text-shadow:2px 2px 0 rgba(0,0,0,.3),0 4px 0 rgba(0,0,0,.25);transform:perspective(400px) rotateX(14deg);display:inline-block}
+
+/* ===== kamera oynachalari ===== */
+.top{gap:7px}.top h1{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:17px}
+#vbox{position:fixed;z-index:12;top:calc(env(safe-area-inset-top,0px) + 66px);right:10px;display:none;flex-direction:column;gap:10px;align-items:flex-end;perspective:700px;touch-action:none;user-select:none;-webkit-user-select:none}
+#vbox.on{display:flex}
+.vt{position:relative;width:96px;height:128px;border-radius:18px;overflow:hidden;background:#0d0f1c;border:2px solid rgba(255,255,255,.2);box-shadow:0 6px 0 rgba(0,0,0,.5),0 16px 26px rgba(0,0,0,.55);transform:rotateY(-9deg);transition:width .25s,height .25s,transform .25s}
+.vt.big{width:min(74vw,300px);height:min(98vw,400px);transform:rotateY(0)}
+.vt video{width:100%;height:100%;object-fit:cover;display:block;background:#000}
+.vt.mirror video{transform:scaleX(-1)}
+.vt .ph{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:30px;background:linear-gradient(160deg,#2a2475,#12122b);color:#fff}
+.vt .nm{position:absolute;left:0;right:0;bottom:0;padding:14px 8px 5px;font-size:11px;font-weight:800;color:#fff;background:linear-gradient(transparent,rgba(0,0,0,.75));white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.vt .fl{position:absolute;top:5px;right:5px;width:28px;height:28px;border-radius:50%;background:rgba(0,0,0,.55);border:0;color:#fff;font-size:14px;padding:0}
 </style></head>
 <body>
 <div id="app">
@@ -28406,6 +28473,7 @@ canvas{width:100%;height:100%;display:block;touch-action:none}
   <div id="main"></div>
   <div class="dock" id="dock" style="display:none"></div>
 </div>
+<div id="vbox"></div>
 <div id="chat"><div class="sheet"><div class="hd">💬 Chat <button id="chatx">✕</button></div><div id="msgs"></div>
 <div class="cin"><input id="cin" placeholder="Xabar yozing..." maxlength="300" autocomplete="off"><button id="csend">➤</button></div></div></div>
 <div id="toast"></div>
@@ -28422,7 +28490,7 @@ function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function
 var COLORS = ["#7c5cff", "#ff5c9a", "#38d6a0", "#ffb84d", "#4da3ff", "#ff7a4d", "#b86bff", "#2ec4b6", "#e84a5f", "#8bc34a"];
 function colorOf(u) { return COLORS[Math.abs(u) % COLORS.length]; }
 
-var S = {ws: null, me: 0, name: "", bot: "", room: null, view: {}, games: [], chat: [], unread: 0, skew: 0, ok: false, rtc: {}, local: null, micOn: false,
+var S = {ws: null, me: 0, name: "", bot: "", room: null, view: {}, games: [], chat: [], unread: 0, skew: 0, ok: false, rtc: {}, local: null, micOn: false, cam: null, tiles: {}, online: {}, fails: {}, facing: "user", ice: null,
          tried: 0, joinCode: (QS.get("room") || "").toUpperCase(), sid: -1, sheet: null, inChat: false};
 function gameInfo(k) { for (var i = 0; i < S.games.length; i++) if (S.games[i].k === k) return S.games[i]; return {n: k, e: "🎮", d: "", min: 2, max: 10}; }
 function pl(u) { var ps = S.room ? S.room.players : []; for (var i = 0; i < ps.length; i++) if (ps[i].u === u) return ps[i]; return null; }
@@ -28445,7 +28513,7 @@ document.addEventListener("visibilitychange", function () { if (!document.hidden
 
 function onMsg(m) {
   var t = m.t;
-  if (t === "hello") { S.ok = true; S.me = m.you; S.name = m.name; S.bot = m.bot || ""; S.games = m.games || []; S.joinCode = ""; render(); }
+  if (t === "hello") { S.ok = true; S.me = m.you; S.name = m.name; S.bot = m.bot || ""; S.games = m.games || []; S.joinCode = ""; if (m.ice) S.ice = m.ice; if (S.micOn) send({t: "mic", on: true}); if (S.cam) send({t: "cam", on: true}); render(); }
   else if (t === "s") {
     S.skew = m.now - Date.now(); var was = S.room; S.room = m.room; S.view = m.view || {};
     if (!was) { S.chat = S.chat.slice(-40); }
@@ -28466,7 +28534,7 @@ function onMsg(m) {
   else if (t === "clear") { cvReset(); }
   else if (t === "undo") { cvUndo(); }
 }
-function leaveLocal() { S.room = null; S.view = {}; S.chat = []; S.unread = 0; S.sid = -1; Object.keys(S.rtc).forEach(function (k) { closePeer(+k); }); micOff(); closeChat(); }
+function leaveLocal() { S.room = null; S.view = {}; S.chat = []; S.unread = 0; S.sid = -1; Object.keys(S.rtc).forEach(function (k) { closePeer(+k); }); micOff(); camOff(); closeChat(); }
 
 // ---------------- chat ----------------
 function addChat(m) {
@@ -28486,54 +28554,214 @@ function updBadge() { var b = $("#chbd"); if (b) { b.textContent = S.unread; b.s
 function sendChat() { var i = $("#cin"), x = i.value.trim(); if (!x) return; send({t: "chat", x: x}); i.value = ""; }
 $("#csend").onclick = sendChat; $("#cin").onkeydown = function (e) { if (e.key === "Enter") sendChat(); }; $("#chatx").onclick = closeChat;
 
-// ---------------- mikrofon (WebRTC) ----------------
-var ICE = {iceServers: [{urls: "stun:stun.l.google.com:19302"}, {urls: "stun:stun1.l.google.com:19302"}]};
+// ---------------- mikrofon va kamera (WebRTC) ----------------
+var ICE_DEF = [{urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302", "stun:stun.cloudflare.com:3478"]}];
+function iceCfg() { return {iceServers: (S.ice && S.ice.length) ? S.ice : ICE_DEF, iceCandidatePoolSize: 2}; }
+function noop() {}
+function safePlay(el) { try { var p = el.play(); if (p && p.catch) p.catch(noop); } catch (e) {} }
 function rtcSync() {
-  if (!S.room || !window.RTCPeerConnection) return;
-  var ids = S.room.players.map(function (p) { return p.u; }).filter(function (u) { return u !== S.me; });
+  if (!S.room || !window.RTCPeerConnection) { syncTiles(); return; }
+  var ids = [];
+  S.room.players.forEach(function (p) {
+    if (p.u === S.me || p.u < 0) return;
+    var on = !!p.o, was = S.online[p.u]; S.online[p.u] = on;
+    if (on) ids.push(p.u);
+    if (S.rtc[p.u] && was !== undefined && was !== on) closePeer(p.u);
+  });
   ids.forEach(function (u) { if (!S.rtc[u]) mkPeer(u, S.me < u); });
   Object.keys(S.rtc).forEach(function (k) { if (ids.indexOf(+k) < 0) closePeer(+k); });
+  syncTiles();
+}
+function attachLocal(o) {
+  var a = S.local ? S.local.getAudioTracks()[0] : null, v = S.cam ? S.cam.getVideoTracks()[0] : null;
+  try { if (o.snd.audio) o.snd.audio.replaceTrack(a || null).catch(noop); } catch (e) {}
+  try { if (o.snd.video) o.snd.video.replaceTrack(v || null).catch(noop); } catch (e) {}
 }
 function mkPeer(u, init) {
-  var pc = new RTCPeerConnection(ICE), o = {pc: pc, audio: null, pend: []};
+  var pc = new RTCPeerConnection(iceCfg()), o = {pc: pc, init: init, pend: [], snd: {}, audio: null, vstream: null, dt: 0};
   S.rtc[u] = o;
-  var tr = pc.addTransceiver("audio", {direction: "sendrecv"}); o.sender = tr.sender;
-  if (S.local) { try { tr.sender.replaceTrack(S.local.getAudioTracks()[0]); } catch (e) {} }
+  if (init) {
+    o.snd.audio = pc.addTransceiver("audio", {direction: "sendrecv"}).sender;
+    o.snd.video = pc.addTransceiver("video", {direction: "sendrecv"}).sender;
+    attachLocal(o);
+  }
   pc.onicecandidate = function (e) { if (e.candidate) send({t: "rtc", to: u, d: {c: e.candidate}}); };
-  pc.ontrack = function (e) {
-    if (!o.audio) { o.audio = new Audio(); o.audio.autoplay = true; o.audio.playsInline = true; document.body.appendChild(o.audio); }
-    o.audio.srcObject = (e.streams && e.streams[0]) || new MediaStream([e.track]); var p = o.audio.play(); if (p && p.catch) p.catch(function () {});
+  pc.ontrack = function (e) { onRemoteTrack(u, o, e); };
+  pc.onconnectionstatechange = function () {
+    var st = pc.connectionState;
+    if (st === "connected") { S.fails[u] = 0; clearTimeout(o.dt); }
+    else if (st === "failed") redoPeer(u, o);
+    else if (st === "disconnected") { clearTimeout(o.dt); o.dt = setTimeout(function () { if (S.rtc[u] === o && pc.connectionState !== "connected") redoPeer(u, o); }, 5000); }
   };
-  if (init) { pc.createOffer().then(function (of) { return pc.setLocalDescription(of); }).then(function () { send({t: "rtc", to: u, d: {s: pc.localDescription}}); }).catch(function () {}); }
+  if (init) {
+    pc.createOffer().then(function (of) { return pc.setLocalDescription(of); })
+      .then(function () { send({t: "rtc", to: u, d: {s: pc.localDescription}}); }).catch(noop);
+  }
 }
-function closePeer(u) { var o = S.rtc[u]; if (!o) return; try { o.pc.close(); } catch (e) {} if (o.audio) { try { o.audio.srcObject = null; o.audio.remove(); } catch (e) {} } delete S.rtc[u]; }
+function redoPeer(u, o) {
+  if (S.rtc[u] !== o || !S.room) return;
+  S.fails[u] = (S.fails[u] || 0) + 1;
+  closePeer(u);
+  if (S.fails[u] > 6) { toast("Ovoz ulanishi o'rnatilmadi. Internetni tekshiring."); return; }
+  setTimeout(function () {
+    if (!S.room || S.rtc[u]) return;
+    rtcSync();
+    if (!(S.me < u) && S.rtc[u]) send({t: "rtc", to: u, d: {redo: 1}});
+  }, 400 + Math.random() * 600);
+}
+function onRemoteTrack(u, o, e) {
+  var tr = e.track;
+  if (tr.kind === "audio") {
+    if (!o.audio) { o.audio = document.createElement("audio"); o.audio.autoplay = true; o.audio.setAttribute("playsinline", ""); o.audio.style.display = "none"; document.body.appendChild(o.audio); }
+    o.audio.srcObject = new MediaStream([tr]); safePlay(o.audio);
+  } else { o.vstream = new MediaStream([tr]); syncTiles(); }
+}
+function closePeer(u) {
+  var o = S.rtc[u]; if (!o) return;
+  clearTimeout(o.dt);
+  try { o.pc.close(); } catch (e) {}
+  if (o.audio) { try { o.audio.srcObject = null; o.audio.remove(); } catch (e) {} }
+  delete S.rtc[u]; syncTiles();
+}
 function onRtc(m) {
   var u = m.from, d = m.d || {}; if (!window.RTCPeerConnection) return;
-  var o = S.rtc[u]; if (!o) { mkPeer(u, false); o = S.rtc[u]; }
+  if (d.redo) { if (S.me < u && S.room) { closePeer(u); mkPeer(u, true); } return; }
+  var o = S.rtc[u];
+  var isOffer = !!(d.s && d.s.type === "offer");
+  if (isOffer && o && (o.pc.remoteDescription || o.pc.signalingState !== "stable")) { closePeer(u); o = null; }
+  if (!o) { if (!isOffer) return; mkPeer(u, false); o = S.rtc[u]; }
   var pc = o.pc;
   if (d.s) {
-    if (d.s.type === "offer" && pc.signalingState !== "stable") { closePeer(u); mkPeer(u, false); o = S.rtc[u]; pc = o.pc; }
     pc.setRemoteDescription(d.s).then(function () {
-      o.pend.splice(0).forEach(function (c) { pc.addIceCandidate(c).catch(function () {}); });
-      if (d.s.type === "offer") return pc.createAnswer().then(function (a) { return pc.setLocalDescription(a); }).then(function () { send({t: "rtc", to: u, d: {s: pc.localDescription}}); });
-    }).catch(function () {});
-  } else if (d.c) { if (pc.remoteDescription) pc.addIceCandidate(d.c).catch(function () {}); else o.pend.push(d.c); }
+      o.pend.splice(0).forEach(function (c) { pc.addIceCandidate(c).catch(noop); });
+      if (!isOffer) return;
+      pc.getTransceivers().forEach(function (t) {
+        var k = t.receiver && t.receiver.track && t.receiver.track.kind;
+        if (!k || o.snd[k]) return;
+        try { t.direction = "sendrecv"; } catch (e) {}
+        o.snd[k] = t.sender;
+      });
+      attachLocal(o);
+      return pc.createAnswer().then(function (a) { return pc.setLocalDescription(a); })
+        .then(function () { send({t: "rtc", to: u, d: {s: pc.localDescription}}); });
+    }).catch(function (e) { console.warn("rtc", e && e.message); });
+  } else if (d.c) { if (pc.remoteDescription) pc.addIceCandidate(d.c).catch(noop); else o.pend.push(d.c); }
+}
+function mediaErr(e, what) {
+  var n = e && e.name;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return what + " bu qurilmada ishlamaydi. Telegram'ni yangilang.";
+  if (n === "NotAllowedError" || n === "SecurityError") return what + "ga ruxsat berilmadi. Telefon sozlamalaridan Telegram uchun ruxsat bering.";
+  if (n === "NotFoundError" || n === "OverconstrainedError") return what + " topilmadi.";
+  if (n === "NotReadableError" || n === "AbortError") return what + " band (boshqa ilova ishlatmoqda).";
+  return what + "ni yoqib bo'lmadi" + (n ? " (" + n + ")" : "") + ".";
 }
 function micOn() {
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { toast("Bu qurilmada mikrofon ishlamaydi"); return; }
-  navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true, autoGainControl: true}}).then(function (st) {
-    S.local = st; S.micOn = true; var tk = st.getAudioTracks()[0];
-    Object.keys(S.rtc).forEach(function (k) { try { S.rtc[k].sender.replaceTrack(tk); } catch (e) {} });
-    applyTalk(); send({t: "mic", on: true}); render();
-  }).catch(function () { toast("Mikrofonga ruxsat berilmadi. Telefon sozlamalaridan ruxsat bering."); });
+  if (S.micBusy || S.micOn) return Promise.resolve();
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { toast(mediaErr(null, "Mikrofon")); return Promise.resolve(); }
+  S.micBusy = true;
+  return navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true, autoGainControl: true}}).then(function (st) {
+    S.micBusy = false;
+    if (!S.room) { st.getTracks().forEach(function (t) { t.stop(); }); return; }
+    S.local = st; S.micOn = true; applyTalk();
+    Object.keys(S.rtc).forEach(function (k) { attachLocal(S.rtc[k]); });
+    send({t: "mic", on: true}); render(); unlockAudio();
+  }).catch(function (e) { S.micBusy = false; toast(mediaErr(e, "Mikrofon")); });
 }
 function micOff() {
-  if (S.local) { S.local.getTracks().forEach(function (t) { t.stop(); }); }
-  Object.keys(S.rtc).forEach(function (k) { try { S.rtc[k].sender.replaceTrack(null); } catch (e) {} });
-  S.local = null; var was = S.micOn; S.micOn = false; if (was) send({t: "mic", on: false});
+  if (S.local) S.local.getTracks().forEach(function (t) { t.stop(); });
+  S.local = null; var was = S.micOn; S.micOn = false;
+  Object.keys(S.rtc).forEach(function (k) { attachLocal(S.rtc[k]); });
+  if (was) send({t: "mic", on: false});
+}
+function camConstraints() {
+  var small = S.room && S.room.players.length > 2;
+  return {facingMode: {ideal: S.facing || "user"}, width: {ideal: small ? 320 : 640}, height: {ideal: small ? 240 : 480}, frameRate: {ideal: small ? 15 : 24, max: 24}};
+}
+function camOn() {
+  if (S.camBusy || S.cam) return Promise.resolve();
+  if (!S.room || S.room.players.length < 2) { toast("Kamera uchun xonada kamida 2 kishi bo'lishi kerak"); return Promise.resolve(); }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { toast(mediaErr(null, "Kamera")); return Promise.resolve(); }
+  S.camBusy = true;
+  return navigator.mediaDevices.getUserMedia({video: camConstraints(), audio: false}).then(function (st) {
+    S.camBusy = false;
+    if (!S.room) { st.getTracks().forEach(function (t) { t.stop(); }); return; }
+    S.cam = st; applyTalk();
+    Object.keys(S.rtc).forEach(function (k) { attachLocal(S.rtc[k]); });
+    send({t: "cam", on: true}); syncTiles(); render(); unlockAudio();
+  }).catch(function (e) { S.camBusy = false; toast(mediaErr(e, "Kamera")); });
+}
+function camOff() {
+  if (S.cam) S.cam.getTracks().forEach(function (t) { t.stop(); });
+  S.cam = null; 
+  Object.keys(S.rtc).forEach(function (k) { attachLocal(S.rtc[k]); });
+  send({t: "cam", on: false}); syncTiles();
+}
+function camFlip() {
+  if (!S.cam || S.camBusy) return;
+  var next = S.facing === "environment" ? "user" : "environment";
+  S.camBusy = true; S.cam.getTracks().forEach(function (t) { t.stop(); }); S.facing = next;
+  navigator.mediaDevices.getUserMedia({video: camConstraints(), audio: false}).then(function (st) {
+    S.camBusy = false; S.cam = st; applyTalk();
+    Object.keys(S.rtc).forEach(function (k) { attachLocal(S.rtc[k]); });
+    syncTiles();
+  }).catch(function (e) { S.camBusy = false; toast(mediaErr(e, "Kamera")); camOff(); render(); });
 }
 function talkAllowed() { return !S.room || S.room.phase !== "play" || S.view.talk !== false; }
-function applyTalk() { if (S.local) S.local.getAudioTracks().forEach(function (t) { t.enabled = talkAllowed(); }); }
+function applyTalk() { var ok = talkAllowed(); [S.local, S.cam].forEach(function (st) { if (st) st.getTracks().forEach(function (t) { t.enabled = ok; }); }); }
+
+// ---- kamera oynachalari (sahifa qayta chizilganda yo'qolmasligi uchun #vbox ichida)
+function mkTile(u) {
+  var el = document.createElement("div"); el.className = "vt" + (u === S.me ? " me" : ""); el.setAttribute("data-u", u);
+  var v = document.createElement("video"); v.autoplay = true; v.muted = true; v.playsInline = true; v.setAttribute("playsinline", ""); v.setAttribute("muted", "");
+  var ph = document.createElement("div"); ph.className = "ph"; ph.textContent = "📷";
+  var nm = document.createElement("div"); nm.className = "nm";
+  el.appendChild(v); el.appendChild(ph); el.appendChild(nm);
+  if (u === S.me) { var b = document.createElement("button"); b.className = "fl"; b.setAttribute("data-a", "camflip"); b.textContent = "🔄"; el.appendChild(b); }
+  v.onplaying = function () { ph.style.display = "none"; };
+  return {el: el, v: v, ph: ph, nm: nm};
+}
+function syncTiles() {
+  var box = $("#vbox"); if (!box) return;
+  var want = [];
+  if (S.cam && S.room) want.push(S.me);
+  if (S.room) S.room.players.forEach(function (p) { if (p.u !== S.me && p.c && p.o) want.push(p.u); });
+  Object.keys(S.tiles).forEach(function (k) {
+    if (want.indexOf(+k) < 0) { try { S.tiles[k].v.srcObject = null; } catch (e) {} S.tiles[k].el.remove(); delete S.tiles[k]; }
+  });
+  want.forEach(function (u) {
+    var t = S.tiles[u]; if (!t) { t = S.tiles[u] = mkTile(u); box.appendChild(t.el); }
+    var src = u === S.me ? S.cam : (S.rtc[u] && S.rtc[u].vstream);
+    if (src && t.v.srcObject !== src) { t.v.srcObject = src; t.ph.style.display = ""; }
+    if (src) safePlay(t.v);
+    t.nm.textContent = u === S.me ? "Siz" : pname(u);
+    t.el.classList.toggle("mirror", u === S.me && S.facing !== "environment");
+  });
+  box.className = want.length ? "on" : "";
+}
+// brauzer avtoplayni bloklasa, keyingi bosishda ovoz/video yoqiladi
+function unlockAudio() {
+  Object.keys(S.rtc).forEach(function (k) { var a = S.rtc[k].audio; if (a && a.paused) safePlay(a); });
+  Object.keys(S.tiles).forEach(function (k) { if (S.tiles[k].v.paused) safePlay(S.tiles[k].v); });
+}
+["pointerdown", "touchend", "click", "keydown"].forEach(function (ev) { document.addEventListener(ev, unlockAudio, {passive: true}); });
+setInterval(unlockAudio, 2500);
+// oynachani surish / bosib kattalashtirish
+(function () {
+  var box = $("#vbox"), st = null; if (!box) return;
+  box.addEventListener("pointerdown", function (e) {
+    if (e.target.closest && e.target.closest("button")) return;
+    var r = box.getBoundingClientRect(); st = {x: e.clientX, y: e.clientY, l: r.left, t: r.top, moved: false, tile: e.target.closest ? e.target.closest(".vt") : null};
+    try { box.setPointerCapture(e.pointerId); } catch (x) {}
+  });
+  box.addEventListener("pointermove", function (e) {
+    if (!st) return; var dx = e.clientX - st.x, dy = e.clientY - st.y;
+    if (!st.moved && Math.abs(dx) + Math.abs(dy) < 8) return; st.moved = true;
+    box.style.right = "auto"; box.style.left = Math.max(0, Math.min(innerWidth - box.offsetWidth, st.l + dx)) + "px";
+    box.style.top = Math.max(0, Math.min(innerHeight - box.offsetHeight, st.t + dy)) + "px";
+  });
+  box.addEventListener("pointerup", function () { if (st && !st.moved && st.tile) st.tile.classList.toggle("big"); st = null; });
+  box.addEventListener("pointercancel", function () { st = null; });
+})();
 
 // ---------------- vaqt ----------------
 function leftSec(dl) { return Math.max(0, Math.ceil((dl - (Date.now() + S.skew)) / 1000)); }
@@ -28553,6 +28781,7 @@ function topBar(title, back) {
   if (S.room) {
     t += '<button class="ib" data-a="tray">😀</button>';
     t += '<button class="ib' + (S.micOn ? " on" : "") + '" data-a="mic">' + (S.micOn ? "🎙" : "🔇") + '</button>';
+    t += '<button class="ib' + (S.cam ? " on" : "") + '" data-a="cam">' + (S.cam ? "📹" : "📷") + '</button>';
     t += '<button class="ib" data-a="chat">💬<span class="bd" id="chbd" style="display:none">0</span></button>';
   }
   $("#top").innerHTML = t;
@@ -29264,9 +29493,9 @@ function rWho(v) {
 }
 
 // ---------- Boshqotirma (Wordle) ----------
-function wdRow(cells, sts, n) {
-  var r = '<div class="wd-r" style="--n:' + n + '">';
-  for (var i = 0; i < n; i++) r += '<div class="wd-t' + (sts ? " s" + sts[i] : "") + '">' + (cells && cells[i] ? esc(cells[i]) : "") + "</div>";
+function wdRow(cells, sts, n, isNew) {
+  var r = '<div class="wd-r' + (isNew ? " wd-new" : "") + '" style="--n:' + n + '">';
+  for (var i = 0; i < n; i++) r += '<div class="wd-t' + (sts ? " s" + sts[i] : "") + '" style="--i:' + i + '">' + (cells && cells[i] ? esc(cells[i]) : "") + "</div>";
   return r + "</div>";
 }
 function rWord(v) {
@@ -29277,7 +29506,7 @@ function rWord(v) {
   for (var i = 0; i < v.tries; i++) h += wdRow(null, (v.opp || [])[i] || null, n);
   h += "</div>";
   h += '<div class="wd-b">';
-  for (var j = 0; j < v.tries; j++) { var g = (v.mine || [])[j]; h += g ? wdRow(g.w, g.s, n) : wdRow(null, null, n); }
+  for (var j = 0; j < v.tries; j++) { var g = (v.mine || [])[j]; h += g ? wdRow(g.w, g.s, n, j === (v.mine || []).length - 1) : wdRow(null, null, n); }
   h += "</div>";
   if (v.phase === "play") {
     var best = {};
@@ -29305,7 +29534,7 @@ function rRace(v) {
   if (v.phase === "over") return h + podium(v, v.kind === "math" ? "➕" : "🔀", "Durang!") + endBar();
   h += scoreChips(v, v.solved);
   if (v.kind === "anagram") {
-    h += '<div class="c mu sm" style="margin-top:10px">Harflardan so\'z tuzing (' + v.len + " harf)</div><div class=\"ana-w\">" + (v.scr || []).map(function (x) { return '<div class="ana-t">' + esc(x) + "</div>"; }).join("") + "</div>";
+    h += '<div class="c mu sm" style="margin-top:10px">Harflardan so\'z tuzing (' + v.len + " harf)</div><div class=\"ana-w\">" + (v.scr || []).map(function (x, i) { return '<div class="ana-t" style="--i:' + i + '">' + esc(x) + "</div>"; }).join("") + "</div>";
     if (v.hint) h += '<div class="hint">💡 Birinchi harf: <b>' + esc(v.hint) + "</b></div>";
   } else h += '<div class="math-q">' + esc(v.q) + " = ?</div>";
   if (v.phase === "play") {
@@ -29323,7 +29552,7 @@ function rMem(v) {
   h += '<div class="hint">' + (v.turn === S.me ? "👉 Sizning navbatingiz — ikkita karta oching" : "⏳ " + esc(pname(v.turn)) + " o'ynayapti") + '</div><div class="mm" style="grid-template-columns:repeat(' + v.cols + ',1fr)">';
   v.grid.forEach(function (c, i) {
     var done = v.by && v.by[i] !== undefined, up = c !== null;
-    h += '<button class="mm-c' + (done ? " done" : up ? " up" : "") + '" data-a="mm_flip" data-i="' + i + '"' + (done ? ' style="border-color:' + colorOf(v.by[i]) + '"' : "") + (v.turn !== S.me || v.phase !== "play" || up ? " disabled" : "") + ">" + (up ? c : "?") + "</button>";
+    h += '<button class="mm-c' + (done ? " done" : up ? " up" : "") + '" data-a="mm_flip" data-i="' + i + '"' + (done ? ' style="--bc:' + colorOf(v.by[i]) + '"' : "") + (v.turn !== S.me || v.phase !== "play" || up ? " disabled" : "") + '><span class="mm-in"><span class="mm-f mm-bk">?</span><span class="mm-f mm-ft">' + (up ? esc(c) : "") + "</span></span></button>";
   });
   return h + "</div>";
 }
@@ -29394,6 +29623,8 @@ document.addEventListener("click", function (e) {
     case "join": var c = ($("#jc").value || "").trim().toUpperCase(); if (c.length < 4) { toast("4 harfli kodni kiriting"); break; } send({t: "join", room: c}); break;
     case "leave": if (S.room && S.room.phase === "play" && !confirm("O'yindan chiqasizmi?")) break; send({t: "leave"}); break;
     case "mic": S.micOn ? (micOff(), render()) : micOn(); break;
+    case "cam": S.cam ? (camOff(), render()) : camOn(); break;
+    case "camflip": camFlip(); break;
     case "chat": openChat(); break;
     case "invite": invite(); break;
     case "copy": try { navigator.clipboard.writeText(S.room.code); toast("Kod nusxalandi: " + S.room.code); } catch (x) { toast("Kod: " + S.room.code); } break;
@@ -29629,6 +29860,20 @@ async def hub_gemini_call(prompt):
 HUB_GEMINI = hub_gemini_call
 
 
+def hub_ice_servers():
+    """WebRTC (mikrofon/kamera) uchun STUN va TURN. Mobil internet NAT ortida bo'lgani uchun TURN kerak.
+    O'z TURN serveringiz bo'lsa: HUB_TURN_URLS="turn:host:3478,turns:host:5349" HUB_TURN_USER=... HUB_TURN_PASS=..."""
+    servers = [{"urls": ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302", "stun:stun.cloudflare.com:3478"]}]
+    urls = [u.strip() for u in os.getenv("HUB_TURN_URLS", "").split(",") if u.strip()]
+    if urls:
+        servers.append({"urls": urls, "username": os.getenv("HUB_TURN_USER", ""), "credential": os.getenv("HUB_TURN_PASS", "")})
+    else:
+        servers.append({"urls": ["turn:openrelay.metered.ca:80", "turn:openrelay.metered.ca:443",
+                                 "turn:openrelay.metered.ca:443?transport=tcp", "turns:openrelay.metered.ca:443?transport=tcp"],
+                        "username": "openrelayproject", "credential": "openrelayproject"})
+    return servers
+
+
 async def hub_ws(request):
     token, info = hub_find_bot(request.query.get("b"))
     ws = web.WebSocketResponse(heartbeat=25, max_msg_size=96 * 1024)
@@ -29639,6 +29884,7 @@ async def hub_ws(request):
         return ws
     conn = HubConn(ws)
     bucket = [30.0, hub_now()]          # token bucket: sekundiga ~25 xabar
+    rbucket = [150.0, hub_now()]        # WebRTC signalizatsiya (ICE nomzodlari ko'p bo'ladi)
     try:
         async for msg in ws:
             if msg.type != web.WSMsgType.TEXT:
@@ -29646,11 +29892,13 @@ async def hub_ws(request):
                     break
                 continue
             now = hub_now()
-            bucket[0] = min(30.0, bucket[0] + (now - bucket[1]) * 25)
-            bucket[1] = now
-            if bucket[0] < 1:
+            is_rtc = msg.data.startswith('{"t":"rtc"')
+            bk, cap, rate = (rbucket, 150.0, 100.0) if is_rtc else (bucket, 30.0, 25.0)
+            bk[0] = min(cap, bk[0] + (now - bk[1]) * rate)
+            bk[1] = now
+            if bk[0] < 1:
                 continue
-            bucket[0] -= 1
+            bk[0] -= 1
             try:
                 m = json.loads(msg.data)
             except Exception:
@@ -29680,7 +29928,7 @@ async def hub_ws(request):
                         info["bot_username"] = uname
                     except Exception:
                         uname = ""
-                await conn.send({"t": "hello", "you": uid, "name": name, "bot": str(uname).lstrip("@"), "games": hub_games_info()})
+                await conn.send({"t": "hello", "you": uid, "name": name, "bot": str(uname).lstrip("@"), "games": hub_games_info(), "ice": hub_ice_servers()})
                 if m.get("room"):
                     await hub_handle(conn, {"t": "join", "room": str(m.get("room"))[:8]})
                 continue
