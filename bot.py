@@ -1505,7 +1505,7 @@ def tariff_card_text(tid: str, t: dict) -> str:
 BOT_DESCRIPTIONS = {
     "hub": (
         "<i>Do'stlar bilan 2–10 kishilik kreativ o'yinlar: xona oching, kod yoki havola bilan chaqiring va birga o'ynang.</i>\n\n"
-        "🃏 Durak (karta), 🐐 Bur-Kozel, 🌈 Uno, ♟ Shashka, ♚ Shaxmat, 🎲 Nard, 🧠 Viktorina, 🚢 Dengiz jangi, 🎭 Kim yolg'onchi, 🔪 Mafia, 🕵️ Josus, 🎨 Chizib top, 📖 Hikoya zanjiri, 😂 Kulgili javob, 🔴 4 ketma-ket, 🔤 So'z zanjiri, 🧩 Men kimman?, 🟩 Boshqotirma, 🔀 So'zni tuz, ➕ Tez hisob, 🎴 Xotira kartalari, ✊ Tosh-qaychi-qog'oz, 🎯 Haqiqat yoki jasorat.\n"
+        "🃏 Durak (karta), 🐐 Bur-Kozel, 🌈 Uno, ♟ Shashka, ♚ Shaxmat, 🎲 Nard, 🧠 Viktorina, 🚢 Dengiz jangi, 🎭 Kim yolg'onchi, 🔪 Mafia, 🕵️ Josus, 🎨 Chizib top, 📖 Hikoya zanjiri, 😂 Kulgili javob, 🔴 4 ketma-ket, 🔤 So'z zanjiri, 🧩 Men kimman?, 🟩 Boshqotirma, 🔀 So'zni tuz, ➕ Tez hisob, 🎴 Xotira kartalari, ✊ Tosh-qaychi-qog'oz, 🎯 Haqiqat yoki jasorat, ⚔️ Jang maydoni (30 kishigacha) va 🤝 1 ga 1.\n"
         "💬 Chat, 🎙 mikrofon va 📷 kamera (xohlasa yoqadi, xohlasa o'chiradi) — hammasi o'yin ichida.\n\n"
         "📊 Admin panelda: statistika, ommaviy xabar, majburiy obuna, adminlar."
     ),
@@ -23432,6 +23432,7 @@ import time
 
 HUB_REACTS = ('🔥', '👏', '😂', '😮', '❤️', '👍', '😡', '🤔')
 HUB_ROOMS = {}          # (bot_id, kod) -> HubRoom
+HUB_PUBLIC = {}         # bot_id -> ochiq jang xonasi kodi (navbat)
 HUB_MAX_ROOMS = 400
 
 
@@ -27599,12 +27600,662 @@ class TodGame(HubGame):
         return v
 
 
+# ================================================================= ⚔️ JANG MAYDONI (2D Battle Royale)
+BR_TICK = 0.1            # server qadami (10 Hz)
+BR_SPEED = 215.0         # yurish tezligi (piksel/s)
+BR_R = 16.0              # o'yinchi radiusi
+BR_VIEW = 640.0          # ko'rinish radiusi
+BR_INTRO = 4.0           # boshlanishdagi sanash (s)
+HUB_Q_SECS = 60          # «Boshlash» bosilgach kutish vaqti
+BR_WEAPONS = [
+    {"n": "Pistolet", "d": 16, "r": 3.2, "s": 820.0, "g": 520.0, "sp": 0.03, "p": 1},
+    {"n": "SMG", "d": 9, "r": 9.0, "s": 860.0, "g": 430.0, "sp": 0.09, "p": 1},
+    {"n": "Avtomat", "d": 15, "r": 5.5, "s": 950.0, "g": 680.0, "sp": 0.05, "p": 1},
+    {"n": "Drobovik", "d": 9, "r": 1.1, "s": 760.0, "g": 300.0, "sp": 0.26, "p": 6},
+    {"n": "Snayper", "d": 68, "r": 0.85, "s": 1500.0, "g": 1150.0, "sp": 0.004, "p": 1},
+]
+BR_ZONES = [(30, 25, 0.62, 1.5), (25, 22, 0.42, 3.0), (20, 18, 0.26, 5.0), (15, 15, 0.14, 8.0), (12, 12, 0.06, 12.0), (10, 10, 0.0, 18.0)]
+BR_DUEL_ZONES = [(25, 20, 0.55, 2.0), (15, 15, 0.30, 5.0), (10, 12, 0.12, 10.0), (8, 8, 0.0, 18.0)]
+BR_AMMO, BR_MED, BR_SHIELD = 0, 1, 2      # 10 + k = qurol (k — BR_WEAPONS indeksi)
+
+
+def br_seg_circle(x0, y0, x1, y1, cx, cy, r):
+    dx, dy = x1 - x0, y1 - y0
+    fx, fy = x0 - cx, y0 - cy
+    c = fx * fx + fy * fy - r * r
+    if c <= 0:
+        return 0.0
+    a = dx * dx + dy * dy
+    if a < 1e-9:
+        return None
+    b = 2 * (fx * dx + fy * dy)
+    disc = b * b - 4 * a * c
+    if disc < 0:
+        return None
+    t = (-b - math.sqrt(disc)) / (2 * a)
+    return t if 0 <= t <= 1 else None
+
+
+def br_seg_rect(x0, y0, x1, y1, rx, ry, rw, rh):
+    dx, dy = x1 - x0, y1 - y0
+    t0, t1 = 0.0, 1.0
+    for p, q in ((-dx, x0 - rx), (dx, rx + rw - x0), (-dy, y0 - ry), (dy, ry + rh - y0)):
+        if abs(p) < 1e-12:
+            if q < 0:
+                return None
+            continue
+        r = q / p
+        if p < 0:
+            if r > t1:
+                return None
+            if r > t0:
+                t0 = r
+        else:
+            if r < t0:
+                return None
+            if r < t1:
+                t1 = r
+    return t0
+
+
+class _BP:
+    __slots__ = ("uid", "name", "team", "x", "y", "aim", "mx", "my", "fire", "pick", "hp", "sh", "ammo", "w",
+                 "cd", "alive", "kills", "place", "spec", "disc")
+
+    def __init__(self, uid, name, team, ammo):
+        self.uid, self.name, self.team = uid, name, team
+        self.x = self.y = 0.0
+        self.aim = 0.0
+        self.mx = self.my = 0.0
+        self.fire = False
+        self.pick = False
+        self.hp = 100.0
+        self.sh = 0.0
+        self.ammo = ammo
+        self.w = 0
+        self.cd = 0.0
+        self.alive = True
+        self.kills = 0
+        self.place = 0
+        self.spec = None
+        self.disc = 0.0
+
+
+class RoyaleGame(HubGame):
+    key, name, emoji = "royale", "Jang maydoni", "⚔️"
+    desc = "PUBG kabi jang: 2–30 kishi, qurol va o'q-dori toping, kichrayuvchi doiradan qoching — oxirgi tirik qolgan yutadi!"
+    min, max = 2, 30
+    battle = True
+    mode = "royale"
+    ZONES = BR_ZONES
+    START_AMMO = 60
+    LOOT = 1.0
+
+    # ---- sozlamalar (1 ga 1 da o'zgaradi)
+    def world_size(self, n):
+        return int(min(4800, 1200 + 120 * n))
+
+    def n_houses(self, W):
+        return max(4, int(W * W / 260000))
+
+    # ---- boshlash
+    def start(self):
+        self.rng = random.Random()
+        self.tm = -BR_INTRO
+        self.tick = 0
+        self.bl = []
+        self.items = {}
+        self.iid = 0
+        self.feed_ev = []
+        self.pev = {}
+        self.dirty = False
+        self.winners = []
+        self.task = None
+        users = [u for u in self.room.players if u > 0]
+        rt = getattr(self.room, "teams", None) or {}
+        teams = {u: rt.get(u, u) for u in users} if self.mode == "royale" else {u: u for u in users}
+        if len(set(teams.values())) < 2:
+            teams = {u: u for u in users}
+        self.pl = {u: _BP(u, self.room.players[u].name, teams[u], self.START_AMMO) for u in users}
+        self.gen_map()
+        self.gen_spawns()
+        self.gen_loot()
+        self.gen_zone()
+        self.task = asyncio.get_running_loop().create_task(self.run())
+        for u in self.pl:
+            self.send_map(u)
+
+    def stop(self):
+        self.over = True
+        self.cancel()
+        t = getattr(self, "task", None)
+        if t:
+            t.cancel()
+
+    # ---- xarita
+    def gen_map(self):
+        rng, n = self.rng, len(self.pl)
+        W = self.W = self.world_size(n)
+        self.walls, self.rocks, self.houses = [], [], []
+        want = self.n_houses(W)
+        tries = 0
+        while len(self.houses) < want and tries < want * 40:
+            tries += 1
+            w, h = rng.randint(150, 240), rng.randint(130, 210)
+            x, y = rng.randint(90, W - w - 90), rng.randint(90, W - h - 90)
+            if any(x < ax + aw + 70 and ax < x + w + 70 and y < ay + ah + 70 and ay < y + h + 70 for ax, ay, aw, ah in self.houses):
+                continue
+            self.houses.append((x, y, w, h))
+            self.add_house(x, y, w, h)
+        for _ in range(int(W * W / 220000)):
+            r = rng.randint(20, 34)
+            x, y = rng.randint(60, W - 60), rng.randint(60, W - 60)
+            if any(x > ax - r - 25 and x < ax + aw + r + 25 and y > ay - r - 25 and y < ay + ah + r + 25 for ax, ay, aw, ah in self.houses):
+                continue
+            self.rocks.append([x, y, r])
+        self.cell = 200
+        self.grid = {}
+        for x, y, w, h in self.walls:
+            self._gadd(("r", x, y, w, h), x, y, x + w, y + h)
+        for x, y, r in self.rocks:
+            self._gadd(("c", x, y, r), x - r, y - r, x + r, y + r)
+
+    def add_house(self, x, y, w, h):
+        rng, t, g = self.rng, 14, 62
+        side = rng.randrange(4)
+        add = self.walls.append
+
+        def horiz(px, py, ln, door):
+            if not door:
+                return add([px, py, ln, t])
+            c = px + ln / 2 + rng.uniform(-ln * 0.15, ln * 0.15)
+            a, b = int(c - g / 2), int(c + g / 2)
+            if a - px > 1:
+                add([px, py, a - px, t])
+            if px + ln - b > 1:
+                add([b, py, px + ln - b, t])
+
+        def vert(px, py, ln, door):
+            if not door:
+                return add([px, py, t, ln])
+            c = py + ln / 2 + rng.uniform(-ln * 0.15, ln * 0.15)
+            a, b = int(c - g / 2), int(c + g / 2)
+            if a - py > 1:
+                add([px, py, t, a - py])
+            if py + ln - b > 1:
+                add([px, b, t, py + ln - b])
+        horiz(x, y, w, side == 0)
+        horiz(x, y + h - t, w, side == 1)
+        vert(x, y + t, h - 2 * t, side == 2)
+        vert(x + w - t, y + t, h - 2 * t, side == 3)
+
+    def _gadd(self, ob, x0, y0, x1, y1):
+        c = self.cell
+        for cx in range(int(x0 // c), int(x1 // c) + 1):
+            for cy in range(int(y0 // c), int(y1 // c) + 1):
+                self.grid.setdefault((cx, cy), []).append(ob)
+
+    def obs_in(self, x0, y0, x1, y1):
+        c, seen = self.cell, {}
+        if x0 > x1:
+            x0, x1 = x1, x0
+        if y0 > y1:
+            y0, y1 = y1, y0
+        for cx in range(int(x0 // c), int(x1 // c) + 1):
+            for cy in range(int(y0 // c), int(y1 // c) + 1):
+                for ob in self.grid.get((cx, cy), ()):
+                    seen[id(ob)] = ob
+        return list(seen.values())
+
+    def blocked(self, x, y, r):
+        for ob in self.obs_in(x - r, y - r, x + r, y + r):
+            if ob[0] == "r":
+                cx, cy = min(max(x, ob[1]), ob[1] + ob[3]), min(max(y, ob[2]), ob[2] + ob[4])
+                if (x - cx) ** 2 + (y - cy) ** 2 < r * r:
+                    return True
+            elif (x - ob[1]) ** 2 + (y - ob[2]) ** 2 < (r + ob[3]) ** 2:
+                return True
+        return False
+
+    def push_out(self, x, y, r):
+        for _ in range(3):
+            moved = False
+            for ob in self.obs_in(x - r, y - r, x + r, y + r):
+                if ob[0] == "r":
+                    rx, ry, rw, rh = ob[1], ob[2], ob[3], ob[4]
+                    cx, cy = min(max(x, rx), rx + rw), min(max(y, ry), ry + rh)
+                    dx, dy = x - cx, y - cy
+                    d2 = dx * dx + dy * dy
+                    if d2 >= r * r:
+                        continue
+                    if d2 > 1e-9:
+                        k = (r - math.sqrt(d2)) / math.sqrt(d2)
+                        x, y = x + dx * k, y + dy * k
+                    else:
+                        l, rt, tp, bt = x - rx, rx + rw - x, y - ry, ry + rh - y
+                        m = min(l, rt, tp, bt)
+                        if m == l:
+                            x = rx - r
+                        elif m == rt:
+                            x = rx + rw + r
+                        elif m == tp:
+                            y = ry - r
+                        else:
+                            y = ry + rh + r
+                    moved = True
+                else:
+                    dx, dy = x - ob[1], y - ob[2]
+                    rr = r + ob[3]
+                    d2 = dx * dx + dy * dy
+                    if d2 >= rr * rr:
+                        continue
+                    if d2 > 1e-9:
+                        k = (rr - math.sqrt(d2)) / math.sqrt(d2)
+                        x, y = x + dx * k, y + dy * k
+                    else:
+                        x += rr
+                    moved = True
+            if not moved:
+                break
+        return x, y
+
+    def gen_spawns(self):
+        rng, W = self.rng, self.W
+        groups = {}
+        for p in self.pl.values():
+            groups.setdefault(p.team, []).append(p)
+        anchors = []
+        for mem in groups.values():
+            best, bd = None, -1.0
+            for _ in range(40):
+                x, y = rng.uniform(120, W - 120), rng.uniform(120, W - 120)
+                if self.blocked(x, y, 45):
+                    continue
+                d = min((math.hypot(x - ax, y - ay) for ax, ay in anchors), default=1e9)
+                if d > bd:
+                    best, bd = (x, y), d
+            if best is None:
+                best = (W / 2, W / 2)
+            anchors.append(best)
+            for i, p in enumerate(mem):
+                px, py = best
+                for _ in range(25):
+                    qx, qy = best[0] + rng.uniform(-55, 55) * (1 if i else 0), best[1] + rng.uniform(-55, 55) * (1 if i else 0)
+                    if not self.blocked(qx, qy, BR_R + 2):
+                        px, py = qx, qy
+                        break
+                p.x, p.y = px, py
+                p.aim = math.atan2(W / 2 - py, W / 2 - px)
+
+    def drop(self, typ, x, y):
+        self.iid += 1
+        self.items[self.iid] = [typ, x, y]
+
+    def rand_item(self):
+        r = self.rng.random()
+        if r < 0.30:
+            return BR_AMMO
+        if r < 0.42:
+            return BR_MED
+        if r < 0.54:
+            return BR_SHIELD
+        return 10 + self.rng.choices(range(5), weights=(20, 26, 24, 18, 12))[0]
+
+    def gen_loot(self):
+        rng, W = self.rng, self.W
+        for (x, y, w, h) in self.houses:
+            for _ in range(int(rng.choice((2, 3, 3, 4)) * self.LOOT)):
+                self.drop(self.rand_item(), rng.uniform(x + 30, x + w - 30), rng.uniform(y + 30, y + h - 30))
+        outdoor = int((len(self.pl) * 2.2 + 8) * self.LOOT)
+        for _ in range(outdoor):
+            for _ in range(15):
+                x, y = rng.uniform(60, W - 60), rng.uniform(60, W - 60)
+                if not self.blocked(x, y, 12):
+                    self.drop(self.rand_item(), x, y)
+                    break
+
+    def gen_zone(self):
+        rng, W = self.rng, self.W
+        cx, cy = W / 2 + rng.uniform(-W * 0.08, W * 0.08), W / 2 + rng.uniform(-W * 0.08, W * 0.08)
+        r0 = W * 0.74
+        r = r0
+        self.zs = []
+        t = 0.0
+        for wait, shrink, frac, dps in self.ZONES:
+            nr = r0 * frac
+            off = rng.uniform(0, max(0.0, r - nr)) * 0.9
+            a = rng.uniform(0, math.tau)
+            ncx, ncy = cx + math.cos(a) * off, cy + math.sin(a) * off
+            self.zs.append({"t0": t + wait, "t1": t + wait + shrink, "a": (cx, cy, r), "b": (ncx, ncy, nr), "dps": dps})
+            t += wait + shrink
+            cx, cy, r = ncx, ncy, nr
+        self.zfinal = (cx, cy, r)
+
+    def zone(self, tm):
+        tm = max(tm, 0.0)
+        for z in self.zs:
+            if tm < z["t0"]:
+                return (*z["a"], *z["b"], 0, z["t0"] - tm, z["dps"])
+            if tm < z["t1"]:
+                f = (tm - z["t0"]) / (z["t1"] - z["t0"])
+                a, b = z["a"], z["b"]
+                return (a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f, *b, 1, z["t1"] - tm, z["dps"])
+        return (*self.zfinal, *self.zfinal, 2, 0.0, self.zs[-1]["dps"])
+
+    # ---- tarmoq
+    def send_map(self, uid):
+        p = self.pl.get(uid)
+        if not p:
+            return
+        msg = {"t": "bm", "W": self.W, "mode": self.mode, "me": uid, "team": {u: q.team for u, q in self.pl.items()},
+               "walls": [[int(a), int(b), int(c), int(d)] for a, b, c, d in self.walls], "rocks": [[int(a), int(b), int(c)] for a, b, c in self.rocks],
+               "names": {u: q.name for u, q in self.pl.items()}}
+        try:
+            asyncio.get_running_loop().create_task(self.room.send_to(uid, msg))
+        except RuntimeError:
+            pass
+
+    def rejoin(self, uid):
+        self.send_map(uid)
+
+    def viewer_of(self, p):
+        if p.alive:
+            return p
+        t = self.pl.get(p.spec)
+        if t and t.alive:
+            return t
+        for q in self.pl.values():
+            if q.alive and q.team == p.team:
+                p.spec = q.uid
+                return q
+        for q in self.pl.values():
+            if q.alive:
+                p.spec = q.uid
+                return q
+        return p
+
+    def snap(self, uid):
+        p = self.pl[uid]
+        v = self.viewer_of(p)
+        vx, vy = v.x, v.y
+        lim = (BR_VIEW * 1.15) ** 2
+        ps = [[q.uid, int(q.x), int(q.y), round(q.aim, 2), int(q.hp)] for q in self.pl.values()
+              if q.alive and q is not v and (q.x - vx) ** 2 + (q.y - vy) ** 2 <= lim]
+        bl = [[int(b[0]), int(b[1]), int(b[2]), int(b[3])] for b in self.bl if (b[0] - vx) ** 2 + (b[1] - vy) ** 2 <= lim]
+        it = [[i, t[0], int(t[1]), int(t[2])] for i, t in self.items.items() if (t[1] - vx) ** 2 + (t[2] - vy) ** 2 <= lim]
+        z = self.zone(self.tm)
+        ev = list(self.feed_ev) + self.pev.get(uid, [])
+        return {"t": "bt", "k": self.tick, "tm": round(self.tm, 1), "me": [round(vx, 1), round(vy, 1), round(v.aim, 2), int(v.hp), int(v.sh), v.ammo, v.w, v.uid],
+                "ps": ps, "bl": bl, "it": it, "z": [int(z[0]), int(z[1]), int(z[2]), int(z[3]), int(z[4]), int(z[5]), z[6], round(z[7], 1)],
+                "al": sum(1 for q in self.pl.values() if q.alive), "kl": p.kills, "dead": 0 if p.alive else 1,
+                "tmt": [[q.uid, int(q.x), int(q.y)] for q in self.pl.values() if q.alive and q.team == p.team and q is not v],
+                "ev": ev}
+
+    async def _send(self, conn, msg):
+        try:
+            await conn.send(msg)
+        finally:
+            conn.bt_pend = max(0, getattr(conn, "bt_pend", 1) - 1)
+
+    def send_snaps(self):
+        for uid, pr in list(self.room.players.items()):
+            c = pr.conn
+            if c is None or uid not in self.pl:
+                continue
+            if getattr(c, "bt_pend", 0) >= 3:
+                continue
+            c.bt_pend = getattr(c, "bt_pend", 0) + 1
+            asyncio.ensure_future(self._send(c, self.snap(uid)))
+        self.feed_ev = []
+        self.pev = {}
+
+    async def run(self):
+        try:
+            nxt = hub_now()
+            while not self.over:
+                nxt += BR_TICK
+                try:
+                    self.step(BR_TICK)
+                    self.send_snaps()
+                except Exception as ex:
+                    logging.exception(f"royale step: {ex}")
+                    self.over = True
+                    self.room.after_game()
+                    self.room.changed()
+                    return
+                d = nxt - hub_now()
+                if d > 0:
+                    await asyncio.sleep(d)
+                else:
+                    nxt = hub_now()
+                    await asyncio.sleep(0)
+        except asyncio.CancelledError:
+            pass
+
+    # ---- o'yin mantiqi
+    def inp(self, uid, m):
+        p = self.pl.get(uid)
+        if not p:
+            return
+        if not p.alive:
+            if m.get("sw"):
+                alive = [q.uid for q in self.pl.values() if q.alive]
+                if alive:
+                    i = alive.index(p.spec) + 1 if p.spec in alive else 0
+                    p.spec = alive[i % len(alive)]
+            return
+        try:
+            mx, my, a = float(m.get("x", 0)), float(m.get("y", 0)), float(m.get("a", p.aim))
+        except (TypeError, ValueError):
+            return
+        if not (math.isfinite(mx) and math.isfinite(my) and math.isfinite(a)):
+            return
+        l = math.hypot(mx, my)
+        if l > 1:
+            mx, my = mx / l, my / l
+        p.mx, p.my, p.aim, p.fire = mx, my, a, bool(m.get("f"))
+        if m.get("pk"):
+            p.pick = True
+
+    def shoot(self, p, w):
+        p.ammo -= 1
+        for _ in range(w["p"]):
+            a = p.aim + self.rng.uniform(-w["sp"], w["sp"])
+            c, s = math.cos(a), math.sin(a)
+            self.bl.append([p.x + c * 20, p.y + s * 20, c * w["s"], s * w["s"], w["g"], w["d"], p.uid, p.team, p.w])
+
+    def hurt(self, p, dmg, killer, wname, ignore_shield=False):
+        if not p.alive or dmg <= 0:
+            return
+        if p.sh > 0 and not ignore_shield:
+            ab = min(p.sh, dmg * 0.6)
+            p.sh -= ab
+            dmg -= ab
+        p.hp -= dmg
+        if killer is not None:
+            self.pev.setdefault(p.uid, []).append(["h"])
+            self.pev.setdefault(killer, []).append(["d"])
+        if p.hp <= 0:
+            self.kill(p, killer, wname)
+
+    def kill(self, p, killer, wname):
+        if not p.alive:
+            return
+        n_alive = sum(1 for q in self.pl.values() if q.alive)
+        p.alive, p.hp, p.fire, p.mx, p.my = False, 0.0, False, 0.0, 0.0
+        p.place = n_alive
+        k = self.pl.get(killer) if killer is not None else None
+        if k and k is not p:
+            k.kills += 1
+            p.spec = k.uid
+        else:
+            k = None
+        if p.w > 0:
+            self.drop(10 + p.w, p.x, p.y)
+        if p.ammo >= 8:
+            self.drop(BR_AMMO, p.x + 14, p.y + 6)
+        self.feed_ev.append(["k", k.name if k else "", p.name, wname, p.uid])
+        self.pev.setdefault(p.uid, []).append(["x", p.place])
+        self.dirty = True
+
+    def pickups(self, p):
+        want_pick, p.pick = p.pick, False
+        best, bd = None, 46.0 * 46.0
+        for iid, (t, x, y) in list(self.items.items()):
+            dx, dy = x - p.x, y - p.y
+            d2 = dx * dx + dy * dy
+            if d2 > 2500:
+                continue
+            if t == BR_AMMO and d2 < 900:
+                p.ammo = min(150, p.ammo + 25)
+                del self.items[iid]
+            elif t == BR_MED and d2 < 900 and p.hp < 100:
+                p.hp = min(100.0, p.hp + 50)
+                del self.items[iid]
+            elif t == BR_SHIELD and d2 < 900 and p.sh < 50:
+                p.sh = min(50.0, p.sh + 40)
+                del self.items[iid]
+            elif t >= 10 and d2 < bd:
+                best, bd = iid, d2
+        if want_pick and best is not None:
+            t = self.items.pop(best)[0]
+            self.drop(10 + p.w, p.x, p.y)
+            p.w = t - 10
+            p.cd = 0.3
+
+    def step(self, dt):
+        self.tick += 1
+        self.tm += dt
+        intro = self.tm < 0
+        zx, zy, zr, _nx, _ny, _nr, _st, _secs, dps = self.zone(self.tm)
+        rp = self.room.players
+        live = [p for p in self.pl.values() if p.alive]
+        for p in live:
+            pr = rp.get(p.uid)
+            if pr is None or pr.conn is None:
+                p.disc += dt
+                p.mx = p.my = 0.0
+                p.fire = False
+                if p.disc > 25:
+                    self.kill(p, None, "uzildi")
+                    continue
+            else:
+                p.disc = 0.0
+            if intro:
+                continue
+            if p.mx or p.my:
+                sp = BR_SPEED * (0.82 if p.fire else 1.0)
+                x, y = self.push_out(p.x + p.mx * sp * dt, p.y + p.my * sp * dt, BR_R)
+                p.x, p.y = min(max(x, BR_R), self.W - BR_R), min(max(y, BR_R), self.W - BR_R)
+            if (p.x - zx) ** 2 + (p.y - zy) ** 2 > zr * zr:
+                self.hurt(p, dps * dt, None, "Doira", True)
+                if not p.alive:
+                    continue
+            self.pickups(p)
+            w = BR_WEAPONS[p.w]
+            p.cd -= dt
+            shots = 0
+            while p.fire and p.cd <= 0 and p.ammo > 0 and shots < 2:
+                self.shoot(p, w)
+                p.cd += 1.0 / w["r"]
+                shots += 1
+            p.cd = max(p.cd, -dt) if p.fire else max(p.cd, 0.0)
+        # o'qlar
+        live = [p for p in self.pl.values() if p.alive]
+        nb = []
+        for b in self.bl:
+            x0, y0 = b[0], b[1]
+            dx, dy = b[2] * dt, b[3] * dt
+            ln = math.hypot(dx, dy)
+            if ln > b[4]:
+                f = b[4] / ln
+                dx, dy = dx * f, dy * f
+                ln = b[4]
+            x1, y1 = x0 + dx, y0 + dy
+            bt, hit = 2.0, None
+            for ob in self.obs_in(x0, y0, x1, y1):
+                t = br_seg_rect(x0, y0, x1, y1, ob[1], ob[2], ob[3], ob[4]) if ob[0] == "r" else br_seg_circle(x0, y0, x1, y1, ob[1], ob[2], ob[3])
+                if t is not None and t < bt:
+                    bt, hit = t, None
+            for q in live:
+                if q.uid == b[6] or q.team == b[7]:
+                    continue
+                t = br_seg_circle(x0, y0, x1, y1, q.x, q.y, BR_R)
+                if t is not None and t < bt:
+                    bt, hit = t, q
+            if bt <= 1.0:
+                if hit is not None:
+                    self.hurt(hit, b[5], b[6], BR_WEAPONS[b[8]]["n"])
+                continue
+            b[0], b[1], b[4] = x1, y1, b[4] - ln
+            if b[4] > 0 and 0 <= x1 <= self.W and 0 <= y1 <= self.W:
+                nb.append(b)
+        self.bl = nb
+        self.check_end()
+        if self.dirty:
+            self.dirty = False
+            self.room.changed()
+
+    def check_end(self):
+        if self.over or self.tm < 0:
+            return
+        teams = {p.team for p in self.pl.values() if p.alive}
+        if len(teams) > 1:
+            return
+        self.over = True
+        if teams:
+            winners = [p.uid for p in self.pl.values() if p.team in teams]
+            for p in self.pl.values():
+                if p.alive:
+                    p.place = 1
+        else:
+            winners = [p.uid for p in self.pl.values() if p.place == 1]
+        self.winners = winners
+        self.room.win(winners)
+        self.room.after_game()
+        self.room.changed()
+
+    def on_leave(self, uid):
+        p = self.pl.get(uid)
+        if p and p.alive and not self.over:
+            self.kill(p, None, "chiqib ketdi")
+            self.check_end()
+
+    def view(self, uid):
+        p = self.pl.get(uid)
+        v = {"phase": "over" if self.over else "play", "mode": self.mode, "W": getattr(self, "W", 0),
+             "alive": sum(1 for q in self.pl.values() if q.alive)}
+        if p:
+            v.update({"dead": not p.alive, "place": p.place, "kills": p.kills})
+        if self.over:
+            res = sorted(self.pl.values(), key=lambda q: (q.place or 99, -q.kills))
+            v["res"] = [[q.uid, q.name, q.place, q.kills, q.team] for q in res]
+            v["win"] = self.winners
+        return v
+
+
+class DuelGame(RoyaleGame):
+    key, name, emoji = "duel", "1 ga 1", "🤝"
+    desc = "Do'stingiz bilan yuzma-yuz jang: kichik maydon, kichrayuvchi doira, kim tirik qolsa — o'sha yutadi."
+    min, max = 2, 2
+    mode = "duel"
+    ZONES = BR_DUEL_ZONES
+    START_AMMO = 90
+    LOOT = 1.6
+
+    def world_size(self, n):
+        return 1000
+
+    def n_houses(self, W):
+        return 4
+
+
 HUB_GAMES = {g.key: g for g in (DurakGame, BurKozelGame, UnoGame, ShashkaGame, ChessGame, NardGame, QuizGame, BattleshipGame, LiarGame, MafiaGame, SpyGame, DrawGame, StoryGame, FunnyGame, C4Game, ChainGame,
-                                WhoAmIGame, WordleGame, AnagramGame, MathGame, MemoryGame, RpsGame, TodGame)}
+                                WhoAmIGame, WordleGame, AnagramGame, MathGame, MemoryGame, RpsGame, TodGame, RoyaleGame, DuelGame)}
 
 
 def hub_games_info():
-    return [{"k": g.key, "n": g.name, "e": g.emoji, "d": g.desc, "min": g.min, "max": g.max, "ai": g.ai} for g in HUB_GAMES.values()]
+    return [{"k": g.key, "n": g.name, "e": g.emoji, "d": g.desc, "min": g.min, "max": g.max, "ai": g.ai, "m": 1 if getattr(g, "battle", False) else 0} for g in HUB_GAMES.values()]
 
 
 # ---------------------------------------------------------------- Xona
@@ -27620,6 +28271,12 @@ class HubRoom:
         self.cleanup = None
         self.dirty = False
         self.level = 2
+        self.public_room = False        # ochiq jang navbati xonasi
+        self.ready = set()
+        self.qdl = 0                    # hisob tugash vaqti (ms)
+        self.qh = None
+        self.teams = {}                 # uid -> jamoa id (2 kishilik)
+        self.req = {}                   # maqsad uid -> taklif qilgan uid
 
     # --- yordamchilar ---
     def plist(self):
@@ -27627,7 +28284,48 @@ class HubRoom:
 
     def public(self, uid):
         return {"code": self.code, "host": self.host, "game": self.gkey, "phase": self.phase, "players": self.plist(),
-                "me": uid, "level": self.level, "bot": HUB_BOT in self.players}
+                "me": uid, "level": self.level, "bot": HUB_BOT in self.players, "pub": self.public_room, "q": self.q_state()}
+
+    def q_state(self):
+        if self.gkey != "royale":
+            return None
+        return {"ready": sorted(self.ready), "dl": self.qdl, "teams": self.teams, "req": self.req}
+
+    # --- ochiq jang navbati ---
+    def q_stop(self):
+        if self.qh:
+            self.qh.cancel()
+            self.qh = None
+        self.qdl = 0
+
+    def q_reset(self):
+        self.q_stop()
+        self.ready.clear()
+
+    def q_arm(self):
+        """Kamida 2 kishi «Boshlash» bossa — 60 soniyalik hisob boshlanadi."""
+        if self.gkey != "royale" or self.qdl or len(self.ready) < 2 or self.phase != "lobby":
+            return
+        self.qdl = hub_ms(HUB_Q_SECS)
+        self.qh = asyncio.get_running_loop().call_later(HUB_Q_SECS, self.q_fire)
+
+    def q_fire(self):
+        self.qh = None
+        self.qdl = 0
+        if self.phase == "lobby" and self.gkey == "royale" and len(self.players) >= 2:
+            if self.start_game():
+                self.ready.clear()
+        else:
+            self.ready.clear()
+        self.changed()
+
+    def unteam(self, uid):
+        tid = self.teams.pop(uid, None)
+        if tid is not None:
+            for u in [u for u, t in self.teams.items() if t == tid]:
+                self.teams.pop(u, None)
+        for k in [k for k, v in self.req.items() if k == uid or v == uid]:
+            self.req.pop(k, None)
 
     def view_for(self, uid):
         v = {}
@@ -27710,6 +28408,9 @@ class HubRoom:
             return f"Ko'pi bilan {G.max} kishi"
         if HUB_BOT in self.players and not G.ai:
             return "Kompyuter bilan faqat shaxmat va shashka o'ynaladi"
+        self.q_stop()
+        if HUB_PUBLIC.get(self.bid) == self.code:
+            HUB_PUBLIC.pop(self.bid, None)
         self.stop_game()
         self.g = G(self)
         self.phase = "play"
@@ -27720,6 +28421,10 @@ class HubRoom:
         p = self.players.pop(uid, None)
         if not p:
             return
+        self.ready.discard(uid)
+        self.unteam(uid)
+        if self.phase == "lobby" and self.qdl and len(self.players) < 2:
+            self.q_reset()
         if self.g and self.phase == "play":
             try:
                 self.g.on_leave(uid)
@@ -27861,19 +28566,53 @@ async def hub_handle(conn: HubConn, m: dict):
             await conn.send({"t": "chatlog", "list": r.chat[-40:]})
             if r.g and r.gkey == "draw" and getattr(r.g, "strokes", None):
                 await conn.send({"t": "strokes", "list": r.g.strokes, "sid": r.g.sid})
+            if r.g and hasattr(r.g, "rejoin"):
+                r.g.rejoin(conn.uid)
             return
         if r.phase != "lobby":
             return await conn.send({"t": "err", "m": "O'yin allaqachon boshlangan.", "code": "started"})
-        if len(r.players) >= HUB_GAMES[r.gkey].max and len(r.players) >= 10:
-            return await conn.send({"t": "err", "m": "Xona to'la.", "code": "full"})
-        if len(r.players) >= 10:
-            return await conn.send({"t": "err", "m": "Xona to'la (10 kishi).", "code": "full"})
+        cap = HUB_GAMES[r.gkey].max if getattr(HUB_GAMES[r.gkey], "battle", False) else max(10, HUB_GAMES[r.gkey].max)
+        if len(r.players) >= cap:
+            return await conn.send({"t": "err", "m": f"Xona to'la ({cap} kishi).", "code": "full"})
         await hub_leave(conn, True)
         p = HubP(conn.uid, conn.name)
         p.conn = conn
         r.players[conn.uid] = p
         conn.room = r
         r.sys(f"👋 {p.name} qo'shildi")
+        if r.gkey == "royale" and len(r.players) >= HUB_GAMES["royale"].max:
+            r.q_stop()
+            r.start_game()
+        await r.broadcast()
+        await conn.send({"t": "chatlog", "list": r.chat[-40:]})
+        return
+    if t == "queue":
+        await hub_leave(conn, True)
+        G = HUB_GAMES["royale"]
+        r = None
+        code = HUB_PUBLIC.get(bid)
+        if code:
+            r = HUB_ROOMS.get((bid, code))
+            if not r or r.phase != "lobby" or r.gkey != "royale" or len(r.players) >= G.max:
+                r = None
+        if r is None:
+            if len(HUB_ROOMS) >= HUB_MAX_ROOMS:
+                hub_gc()
+            code = hub_new_code(bid)
+            if not code:
+                return await conn.send({"t": "err", "m": "Hozir serverda xonalar ko'p. Birozdan so'ng urinib ko'ring."})
+            r = HubRoom(bid, code, conn.uid, "royale")
+            r.public_room = True
+            HUB_ROOMS[(bid, code)] = r
+            HUB_PUBLIC[bid] = code
+        p = HubP(conn.uid, conn.name)
+        p.conn = conn
+        r.players[conn.uid] = p
+        conn.room = r
+        r.sys(f"👋 {p.name} qo'shildi")
+        if len(r.players) >= G.max:
+            r.q_stop()
+            r.start_game()
         await r.broadcast()
         await conn.send({"t": "chatlog", "list": r.chat[-40:]})
         return
@@ -27881,6 +28620,40 @@ async def hub_handle(conn: HubConn, m: dict):
     if not r:
         return
     uid = conn.uid
+    if r.public_room and t in ("start", "again", "game", "addbot", "rmbot", "level", "kick"):
+        return
+    if t == "in":
+        g = r.g
+        if g is not None and r.phase == "play" and hasattr(g, "inp"):
+            try:
+                g.inp(uid, m)
+            except Exception as ex:
+                logging.warning(f"hub inp {r.gkey}: {ex}")
+        return
+    if t == "ready" and r.phase == "lobby" and r.gkey == "royale":
+        if uid in r.players:
+            r.ready.add(uid)
+            r.q_arm()
+        return await r.broadcast()
+    if t in ("team", "teamok", "teamno", "unteam") and r.phase == "lobby" and r.gkey == "royale":
+        try:
+            u2 = int(m.get("u", 0))
+        except Exception:
+            u2 = 0
+        if t == "team":
+            if u2 != uid and u2 > 0 and u2 in r.players and uid not in r.teams and u2 not in r.teams:
+                r.req[u2] = uid
+                r.toast(u2, f"🤝 {r.players[uid].name} sizni jamoaga chaqirdi")
+        elif t == "teamok":
+            if r.req.get(uid) == u2 and u2 in r.players and uid not in r.teams and u2 not in r.teams:
+                r.teams[uid] = r.teams[u2] = min(uid, u2)
+                for k in [k for k, v in r.req.items() if k in (uid, u2) or v in (uid, u2)]:
+                    r.req.pop(k, None)
+        elif t == "teamno":
+            r.req.pop(uid, None)
+        else:
+            r.unteam(uid)
+        return await r.broadcast()
     if t == "leave":
         await hub_leave(conn, True)
         return await conn.send({"t": "home"})
@@ -28036,6 +28809,25 @@ h2{font-size:17px;margin:18px 0 8px}
 .g-memory{background:linear-gradient(150deg,#6b1f4a,#240a19)}
 .g-rps{background:linear-gradient(150deg,#5a4d0e,#1e1a08)}
 .g-tod{background:linear-gradient(150deg,#6b1f1f,#240a0a)}
+.bt-home{display:grid;gap:10px;margin:12px 0}
+.bt-home .btn{justify-content:flex-start;text-align:left;padding:14px 16px}
+.bt-home .btn span:last-child{display:flex;flex-direction:column}
+.bt-home .btn small{font-weight:600;opacity:.8;font-size:12px}
+.bt-b1{background:linear-gradient(135deg,#ff5c3a,#c2261b)!important;box-shadow:0 10px 30px rgba(255,92,58,.35)!important}
+.bt-b2{background:linear-gradient(135deg,#2fae63,#14774a)!important;box-shadow:0 10px 30px rgba(47,174,99,.3)!important}
+.bt-hero{background:linear-gradient(150deg,rgba(255,92,58,.22),rgba(124,92,255,.15))}
+.bt-cd{font-size:44px;font-weight:900;margin:8px 0}
+.bt-cd .timer{font-size:44px}
+.g-royale{background:linear-gradient(150deg,#6b2a1c,#240d0a)}
+.g-duel{background:linear-gradient(150deg,#1c5a3c,#0a2418)}
+#btw{position:fixed;left:0;right:0;bottom:0;top:60px;z-index:20;background:#0b1610;touch-action:none;user-select:none;-webkit-user-select:none}
+#btw canvas{display:block;touch-action:none}
+#bto{position:absolute;inset:0;pointer-events:none}
+.btpk{pointer-events:auto;position:absolute;right:14px;bottom:200px;padding:12px 18px;border-radius:16px;background:linear-gradient(#ffd54a,#e0a20f);color:#222;font-weight:900;border:0;box-shadow:0 4px 0 #8a6200}
+#btdead{position:absolute;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;pointer-events:auto}
+.btdc{background:var(--card,#1b2033);border-radius:24px;padding:22px 26px;text-align:center;min-width:230px;display:flex;flex-direction:column;gap:4px}
+.btsp{position:absolute;bottom:56px;left:0;right:0;display:flex;gap:8px;justify-content:center;pointer-events:none}
+.btsp button{pointer-events:auto;padding:10px 16px;border-radius:99px;background:rgba(0,0,0,.6);color:#fff;font-weight:800;border:1px solid rgba(255,255,255,.3)}
 .who-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0}
 .who-c{background:var(--card);border:2px solid var(--bd);border-radius:16px;padding:10px;text-align:center}
 .who-c.cur{border-color:var(--ok);background:rgba(56,214,160,.12)}
@@ -28526,6 +29318,8 @@ function onMsg(m) {
   else if (t === "home" || t === "kicked") { leaveLocal(); if (t === "kicked") toast("Xonadan chiqarildingiz"); render(); }
   else if (t === "left") { closePeer(m.u); }
   else if (t === "rtc") { onRtc(m); }
+  else if (t === "bm") { btOnMap(m); }
+  else if (t === "bt") { btOnSnap(m); }
   else if (t === "react") { showReact(m); }
   else if (t === "friends") { S.friends = m.list || []; friendsSheet(); }
   else if (t === "invited") { if (m.ok) { (S.invd || (S.invd = {}))[m.u] = 1; toast("🔔 Taklif yuborildi"); friendsSheet(); } else toast("Yuborib bo'lmadi (do'st botni bloklagan bo'lishi mumkin)"); }
@@ -28534,7 +29328,7 @@ function onMsg(m) {
   else if (t === "clear") { cvReset(); }
   else if (t === "undo") { cvUndo(); }
 }
-function leaveLocal() { S.room = null; S.view = {}; S.chat = []; S.unread = 0; S.sid = -1; Object.keys(S.rtc).forEach(function (k) { closePeer(+k); }); micOff(); camOff(); closeChat(); }
+function leaveLocal() { btReset(); S.room = null; S.view = {}; S.chat = []; S.unread = 0; S.sid = -1; Object.keys(S.rtc).forEach(function (k) { closePeer(+k); }); micOff(); camOff(); closeChat(); }
 
 // ---------------- chat ----------------
 function addChat(m) {
@@ -28561,11 +29355,11 @@ function noop() {}
 function safePlay(el) { try { var p = el.play(); if (p && p.catch) p.catch(noop); } catch (e) {} }
 function rtcSync() {
   if (!S.room || !window.RTCPeerConnection) { syncTiles(); return; }
-  var ids = [];
+  var ids = [], big = S.room.players.length > 8;
   S.room.players.forEach(function (p) {
     if (p.u === S.me || p.u < 0) return;
     var on = !!p.o, was = S.online[p.u]; S.online[p.u] = on;
-    if (on) ids.push(p.u);
+    if (on && !big) ids.push(p.u);
     if (S.rtc[p.u] && was !== undefined && was !== on) closePeer(p.u);
   });
   ids.forEach(function (u) { if (!S.rtc[u]) mkPeer(u, S.me < u); });
@@ -28772,6 +29566,7 @@ setInterval(function () { document.querySelectorAll("[data-dl]").forEach(functio
 function render() {
   if (!S.ok) { $("#top").innerHTML = '<h1>🎮 O\'yinlar markazi</h1>'; $("#main").innerHTML = '<div class="c mu pulse" style="padding:60px 0">Ulanmoqda...</div>'; $("#dock").style.display = "none"; return; }
   var fid = document.activeElement && document.activeElement.id, fval = fid ? document.activeElement.value : null, fsel = fid ? document.activeElement.selectionStart : 0;
+  if (!S.room) btReset(); else if (S.room.phase === "lobby" && BT && BT.mounted) btReset();
   if (!S.room) renderHome(); else if (S.room.phase === "lobby") renderLobby(); else renderGame();
   if (fid && fid !== "cin") { var el = document.getElementById(fid); if (el && fval != null) { el.value = fval; try { el.focus(); el.setSelectionRange(fsel, fsel); } catch (e) {} } }
   updBadge();
@@ -28791,20 +29586,22 @@ function topBar(title, back) {
 function renderHome() {
   topBar("🎮 O'yinlar markazi", false); $("#dock").style.display = "none";
   var h = '<div class="card" style="background:linear-gradient(135deg,rgba(124,92,255,.25),rgba(255,92,154,.18))"><b>Salom, ' + esc(S.name) + '! 👋</b><div class="mu sm">O\'yin tanlang — xona oching va do\'stlaringizni chaqiring. Gaplashish uchun 🎙 mikrofonni yoqing.</div></div>';
+  h += '<div class="bt-home"><button class="btn bt-b1" data-a="bt_queue"><span style="font-size:26px">⚔️</span><span><b>Jangga kirish</b><small>2–30 kishi · ochiq jang maydoni</small></span></button><button class="btn bt-b2" data-a="bt_duel"><span style="font-size:26px">🤝</span><span><b>1 ga 1 (do\'st bilan)</b><small>Kod yuboring — yuzma-yuz jang</small></span></button></div>';
   h += '<h2>Kod bilan kirish</h2><div class="codebox"><input id="jc" maxlength="4" placeholder="ABCD" autocomplete="off"><button class="btn" data-a="join">Kirish</button></div>';
   h += "<h2>O'yinlar</h2><div class=\"games\">";
-  S.games.forEach(function (g) { h += '<button class="gc g-' + g.k + '" data-a="new" data-g="' + g.k + '"><div class="em">' + g.e + "</div><b>" + esc(g.n) + "</b><span>" + esc(g.d) + '</span><div class="pl">👥 ' + (g.min === g.max ? g.min : g.min + "–" + g.max) + " kishi</div></button>"; });
+  S.games.forEach(function (g) { if (g.m) return; h += '<button class="gc g-' + g.k + '" data-a="new" data-g="' + g.k + '"><div class="em">' + g.e + "</div><b>" + esc(g.n) + "</b><span>" + esc(g.d) + '</span><div class="pl">👥 ' + (g.min === g.max ? g.min : g.min + "–" + g.max) + " kishi</div></button>"; });
   h += "</div>";
   $("#main").innerHTML = h;
 }
 
 // ---------------- lobbi ----------------
 function renderLobby() {
+  if (S.room.game === "royale") return renderRoyaleLobby();
   var R = S.room, g = gameInfo(R.game), host = R.host === S.me;
   topBar(g.e + " " + esc(g.n), true);
   var h = '<div class="card c"><div class="mu sm">Xona kodi</div><div class="code">' + esc(R.code) + '</div><div class="row" style="display:flex;gap:8px;margin-top:10px"><button class="btn sec" data-a="invite">📨 Taklif</button><button class="btn sec" data-a="friends">🔔 Do\'stlar</button><button class="btn sec" data-a="copy">📋</button></div></div>';
   if (host) {
-    h += '<div class="chips">' + S.games.map(function (x) { return '<button class="chip' + (x.k === R.game ? " on" : "") + '" data-a="game" data-g="' + x.k + '">' + x.e + " " + esc(x.n) + "</button>"; }).join("") + "</div>";
+    h += '<div class="chips">' + S.games.filter(function (x) { return !x.m || x.k === R.game; }).map(function (x) { return '<button class="chip' + (x.k === R.game ? " on" : "") + '" data-a="game" data-g="' + x.k + '">' + x.e + " " + esc(x.n) + "</button>"; }).join("") + "</div>";
   }
   h += '<div class="card"><b>' + g.e + " " + esc(g.n) + '</b><div class="mu sm">' + esc(g.d) + '</div><div class="sm" style="margin-top:6px">👥 Kerak: <b>' + (g.min === g.max ? g.min : g.min + "–" + g.max) + "</b> kishi</div></div>";
   if (g.ai && host) {
@@ -28828,7 +29625,7 @@ function renderGame() {
   var R = S.room, v = S.view, g = gameInfo(R.game);
   topBar(g.e + " " + esc(g.n), true);
   $("#dock").style.display = "none";
-  var fn = {nard: rNard, uno: rUno, quiz: rQuiz, bship: rBship, liar: rLiar, burkozel: rBur, chess: rChess, shashka: rShashka, durak: rDurak, mafia: rMafia, spy: rSpy, draw: rDraw, story: rStory, funny: rFunny, c4: rC4, chain: rChain, whoami: rWho, wordle: rWord, anagram: rRace, math: rRace, memory: rMem, rps: rRps, tod: rTod}[R.game];
+  var fn = {nard: rNard, uno: rUno, quiz: rQuiz, bship: rBship, liar: rLiar, burkozel: rBur, chess: rChess, shashka: rShashka, durak: rDurak, mafia: rMafia, spy: rSpy, draw: rDraw, story: rStory, funny: rFunny, c4: rC4, chain: rChain, whoami: rWho, wordle: rWord, anagram: rRace, math: rRace, memory: rMem, rps: rRps, tod: rTod, royale: rBattle, duel: rBattle}[R.game];
   var h = "";
   if (S.micOn && v.talk === false) h += '<div class="muted-bar">🔇 Hozir gaplashish mumkin emas</div>';
   var body = fn ? fn(v) : "";
@@ -29605,6 +30402,279 @@ document.addEventListener("keydown", function (e) {
   var btn = document.querySelector('[data-a="' + k + '"]'); if (btn) btn.click();
 });
 
+// ================= JANG MAYDONI (2D) =================
+var BT = null;
+var BT_WN = ["Pistolet", "SMG", "Avtomat", "Drobovik", "Snayper"];
+var BT_WC = ["#cfd6e6", "#ffd54a", "#4da3ff", "#ff8a3d", "#c77dff"];
+function isBattle(k) { return k === "royale" || k === "duel"; }
+function btNew(map) { return {map: map, snaps: [], feed: [], flash: 0, inp: {x: 0, y: 0, a: 0, f: 0}, pk: 0, sw: 0, sent: "", lastSend: 0, joyL: null, joyR: null, keys: {}, mouse: null, mfire: false, raf: 0, ox: null, oy: null, mounted: false, hide: false, nk: -2, cw: 0, ch: 0, dpr: 1, hitm: 0}; }
+function btOnMap(m) { btUnmount(); BT = btNew(m); render(); }
+function btOnSnap(m) {
+  if (!BT) return;
+  var now = performance.now();
+  BT.snaps.push({at: now, m: m}); if (BT.snaps.length > 4) BT.snaps.shift();
+  (m.ev || []).forEach(function (e) {
+    if (e[0] === "k") { BT.feed.push({t: now, x: (e[1] ? e[1] + "  ➜  " : "☠️ ") + e[2] + "  (" + e[3] + ")"}); if (BT.feed.length > 6) BT.feed.shift(); }
+    else if (e[0] === "h") { BT.flash = 1; if (now - (BT.lastBuzz || 0) > 250) { BT.lastBuzz = now; buzz(); } }
+    else if (e[0] === "d") BT.hitm = now;
+  });
+}
+function btMount() {
+  if (!BT) return;
+  if ($("#btw") && BT.cv) { BT.mounted = true; return; }
+  var w = document.createElement("div"); w.id = "btw";
+  w.innerHTML = '<canvas id="bt"></canvas><div id="bto"><button id="btpk" class="btpk" data-a="bt_pick" style="display:none"></button><div id="btdead" style="display:none"></div></div>';
+  document.body.appendChild(w);
+  BT.cv = $("#bt"); BT.ctx = BT.cv.getContext("2d"); BT.mounted = true; BT.nk = -2;
+  btBind(BT.cv); btLayout();
+  BT.raf = requestAnimationFrame(btFrame);
+}
+function btUnmount() { if (BT) { BT.mounted = false; cancelAnimationFrame(BT.raf); BT.cv = null; } var w = $("#btw"); if (w) w.remove(); }
+function btReset() { btUnmount(); BT = null; }
+function btLayout() {
+  var w = $("#btw"); if (!w || !BT || !BT.cv) return;
+  var tb = $("#top"), th = tb ? tb.getBoundingClientRect().bottom : 60;
+  w.style.top = Math.max(0, Math.round(th)) + "px";
+  var cw = w.clientWidth, ch = w.clientHeight, dpr = Math.min(2, window.devicePixelRatio || 1);
+  if (BT.cw !== cw || BT.ch !== ch || BT.dpr !== dpr) { BT.cw = cw; BT.ch = ch; BT.dpr = dpr; BT.cv.width = Math.max(1, cw * dpr); BT.cv.height = Math.max(1, ch * dpr); BT.cv.style.width = cw + "px"; BT.cv.style.height = ch + "px"; }
+}
+function btBind(cv) {
+  cv.addEventListener("contextmenu", function (e) { e.preventDefault(); });
+  cv.addEventListener("pointerdown", function (e) {
+    if (!BT) return;
+    var r = cv.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+    if (e.pointerType === "mouse") { BT.mouse = {x: x, y: y}; if (e.button === 0) BT.mfire = true; return; }
+    var j = {id: e.pointerId, ox: x, oy: y, x: x, y: y};
+    if (x < r.width / 2) { if (BT.joyL) return; BT.joyL = j; } else { if (BT.joyR) return; BT.joyR = j; }
+    try { cv.setPointerCapture(e.pointerId); } catch (z) {}
+    e.preventDefault();
+  });
+  cv.addEventListener("pointermove", function (e) {
+    if (!BT) return;
+    var r = cv.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+    if (e.pointerType === "mouse") { BT.mouse = {x: x, y: y}; return; }
+    [BT.joyL, BT.joyR].forEach(function (j) { if (j && j.id === e.pointerId) { j.x = x; j.y = y; } });
+  });
+  var up = function (e) {
+    if (!BT) return;
+    if (e.pointerType === "mouse") { BT.mfire = false; return; }
+    if (BT.joyL && BT.joyL.id === e.pointerId) BT.joyL = null;
+    if (BT.joyR && BT.joyR.id === e.pointerId) BT.joyR = null;
+  };
+  cv.addEventListener("pointerup", up); cv.addEventListener("pointercancel", up);
+}
+if (!window.__btk) {
+  window.__btk = 1;
+  window.addEventListener("keydown", function (e) {
+    if (!BT || !BT.mounted) return; var t = e.target && e.target.tagName; if (t === "INPUT" || t === "TEXTAREA") return;
+    BT.keys[e.code] = 1; if (e.code === "KeyE") BT.pk = 1; if (e.code === "Tab") { BT.sw = 1; e.preventDefault(); }
+  });
+  window.addEventListener("keyup", function (e) { if (BT) BT.keys[e.code] = 0; });
+}
+function btInput() {
+  var I = BT.inp, mx = 0, my = 0, f = 0, a = I.a, aimed = false, j = BT.joyL;
+  if (j) { var dx = j.x - j.ox, dy = j.y - j.oy, l = Math.hypot(dx, dy); if (l > 6) { var k = Math.min(1, l / 52); mx = dx / l * k; my = dy / l * k; } }
+  var K = BT.keys; if (K.KeyA || K.ArrowLeft) mx -= 1; if (K.KeyD || K.ArrowRight) mx += 1; if (K.KeyW || K.ArrowUp) my -= 1; if (K.KeyS || K.ArrowDown) my += 1;
+  var l2 = Math.hypot(mx, my); if (l2 > 1) { mx /= l2; my /= l2; }
+  j = BT.joyR;
+  if (j) { var ax = j.x - j.ox, ay = j.y - j.oy, al = Math.hypot(ax, ay); if (al > 10) { a = Math.atan2(ay, ax); aimed = true; } if (al > 24) f = 1; }
+  if (BT.mouse && !BT.joyR) { a = Math.atan2(BT.mouse.y - BT.ch / 2, BT.mouse.x - BT.cw / 2); aimed = true; if (BT.mfire) f = 1; }
+  if (!aimed && (mx || my)) a = Math.atan2(my, mx);
+  I.x = Math.round(mx * 100) / 100; I.y = Math.round(my * 100) / 100; I.a = Math.round(a * 100) / 100; I.f = f;
+}
+function btSend(now) {
+  btInput();
+  if (now - BT.lastSend < 80) return;
+  var I = BT.inp, key = I.x + "," + I.y + "," + I.a + "," + I.f, force = BT.pk || BT.sw;
+  if (force || key !== BT.sent || now - BT.lastSend > 400) {
+    send({t: "in", x: I.x, y: I.y, a: I.a, f: I.f, pk: BT.pk ? 1 : 0, sw: BT.sw ? 1 : 0});
+    BT.sent = key; BT.lastSend = now; BT.pk = 0; BT.sw = 0;
+  }
+}
+// snapshotlar orasida silliq harakat (110 ms kechikish bilan)
+function btState(now) {
+  var q = BT.snaps; if (!q.length) return null;
+  var last = q[q.length - 1], rt = now - 110, a = null, b = null;
+  for (var i = q.length - 1; i >= 0; i--) { if (q[i].at <= rt) { a = q[i]; b = q[i + 1] || null; break; } }
+  if (!a) a = q[0];
+  var f = b ? Math.min(1, Math.max(0, (rt - a.at) / Math.max(1, b.at - a.at))) : 0;
+  var ps = {};
+  a.m.ps.forEach(function (p) { ps[p[0]] = {u: p[0], x: p[1], y: p[2], a: p[3], hp: p[4]}; });
+  if (b) b.m.ps.forEach(function (p) {
+    var o = ps[p[0]];
+    if (!o) ps[p[0]] = {u: p[0], x: p[1], y: p[2], a: p[3], hp: p[4]};
+    else { o.x += (p[1] - o.x) * f; o.y += (p[2] - o.y) * f; var d = p[3] - o.a; while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI; o.a += d * f; o.hp = p[4]; }
+  });
+  var m = last.m, me = m.me, vel = (!m.dead && BT.inp) ? (BT.inp.f ? 0.82 : 1) * 215 : 0, age = Math.min(0.25, (now - last.at) / 1000);
+  var tx = me[0] + (m.dead ? 0 : BT.inp.x * vel * age), ty = me[1] + (m.dead ? 0 : BT.inp.y * vel * age);
+  if (BT.ox == null || Math.hypot(tx - BT.ox, ty - BT.oy) > 90) { BT.ox = tx; BT.oy = ty; } else { BT.ox += (tx - BT.ox) * 0.4; BT.oy += (ty - BT.oy) * 0.4; }
+  return {m: m, ps: Object.keys(ps).map(function (k) { return ps[k]; }), x: BT.ox, y: BT.oy, age: age};
+}
+function btFrame(ts) {
+  if (!BT || !BT.mounted || !BT.cv) return;
+  BT.raf = requestAnimationFrame(btFrame);
+  var now = performance.now();
+  btLayout(); btSend(now);
+  try { btDraw(now); } catch (e) { console.warn("bt", e && e.message); }
+}
+function btRR(c, x, y, w, h, r) { c.beginPath(); c.moveTo(x + r, y); c.arcTo(x + w, y, x + w, y + h, r); c.arcTo(x + w, y + h, x, y + h, r); c.arcTo(x, y + h, x, y, r); c.arcTo(x, y, x + w, y, r); c.closePath(); }
+function btText(c, t, x, y, size, col, al, bold) { c.font = (bold ? "800 " : "600 ") + size + "px system-ui,sans-serif"; c.textAlign = al || "left"; c.textBaseline = "middle"; c.lineWidth = 3; c.strokeStyle = "rgba(0,0,0,.65)"; c.strokeText(t, x, y); c.fillStyle = col || "#fff"; c.fillText(t, x, y); }
+function btDraw(now) {
+  var c = BT.ctx, dpr = BT.dpr, w = BT.cw, h = BT.ch, st = btState(now), map = BT.map;
+  c.setTransform(dpr, 0, 0, dpr, 0, 0); c.fillStyle = "#0b1610"; c.fillRect(0, 0, w, h);
+  if (!st) { btText(c, "Jang maydoni yuklanmoqda...", w / 2, h / 2, 16, "#fff", "center"); return; }
+  var m = st.m, W = map.W, sc = Math.max(0.55, Math.min(1.5, Math.min(w / 560, h / 720))), cx = st.x, cy = st.y, myU = map.me, vU = m.me[7];
+  var T = map.team, myT = T[myU];
+  c.setTransform(dpr * sc, 0, 0, dpr * sc, dpr * (w / 2 - cx * sc), dpr * (h / 2 - cy * sc));
+  var x0 = cx - w / 2 / sc - 60, y0 = cy - h / 2 / sc - 60, x1 = cx + w / 2 / sc + 60, y1 = cy + h / 2 / sc + 60;
+  c.fillStyle = "#274d2d"; c.fillRect(0, 0, W, W);
+  c.strokeStyle = "rgba(255,255,255,.05)"; c.lineWidth = 1; c.beginPath();
+  for (var gx = Math.max(0, Math.floor(x0 / 120) * 120); gx <= Math.min(W, x1); gx += 120) { c.moveTo(gx, Math.max(0, y0)); c.lineTo(gx, Math.min(W, y1)); }
+  for (var gy = Math.max(0, Math.floor(y0 / 120) * 120); gy <= Math.min(W, y1); gy += 120) { c.moveTo(Math.max(0, x0), gy); c.lineTo(Math.min(W, x1), gy); }
+  c.stroke();
+  c.strokeStyle = "#ff5c5c"; c.lineWidth = 5; c.strokeRect(0, 0, W, W);
+  // yerdagi buyumlar
+  c.textAlign = "center"; c.textBaseline = "middle";
+  var near = null, nd = 52 * 52;
+  (m.it || []).forEach(function (it) {
+    var t = it[1], x = it[2], y = it[3], col = t === 0 ? "#ffd54a" : t === 1 ? "#ff5c7a" : t === 2 ? "#4da3ff" : BT_WC[t - 10];
+    c.fillStyle = "rgba(0,0,0,.28)"; c.beginPath(); c.arc(x, y + 3, 13, 0, 6.3); c.fill();
+    c.fillStyle = col; c.globalAlpha = 0.35; c.beginPath(); c.arc(x, y, 15, 0, 6.3); c.fill(); c.globalAlpha = 1;
+    c.font = "17px sans-serif"; c.fillStyle = "#fff"; c.fillText(t === 0 ? "🔶" : t === 1 ? "🩹" : t === 2 ? "🛡️" : (t === 14 ? "🎯" : "🔫"), x, y + 1);
+    if (t >= 10) { c.font = "700 9px system-ui"; c.fillStyle = "#fff"; c.fillText(BT_WN[t - 10], x, y + 21); var dd = (x - cx) * (x - cx) + (y - cy) * (y - cy); if (dd < nd) { nd = dd; near = it; } }
+  });
+  // toshlar va devorlar (soxta 3D: soya + ko'tarilgan tepa)
+  map.rocks.forEach(function (r) {
+    if (r[0] < x0 - r[2] || r[0] > x1 + r[2] || r[1] < y0 - r[2] || r[1] > y1 + r[2]) return;
+    c.fillStyle = "rgba(0,0,0,.3)"; c.beginPath(); c.arc(r[0] + 5, r[1] + 7, r[2], 0, 6.3); c.fill();
+    c.fillStyle = "#5d6168"; c.beginPath(); c.arc(r[0], r[1], r[2], 0, 6.3); c.fill();
+    c.fillStyle = "#8b9097"; c.beginPath(); c.arc(r[0] - 2, r[1] - 5, r[2] * 0.86, 0, 6.3); c.fill();
+  });
+  map.walls.forEach(function (r) {
+    if (r[0] > x1 || r[1] > y1 || r[0] + r[2] < x0 || r[1] + r[3] < y0) return;
+    c.fillStyle = "rgba(0,0,0,.32)"; c.fillRect(r[0] + 6, r[1] + 8, r[2], r[3]);
+    c.fillStyle = "#5a4129"; c.fillRect(r[0], r[1], r[2], r[3]);
+    c.fillStyle = "#a47c52"; c.fillRect(r[0], r[1] - 5, r[2], r[3]);
+    c.strokeStyle = "rgba(0,0,0,.35)"; c.lineWidth = 1; c.strokeRect(r[0], r[1] - 5, r[2], r[3]);
+  });
+  // o'qlar
+  c.lineCap = "round";
+  (m.bl || []).forEach(function (b) {
+    var bx = b[0] + b[2] * st.age, by = b[1] + b[3] * st.age, an = Math.atan2(b[3], b[2]);
+    c.strokeStyle = "rgba(255,226,122,.35)"; c.lineWidth = 5; c.beginPath(); c.moveTo(bx - Math.cos(an) * 22, by - Math.sin(an) * 22); c.lineTo(bx, by); c.stroke();
+    c.strokeStyle = "#fff3b0"; c.lineWidth = 2.4; c.beginPath(); c.moveTo(bx - Math.cos(an) * 12, by - Math.sin(an) * 12); c.lineTo(bx, by); c.stroke();
+  });
+  // o'yinchilar
+  function pl(x, y, aim, hp, u, kind) {
+    c.fillStyle = "rgba(0,0,0,.3)"; c.beginPath(); c.ellipse(x + 3, y + 6, 17, 12, 0, 0, 6.3); c.fill();
+    c.save(); c.translate(x, y); c.rotate(aim);
+    c.fillStyle = "#1c1f26"; c.fillRect(8, -3.5, 26, 7);
+    c.fillStyle = kind === 0 ? "#4da3ff" : kind === 1 ? "#38d6a0" : "#ff5c5c"; c.strokeStyle = "rgba(0,0,0,.55)"; c.lineWidth = 2.5;
+    c.beginPath(); c.arc(0, 0, 16, 0, 6.3); c.fill(); c.stroke();
+    c.fillStyle = "rgba(255,255,255,.35)"; c.beginPath(); c.arc(4, -5, 6, 0, 6.3); c.fill();
+    c.restore();
+    if (kind !== 0) { c.fillStyle = "rgba(0,0,0,.6)"; c.fillRect(x - 18, y - 30, 36, 5); c.fillStyle = hp > 50 ? "#38d6a0" : hp > 25 ? "#ffd54a" : "#ff5c5c"; c.fillRect(x - 17, y - 29, 34 * Math.max(0, hp) / 100, 3); }
+    btText(c, (map.names[u] || "").slice(0, 12), x, y - 38, 11, kind === 1 ? "#9cf3d4" : "#fff", "center");
+  }
+  st.ps.forEach(function (p) { if (p.x < x0 || p.x > x1 || p.y < y0 || p.y > y1) return; pl(p.x, p.y, p.a, p.hp, p.u, T[p.u] === myT && p.u !== myU ? 1 : 2); });
+  pl(cx, cy, BT.inp.f || BT.joyR || BT.mouse ? BT.inp.a : m.me[2], m.me[3], vU, vU === myU ? 0 : (T[vU] === myT ? 1 : 2));
+  // doira
+  var z = m.z;
+  c.fillStyle = "rgba(230,30,30,.24)"; c.beginPath(); c.rect(x0, y0, x1 - x0, y1 - y0); c.moveTo(z[0] + z[2], z[1]); c.arc(z[0], z[1], z[2], 0, 6.2832, true); c.fill("evenodd");
+  c.strokeStyle = "#fff"; c.lineWidth = 3 / sc; c.beginPath(); c.arc(z[0], z[1], z[2], 0, 6.3); c.stroke();
+  if (z[6] !== 2) { c.strokeStyle = "rgba(255,255,255,.7)"; c.lineWidth = 2 / sc; c.setLineDash([14 / sc, 10 / sc]); c.beginPath(); c.arc(z[3], z[4], z[5], 0, 6.3); c.stroke(); c.setLineDash([]); }
+  // ---------- HUD
+  c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  var outside = Math.hypot(cx - z[0], cy - z[1]) > z[2];
+  if (BT.flash > 0.02) { c.fillStyle = "rgba(255,0,0," + (BT.flash * 0.35).toFixed(3) + ")"; c.fillRect(0, 0, w, h); BT.flash *= 0.9; }
+  c.fillStyle = "rgba(0,0,0,.5)"; btRR(c, 8, 8, 118, 28, 14); c.fill();
+  btText(c, "👥 " + m.al + "   ☠️ " + (m.kl || 0), 18, 22, 14, "#fff", "left", true);
+  // kichik xarita
+  var ms = 92, mk = ms / W, mx = 8, my = 42;
+  c.fillStyle = "rgba(10,20,14,.7)"; btRR(c, mx, my, ms, ms, 8); c.fill(); c.save(); btRR(c, mx, my, ms, ms, 8); c.clip();
+  c.strokeStyle = "#fff"; c.lineWidth = 1.5; c.beginPath(); c.arc(mx + z[0] * mk, my + z[1] * mk, Math.max(1, z[2] * mk), 0, 6.3); c.stroke();
+  if (z[6] !== 2) { c.strokeStyle = "rgba(255,255,255,.5)"; c.setLineDash([3, 3]); c.beginPath(); c.arc(mx + z[3] * mk, my + z[4] * mk, Math.max(1, z[5] * mk), 0, 6.3); c.stroke(); c.setLineDash([]); }
+  (m.tmt || []).forEach(function (t) { c.fillStyle = "#38d6a0"; c.beginPath(); c.arc(mx + t[1] * mk, my + t[2] * mk, 2.6, 0, 6.3); c.fill(); });
+  c.fillStyle = "#4da3ff"; c.beginPath(); c.arc(mx + cx * mk, my + cy * mk, 3.4, 0, 6.3); c.fill(); c.restore();
+  // doira holati
+  var zt = z[6] === 0 ? "🟢 Doira " + Math.ceil(z[7]) + " s dan keyin kichrayadi" : z[6] === 1 ? "🔴 Doira kichrayapti!" : "🔴 Oxirgi doira";
+  btText(c, zt, w / 2 + 52, 22, 12, "#fff", "center", true);
+  if (outside && m.tm >= 0 && !m.dead && Math.floor(now / 400) % 2 === 0) btText(c, "⚠️ Doiradan tashqaridasiz! Ichkariga yuguring", w / 2, 44, 14, "#ff9d9d", "center", true);
+  // o'ldirish lentasi
+  var fy = 22; BT.feed.forEach(function (f) { if (now - f.t > 7000) return; btText(c, f.x, w - 10, fy, 11, "#fff", "right"); fy += 16; });
+  if (now - BT.hitm < 180) { c.strokeStyle = "#fff"; c.lineWidth = 2.5; c.beginPath(); var hx = w / 2, hy = h / 2; c.moveTo(hx - 12, hy - 12); c.lineTo(hx - 5, hy - 5); c.moveTo(hx + 12, hy - 12); c.lineTo(hx + 5, hy - 5); c.moveTo(hx - 12, hy + 12); c.lineTo(hx - 5, hy + 5); c.moveTo(hx + 12, hy + 12); c.lineTo(hx + 5, hy + 5); c.stroke(); }
+  // salomatlik, qalqon, o'q-dori
+  if (!m.dead) {
+    var bw = Math.min(220, w * 0.5), bx0 = (w - bw) / 2, by0 = h - 34;
+    c.fillStyle = "rgba(0,0,0,.55)"; btRR(c, bx0 - 4, by0 - 22, bw + 8, 40, 10); c.fill();
+    c.fillStyle = "#3a3f4d"; c.fillRect(bx0, by0, bw, 9); c.fillStyle = m.me[3] > 50 ? "#38d6a0" : m.me[3] > 25 ? "#ffd54a" : "#ff5c5c"; c.fillRect(bx0, by0, bw * Math.max(0, m.me[3]) / 100, 9);
+    if (m.me[4] > 0) { c.fillStyle = "#4da3ff"; c.fillRect(bx0, by0 - 5, bw * m.me[4] / 50, 4); }
+    btText(c, BT_WN[m.me[6]] + "   🔶 " + m.me[5] + "   ❤️ " + Math.ceil(m.me[3]), w / 2, by0 - 13, 12, m.me[5] > 0 ? "#fff" : "#ff9d9d", "center", true);
+  } else btText(c, "👁 Kuzatyapsiz: " + (map.names[vU] || ""), w / 2, h - 28, 14, "#fff", "center", true);
+  // joystiklar
+  [[BT.joyL, 0.2, "🏃"], [BT.joyR, 0.8, "🎯"]].forEach(function (s) {
+    var j = s[0]; if (m.dead) return;
+    if (!j) { c.strokeStyle = "rgba(255,255,255,.16)"; c.lineWidth = 2; c.beginPath(); c.arc(w * s[1], h - 110, 40, 0, 6.3); c.stroke(); c.font = "22px sans-serif"; c.fillStyle = "rgba(255,255,255,.3)"; c.textAlign = "center"; c.fillText(s[2], w * s[1], h - 110); return; }
+    var dx = j.x - j.ox, dy = j.y - j.oy, l = Math.hypot(dx, dy), k = l > 52 ? 52 / l : 1;
+    c.fillStyle = "rgba(255,255,255,.08)"; c.strokeStyle = "rgba(255,255,255,.4)"; c.lineWidth = 2; c.beginPath(); c.arc(j.ox, j.oy, 52, 0, 6.3); c.fill(); c.stroke();
+    c.fillStyle = s[2] === "🎯" && l > 24 ? "rgba(255,92,92,.75)" : "rgba(255,255,255,.55)"; c.beginPath(); c.arc(j.ox + dx * k, j.oy + dy * k, 22, 0, 6.3); c.fill();
+  });
+  if (m.tm < 0) { btText(c, String(Math.ceil(-m.tm)), w / 2, h * 0.4, 72, "#fff", "center", true); btText(c, "Jang boshlanadi! Qurol toping 🔫", w / 2, h * 0.4 + 52, 15, "#ffe27a", "center", true); }
+  // yerdan qurol olish tugmasi
+  var nk = near && !m.dead && m.tm >= 0 ? near[1] : -1;
+  if (nk !== BT.nk) { BT.nk = nk; var pb = $("#btpk"); if (pb) { pb.style.display = nk >= 0 ? "block" : "none"; if (nk >= 0) pb.textContent = "✋ Olish: " + BT_WN[nk - 10]; } }
+}
+function btOverlay(v) {
+  var d = $("#btdead"); if (!d || !BT) return;
+  if (v.dead && !BT.hide) {
+    d.style.display = "flex"; d.style.background = ""; d.style.pointerEvents = "auto";
+    d.innerHTML = '<div class="btdc pop"><div style="font-size:34px">☠️</div><b style="font-size:20px">' + v.place + '-o\'rin</b><div class="sm mu">☠️ ' + (v.kills || 0) + " ta o'ldirdingiz · " + v.alive + ' kishi qoldi</div><button class="btn" data-a="bt_spec" style="margin-top:10px">👁 Kuzatish</button><button class="btn sec" data-a="leave" style="margin-top:8px">🚪 Chiqish</button></div>';
+  } else if (v.dead) {
+    d.style.display = "block"; d.style.background = "transparent"; d.style.pointerEvents = "none";
+    d.innerHTML = '<div class="btsp"><button data-a="bt_next">👁 Keyingi ➜</button><button data-a="leave">🚪</button></div>';
+  } else { d.style.display = "none"; d.innerHTML = ""; }
+}
+function rBattle(v) {
+  if (v.phase === "over") { var h = battleResult(v); btReset(); return h; }
+  if (!BT || !BT.map) return '<div class="c mu pulse" style="padding:60px 0">Jang maydoni yuklanmoqda...</div>';
+  btMount(); btOverlay(v); return "";
+}
+function battleResult(v) {
+  var R = S.room, res = v.res || [], me = null, won = v.win && v.win.indexOf(S.me) >= 0;
+  res.forEach(function (r) { if (r[0] === S.me) me = r; });
+  var h = '<div class="role ' + (won ? "win " : "") + 'c pop"><div class="big">' + (won ? "🏆" : "💀") + "</div><h3>" + (won ? "G'alaba! Siz yutdingiz" : (me ? me[2] + "-o'rin" : "Jang tugadi")) + '</h3><div class="sm">' + (me ? "☠️ " + me[3] + " ta o'ldirdingiz" : "") + "</div></div>";
+  h += '<div class="card"><b>🏅 Natijalar</b>' + res.map(function (r) { var mate = BT && BT.map && BT.map.team && r[0] !== S.me && BT.map.team[r[0]] === BT.map.team[S.me]; return '<div class="pl-row"><b style="width:26px">' + r[2] + "</b>" + av(r[0]) + '<b style="flex:1">' + esc(r[1]) + (r[0] === S.me ? " (siz)" : "") + (mate ? " 👥" : "") + "</b><span>☠️ " + r[3] + "</span></div>"; }).join("") + "</div>";
+  if (R.pub) h += '<button class="btn" data-a="bt_again">🔁 Yana jang</button><button class="btn sec" style="margin-top:8px" data-a="leave">🏠 Chiqish</button>';
+  else h += endBar();
+  return h;
+}
+// ---------- Jang lobbisi (ochiq navbat)
+function renderRoyaleLobby() {
+  var R = S.room, q = R.q || {ready: [], dl: 0, teams: {}, req: {}}, n = R.players.length, MX = 30;
+  topBar("⚔️ Jang maydoni", true);
+  var ready = q.ready.indexOf(S.me) >= 0, tm = q.teams || {}, mate = null;
+  R.players.forEach(function (p) { if (p.u !== S.me && tm[p.u] != null && tm[p.u] === tm[S.me]) mate = p; });
+  var size = n <= 4 ? "Kichik" : n <= 12 ? "O'rta" : n <= 24 ? "Katta" : "Ulkan";
+  var h = '<div class="card c bt-hero"><div style="font-size:42px">⚔️</div><b style="font-size:20px">' + n + " / " + MX + ' o\'yinchi</b><div class="mu sm">🗺 Xarita: ' + size + " (odamlar soniga qarab kattalashadi)</div>";
+  if (q.dl) h += '<div class="bt-cd">' + timerHtml(q.dl) + '</div><div class="sm">Shu vaqt ichida kirganlar jangga qo\'shiladi, keyin kutilmaydi!</div>';
+  else h += '<div class="sm" style="margin-top:8px">«Boshlash»ni kamida 2 kishi bosgach <b>60 soniya</b> hisoblanadi. Shu vaqtda kirganlar jangga qo\'shiladi.</div><div style="margin-top:6px">✅ Tayyor: <b>' + q.ready.length + "</b> / 2</div>";
+  h += '</div><div class="card c"><div class="mu sm">Xona kodi (do\'st shu kod bilan kiradi)</div><div class="code">' + esc(R.code) + '</div><div style="display:flex;gap:8px;margin-top:10px"><button class="btn sec" data-a="invite">📨 Taklif</button><button class="btn sec" data-a="friends">🔔 Do\'stlar</button><button class="btn sec" data-a="copy">📋</button></div></div>';
+  var rq = q.req && q.req[S.me];
+  if (rq && !mate) h += '<div class="banner"><b>🤝 ' + esc(pname(rq)) + '</b> sizni jamoaga chaqirdi<div style="display:flex;gap:8px;margin-top:8px"><button class="btn" data-a="bt_teamok" data-u="' + rq + '">✅ Qabul</button><button class="btn sec" data-a="bt_teamno">✕ Rad</button></div></div>';
+  if (mate) h += '<div class="banner">👥 Jamoadoshingiz: <b>' + esc(mate.n) + '</b> <button class="chip" data-a="bt_unteam" style="margin-left:8px">Jamoani buzish</button></div>';
+  h += "<h2>O'yinchilar</h2><div class=\"card\" style=\"padding:6px 14px\">";
+  R.players.forEach(function (p) {
+    var rd = q.ready.indexOf(p.u) >= 0, inTeam = tm[p.u] != null, pm = null;
+    R.players.forEach(function (o) { if (o.u !== p.u && tm[o.u] != null && tm[o.u] === tm[p.u]) pm = o; });
+    h += '<div class="pl-row">' + av(p.u, !p.o) + '<div style="flex:1"><b>' + esc(p.n) + (p.u === S.me ? " (siz)" : "") + "</b>" + (rd ? " ✅" : "") + '<div class="mu sm">' + (pm ? "👥 " + esc(pm.n) + " bilan jamoa" : (p.o ? "yakka" : "uzilgan")) + "</div></div>" +
+         (p.u !== S.me && !mate && !inTeam && p.o ? '<button class="chip" data-a="bt_team" data-u="' + p.u + '">' + (q.req && q.req[p.u] === S.me ? "⏳ Yuborildi" : "🤝 Jamoa") + "</button>" : "") + "</div>";
+  });
+  h += "</div>";
+  $("#main").innerHTML = h;
+  var d = $("#dock"); d.style.display = "flex";
+  d.innerHTML = '<button class="btn" data-a="bt_ready"' + (ready ? " disabled" : "") + ">" + (ready ? "✅ Tayyorsiz — boshqalarni kuting" : "⚔️ Boshlash") + "</button>";
+}
+
 // ---------------- 3D: barmoq bilan egilish ----------------
 document.addEventListener("pointermove", function (e) {
   var t = e.target.closest && e.target.closest(".role"); if (!t) return;
@@ -29626,6 +30696,16 @@ document.addEventListener("click", function (e) {
     case "cam": S.cam ? (camOff(), render()) : camOn(); break;
     case "camflip": camFlip(); break;
     case "chat": openChat(); break;
+    case "bt_queue": case "bt_again": send({t: "queue"}); break;
+    case "bt_duel": send({t: "create", g: "duel"}); break;
+    case "bt_ready": send({t: "ready"}); buzz(); break;
+    case "bt_team": send({t: "team", u: +d("u")}); break;
+    case "bt_teamok": send({t: "teamok", u: +d("u")}); break;
+    case "bt_teamno": send({t: "teamno"}); break;
+    case "bt_unteam": send({t: "unteam"}); break;
+    case "bt_pick": if (BT) BT.pk = 1; break;
+    case "bt_spec": if (BT) { BT.hide = true; btOverlay(S.view); } break;
+    case "bt_next": if (BT) BT.sw = 1; break;
     case "invite": invite(); break;
     case "copy": try { navigator.clipboard.writeText(S.room.code); toast("Kod nusxalandi: " + S.room.code); } catch (x) { toast("Kod: " + S.room.code); } break;
     case "game": send({t: "game", g: d("g")}); break;
@@ -29892,7 +30972,7 @@ async def hub_ws(request):
                     break
                 continue
             now = hub_now()
-            is_rtc = msg.data.startswith('{"t":"rtc"')
+            is_rtc = msg.data.startswith('{"t":"rtc"') or msg.data.startswith('{"t":"in"')
             bk, cap, rate = (rbucket, 150.0, 100.0) if is_rtc else (bucket, 30.0, 25.0)
             bk[0] = min(cap, bk[0] + (now - bk[1]) * rate)
             bk[1] = now
@@ -29997,7 +31077,7 @@ def setup_hub_bot(dp: Dispatcher, token: str):
         else:
             await message.answer(
                 "🎮 <b>O'yinlar markazi</b>\n\n2–10 kishilik kreativ o'yinlar: 🃏 Durak (karta), 🐐 Bur-Kozel, 🌈 Uno, ♟ Shashka, ♚ Shaxmat, 🎲 Nard, 🧠 Viktorina, 🚢 Dengiz jangi, 🎭 Kim yolg'onchi, 🔪 Mafia, 🕵️ Josus, 🎨 Chizib top, 📖 Hikoya zanjiri, "
-                "😂 Kulgili javob, 🔴 4 ketma-ket, 🔤 So'z zanjiri, 🧩 Men kimman?, 🟩 Boshqotirma, 🔀 So'zni tuz, ➕ Tez hisob, 🎴 Xotira kartalari, ✊ Tosh-qaychi-qog'oz, 🎯 Haqiqat yoki jasorat.\n\n🎙 Xohlasangiz mikrofon orqali gaplashib o'ynang!", reply_markup=kb)
+                "😂 Kulgili javob, 🔴 4 ketma-ket, 🔤 So'z zanjiri, 🧩 Men kimman?, 🟩 Boshqotirma, 🔀 So'zni tuz, ➕ Tez hisob, 🎴 Xotira kartalari, ✊ Tosh-qaychi-qog'oz, 🎯 Haqiqat yoki jasorat, ⚔️ Jang maydoni (30 kishigacha) va 🤝 1 ga 1.\n\n🎙 Xohlasangiz mikrofon orqali gaplashib o'ynang!", reply_markup=kb)
 
     @dp.message(Command("start"))
     async def hstart(message: Message):
